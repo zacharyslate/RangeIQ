@@ -815,6 +815,34 @@ def apply_app_theme(theme: dict[str, object]) -> None:
             color: var(--rq-text);
             border-radius: 18px;
         }}
+        div[data-testid="stJson"],
+        div[data-testid="stCodeBlock"] {{
+            background: linear-gradient(180deg, var(--rq-card) 0%, var(--rq-card-alt) 100%) !important;
+            border: 1px solid var(--rq-border) !important;
+            border-radius: 18px !important;
+            box-shadow: 0 10px 24px var(--rq-shadow);
+            padding: 0.45rem !important;
+        }}
+        div[data-testid="stJson"] *,
+        div[data-testid="stCodeBlock"] *,
+        pre,
+        code {{
+            color: var(--rq-text) !important;
+        }}
+        div[data-testid="stJson"] pre,
+        div[data-testid="stCodeBlock"] pre,
+        pre {{
+            background: var(--rq-card) !important;
+        }}
+        details {{
+            background: linear-gradient(180deg, var(--rq-card) 0%, var(--rq-card-alt) 100%);
+            border: 1px solid var(--rq-border);
+            border-radius: 18px;
+            box-shadow: 0 10px 24px var(--rq-shadow);
+        }}
+        details summary {{
+            color: var(--rq-text) !important;
+        }}
         .rq-card {{
             background: linear-gradient(180deg, var(--rq-card) 0%, var(--rq-card-alt) 100%);
             border: 1px solid var(--rq-border);
@@ -1521,14 +1549,29 @@ def render_station_cards(status_df: pd.DataFrame) -> None:
 theme = get_theme(st.session_state.theme_mode)
 apply_app_theme(theme)
 
-with st.sidebar:
+theme_bar_cols = st.columns([1.2, 1.8], gap="medium")
+with theme_bar_cols[0]:
     st.radio("Color Mode", options=["High Plains Day", "Mesquite Night"], key="theme_mode", horizontal=True)
-    st.header("Scenario")
+with theme_bar_cols[1]:
+    st.caption(
+        "RangeIQ display mode now lives at the top of the dashboard. Boundary uploads, scenario controls, and model details live in Settings."
+    )
+
+home_tab, sensors_tab, sensor_network_tab, pastures_tab, data_tab, settings_tab = st.tabs(
+    ["Home", "Sensors", "Sensor Network", "Pastures", "Data", "Settings"]
+)
+
+with settings_tab:
+    st.subheader("Scenario & Boundary")
     uploaded_boundary = st.file_uploader("Upload ranch or pasture boundary", type=["geojson", "json", "kml", "kmz"])
-    st.slider("Weekly modeling window", min_value=12, max_value=104, step=2, key="weeks")
-    st.slider("Vegetation history (years)", min_value=5, max_value=10, key="history_years")
-    st.number_input("Scenario seed", min_value=1, step=1, key="seed")
-    st.caption("RangeIQ stays runnable offline. Upload a GeoJSON, JSON, KML, or KMZ boundary file to replace the placeholder pasture immediately.")
+    scenario_cols = st.columns(3)
+    scenario_cols[0].slider("Weekly modeling window", min_value=12, max_value=104, step=2, key="weeks")
+    scenario_cols[1].slider("Vegetation history (years)", min_value=5, max_value=10, key="history_years")
+    scenario_cols[2].number_input("Scenario seed", min_value=1, step=1, key="seed")
+    st.caption(
+        "Upload a GeoJSON, JSON, KML, or KMZ boundary file here to replace the default ranch geometry. "
+        "These settings drive the current model run and can be saved to your account."
+    )
 
 runtime_settings = build_runtime_settings()
 uploaded_boundary_name = uploaded_boundary.name if uploaded_boundary is not None else None
@@ -1625,10 +1668,6 @@ with header_meta_col:
         boundary_mode=boundary_mode,
         map_basemap=st.session_state.map_basemap,
     )
-
-home_tab, sensors_tab, sensor_network_tab, pastures_tab, data_tab, settings_tab = st.tabs(
-    ["Home", "Sensors", "Sensor Network", "Pastures", "Data", "Settings"]
-)
 
 with home_tab:
     if boundary_mode == "default":
@@ -2180,7 +2219,7 @@ with settings_tab:
     preview_settings = build_runtime_settings()
     st.json(preview_settings.to_display_dict())
 
-with st.expander("Model metrics"):
-    st.write(f"Selected forage regressor: `{artifacts.selected_forage_model}`")
-    st.json(artifacts.model_metrics["forage_model"])
-    st.text(artifacts.model_metrics["stress_model"]["report"])
+    with st.expander("AI Model Window"):
+        st.write(f"Selected forage regressor: `{artifacts.selected_forage_model}`")
+        st.json(artifacts.model_metrics["forage_model"])
+        st.text(artifacts.model_metrics["stress_model"]["report"])
