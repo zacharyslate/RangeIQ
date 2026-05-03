@@ -87,6 +87,49 @@ Useful official references:
 - [Deploy your app on Streamlit Community Cloud](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy)
 - [Manage app secrets](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management)
 
+## Deploy On A DigitalOcean Droplet
+
+For a faster US-hosted deployment than Streamlit Community Cloud, RangeIQ can run on a Linux VM and sit behind a reverse proxy.
+
+Recommended shape:
+
+- Ubuntu Droplet in a US region
+- RangeIQ bound to `127.0.0.1:8501`
+- Caddy or Nginx reverse proxy in front
+- systemd service so the app restarts automatically
+
+Deployment helper files:
+
+- [bootstrap_rangeiq.sh](</C:/Users/zacha/OneDrive/Documents/New project 2/deploy/ubuntu/bootstrap_rangeiq.sh>)
+- [rangeiq.service.example](</C:/Users/zacha/OneDrive/Documents/New project 2/deploy/systemd/rangeiq.service.example>)
+- [Caddyfile.example](</C:/Users/zacha/OneDrive/Documents/New project 2/deploy/caddy/Caddyfile.example>)
+- [rangeiq.env.example](</C:/Users/zacha/OneDrive/Documents/New project 2/deploy/env/rangeiq.env.example>)
+
+Typical Ubuntu flow:
+
+```bash
+ssh root@YOUR_DROPLET_IP
+git clone https://github.com/zacharyslate/RangeIQ.git
+cd RangeIQ
+bash deploy/ubuntu/bootstrap_rangeiq.sh
+sudo mkdir -p /etc/rangeiq
+sudo cp deploy/env/rangeiq.env.example /etc/rangeiq/rangeiq.env
+sudo cp deploy/systemd/rangeiq.service.example /etc/systemd/system/rangeiq.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now rangeiq
+sudo systemctl status rangeiq
+```
+
+The service runs Streamlit only on localhost:
+
+```text
+127.0.0.1:8501
+```
+
+Then put a reverse proxy in front of it. With Caddy, use [Caddyfile.example](</C:/Users/zacha/OneDrive/Documents/New project 2/deploy/caddy/Caddyfile.example>) and replace `rangeiq.example.com` with your real domain.
+
+This is safer than exposing Streamlit directly because the app is not bound to the public interface.
+
 ## Vegetation History
 
 RangeIQ now combines two different vegetation signals:
