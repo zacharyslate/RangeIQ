@@ -176,12 +176,21 @@ def calculate_ndvi_array(red: Any, nir: Any) -> np.ma.MaskedArray:
     return np.ma.array(ndvi, mask=mask)
 
 
+def _normalize_dates_for_period_grouping(values: pd.Series) -> pd.Series:
+    dates = pd.to_datetime(values)
+    if getattr(dates.dt, "tz", None) is not None:
+        # Convert to UTC first so the month/season grouping stays stable, then
+        # drop timezone awareness before Period conversion to avoid noisy warnings.
+        dates = dates.dt.tz_convert("UTC").dt.tz_localize(None)
+    return dates
+
+
 def annotate_ndvi_anomalies(series: pd.DataFrame) -> pd.DataFrame:
     if series.empty or "date" not in series.columns or "ndvi_mean" not in series.columns:
         return series.copy()
 
     frame = series.copy().sort_values("date").reset_index(drop=True)
-    frame["date"] = pd.to_datetime(frame["date"])
+    frame["date"] = _normalize_dates_for_period_grouping(frame["date"])
     frame["historical_mean"] = np.nan
     frame["ndvi_anomaly"] = np.nan
     frame["ndvi_anomaly_percent"] = np.nan
@@ -239,7 +248,7 @@ def aggregate_ndvi_series(series: pd.DataFrame, mode: str = "raw") -> pd.DataFra
 
     normalized_mode = str(mode or "raw").lower()
     frame = series.copy()
-    frame["date"] = pd.to_datetime(frame["date"])
+    frame["date"] = _normalize_dates_for_period_grouping(frame["date"])
     frame = frame.sort_values("date").reset_index(drop=True)
 
     if normalized_mode == "raw":

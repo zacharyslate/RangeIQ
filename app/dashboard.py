@@ -1706,7 +1706,10 @@ if not vegetation_ndvi_df.empty:
     if "month_start" in vegetation_ndvi_df.columns:
         vegetation_ndvi_df["month_start"] = pd.to_datetime(vegetation_ndvi_df["month_start"])
     elif "date" in vegetation_ndvi_df.columns:
-        vegetation_ndvi_df["month_start"] = pd.to_datetime(vegetation_ndvi_df["date"]).dt.to_period("M").dt.to_timestamp()
+        ndvi_dates = pd.to_datetime(vegetation_ndvi_df["date"])
+        if getattr(ndvi_dates.dt, "tz", None) is not None:
+            ndvi_dates = ndvi_dates.dt.tz_convert("UTC").dt.tz_localize(None)
+        vegetation_ndvi_df["month_start"] = ndvi_dates.dt.to_period("M").dt.to_timestamp()
 weather_bundle = load_weather_bundle_cached(
     runtime_settings=runtime_settings,
     lat=runtime_settings.ranch.latitude,

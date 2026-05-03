@@ -1,4 +1,5 @@
 import copy
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -230,6 +231,31 @@ def test_monthly_median_aggregation_reduces_scene_noise():
     assert round(float(aggregated["ndvi_mean"].iloc[0]), 2) == 0.40
     assert int(aggregated["scene_count"].iloc[0]) == 2
     assert aggregated["aggregation_mode"].iloc[0] == "monthly_median"
+
+
+def test_monthly_aggregation_handles_timezone_aware_dates_without_warning():
+    frame = pd.DataFrame(
+        {
+            "pasture_id": ["CC-001", "CC-001"],
+            "date": pd.to_datetime(["2026-05-01T00:00:00Z", "2026-05-15T00:00:00Z"], utc=True),
+            "ndvi_mean": [0.30, 0.50],
+            "ndvi_min": [0.20, 0.40],
+            "ndvi_max": [0.40, 0.60],
+            "ndvi_std": [0.03, 0.05],
+            "cloud_cover": [10.0, 20.0],
+            "scene_id": ["M1", "M2"],
+            "source": ["Earth Search STAC"] * 2,
+            "sensor": ["sentinel-2-l2a"] * 2,
+            "aggregation_mode": ["raw"] * 2,
+        }
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        aggregated = aggregate_ndvi_series(frame, "monthly_median")
+
+    assert len(aggregated) == 1
+    assert aggregated["date"].iloc[0] == pd.Timestamp("2026-05-01")
 
 
 def test_ndvi_anomaly_calculation_returns_above_normal_when_latest_is_high():

@@ -13,7 +13,7 @@ EnvironmentFile=-/etc/rangeiq/rangeiq.env
 ExecStart=/opt/rangeiq/.venv/bin/streamlit run /opt/rangeiq/streamlit_app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true --browser.gatherUsageStats false
 Restart=always
 RestartSec=5
-TimeoutStopSec=20
+TimeoutStopSec=90
 
 [Install]
 WantedBy=multi-user.target
