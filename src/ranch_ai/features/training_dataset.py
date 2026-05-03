@@ -62,6 +62,7 @@ def build_training_dataset(
         "rows": int(len(dataset)),
         "pastures": int(dataset["pasture_id"].nunique()) if "pasture_id" in dataset else 0,
         "weeks": int(dataset["week_start"].nunique()) if "week_start" in dataset else 0,
+        "sensor_data_enabled": bool(app_settings.training.use_sensor_data),
         "public_feature_columns": public_columns,
         "public_feature_count": int(len(public_columns)),
         "non_null_public_cells": int(dataset[public_columns].notna().sum().sum()) if public_columns else 0,

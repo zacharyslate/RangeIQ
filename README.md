@@ -280,8 +280,9 @@ Default registry behavior:
 RangeIQ now builds a hybrid training dataset that combines:
 
 - synthetic pasture-week features
-- weekly sensor aggregates
 - public-data feature slots
+
+Sensor-derived training features are currently disabled by default while the sensor stack remains under development.
 
 What is live now:
 
@@ -293,6 +294,19 @@ What is live now:
 - `Earth Search STAC` NDVI from Sentinel-2 is the default live provider
 - `Climate Engine` NDVI remains implemented as an optional provider
 - `AppEEARS` NDVI is retained only as a legacy fallback scaffold
+
+To enable Climate Engine on a deployed server without committing secrets, add the key only in `/etc/rangeiq/rangeiq.env`:
+
+```bash
+CLIMATE_ENGINE_API_KEY=your_key_here
+NDVI_PROVIDER=climate_engine
+```
+
+Then restart the service:
+
+```bash
+sudo systemctl restart rangeiq
+```
 
 What is scaffolded for the next step:
 

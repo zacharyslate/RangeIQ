@@ -37,6 +37,9 @@ def test_default_settings_prefer_real_public_providers(tmp_path):
     assert loaded.public_data.soils.provider == "usda_sda"
     assert loaded.public_data.drought.provider == "usdm"
     assert loaded.public_data.vegetation.provider == "earth_search_stac"
+    assert loaded.training.use_sensor_data is False
+    assert loaded.sensor_network.enabled is False
+    assert loaded.sensor_network.mode == "under_development"
 
 
 def test_normalize_workspace_id_and_paths():

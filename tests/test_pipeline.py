@@ -34,7 +34,9 @@ def test_pipeline_produces_required_columns():
     assert "RangeIQ Monthly Report" in artifacts.monthly_report_markdown
     assert len(artifacts.public_data_bundle.source_status) == 5
     assert artifacts.public_data_bundle.vegetation_artifacts is not None
+    assert artifacts.training_dataset_summary["sensor_data_enabled"] is False
     assert artifacts.training_dataset_summary["public_feature_count"] > 0
+    assert artifacts.sensor_readings.empty
 
 
 def test_pipeline_recommendations_are_valid():

@@ -170,7 +170,7 @@ class AlertsConfig:
 
 @dataclass
 class SensorsConfig:
-    provider: str = "csv"
+    provider: str = "under_development"
     csv_path: str = "data/sensors/sensor_readings.csv"
     expected_interval_minutes: int = 60
     stale_after_minutes: int = 180
@@ -182,8 +182,8 @@ class SensorsConfig:
 
 @dataclass
 class SensorNetworkConfig:
-    enabled: bool = True
-    mode: str = "mock"
+    enabled: bool = False
+    mode: str = "under_development"
     expected_interval_minutes: int = 60
     stale_after_minutes: int = 180
     offline_after_minutes: int = 720
@@ -303,7 +303,7 @@ class PublicDataConfig:
 @dataclass
 class TrainingConfig:
     use_public_data: bool = True
-    use_sensor_data: bool = True
+    use_sensor_data: bool = False
     minimum_training_weeks: int = 12
 
 
@@ -415,6 +415,14 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     registry_path = Path(loaded.sensor_network.station_registry_path)
     if not registry_path.is_absolute():
         loaded.sensor_network.station_registry_path = str(loaded.project_root / registry_path)
+
+    # The sensor stack is intentionally paused in the current RangeIQ build.
+    # Keep historical configs from re-enabling sensor ingestion or ML features
+    # until the sensor system is finished and explicitly turned back on in code.
+    loaded.sensors.provider = "under_development"
+    loaded.sensor_network.enabled = False
+    loaded.sensor_network.mode = "under_development"
+    loaded.training.use_sensor_data = False
     return loaded
 
 

@@ -18,7 +18,7 @@ alerts:
   timeout_seconds: 10
 
 sensors:
-  provider: "csv"
+  provider: "under_development"
   csv_path: "data/sensors/sensor_readings.csv"
   expected_interval_minutes: 60
   stale_after_minutes: 180
@@ -28,8 +28,8 @@ sensors:
   mock_days: 14
 
 sensor_network:
-  enabled: true
-  mode: "mock"
+  enabled: false
+  mode: "under_development"
   expected_interval_minutes: 60
   stale_after_minutes: 180
   offline_after_minutes: 720
@@ -111,5 +111,5 @@ public_data:
 
 training:
   use_public_data: true
-  use_sensor_data: true
+  use_sensor_data: false
   minimum_training_weeks: 12
