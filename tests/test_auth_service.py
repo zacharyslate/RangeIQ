@@ -66,6 +66,23 @@ def test_auth_service_updates_profile(tmp_path: Path):
     assert updated.ranch_longitude == pytest.approx(-103.5)
 
 
+def test_auth_service_can_load_user_by_email(tmp_path: Path):
+    service = AuthService(tmp_path / "rangeiq_auth.sqlite")
+    created = service.create_user(
+        email="lookup@example.com",
+        password="supersecure",
+        full_name="Lookup Name",
+        ranch_name="Lookup Ranch",
+        ranch_address="Lookup Address",
+    )
+
+    loaded = service.get_user_by_email("LOOKUP@example.com")
+
+    assert loaded is not None
+    assert loaded.user_id == created.user_id
+    assert loaded.email == "lookup@example.com"
+
+
 def test_auth_service_rejects_bad_password(tmp_path: Path):
     service = AuthService(tmp_path / "rangeiq_auth.sqlite")
     service.create_user(

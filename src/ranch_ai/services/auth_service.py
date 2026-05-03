@@ -221,6 +221,12 @@ class AuthService:
             row = connection.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         return self._row_to_user(row)
 
+    def get_user_by_email(self, email: str) -> AuthUser | None:
+        normalized_email = self._normalize_email(email)
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM users WHERE email = ?", (normalized_email,)).fetchone()
+        return self._row_to_user(row)
+
     def update_user_profile(
         self,
         user_id: str,
