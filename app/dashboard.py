@@ -320,6 +320,84 @@ def get_authenticated_user(auth_service: AuthService) -> AuthUser | None:
     return user
 
 
+def apply_pre_auth_theme(theme: dict[str, object]) -> None:
+    st.markdown(
+        f"""
+        <style>
+        :root {{
+            --rq-bg: {theme['background']};
+            --rq-bg-alt: {theme['background_alt']};
+            --rq-card: {theme['card']};
+            --rq-card-alt: {theme['card_alt']};
+            --rq-text: {theme['text']};
+            --rq-muted: {theme['muted']};
+            --rq-border: {theme['border']};
+            --rq-accent: {theme['accent']};
+            --rq-accent-2: {theme['accent_2']};
+        }}
+        html, body {{
+            color-scheme: light;
+        }}
+        .stApp {{
+            background: {theme['app_background']};
+            color: var(--rq-text);
+            color-scheme: light;
+        }}
+        [data-testid="stAppViewContainer"] > .main .block-container {{
+            max-width: 860px;
+            padding-top: 2rem;
+        }}
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"],
+        #MainMenu {{
+            display: none !important;
+        }}
+        h1, h2, h3, h4, h5, h6, p, label, span, div {{
+            color: var(--rq-text);
+        }}
+        div[data-baseweb="select"] > div,
+        div[data-baseweb="input"] > div,
+        div[data-baseweb="base-input"] > div,
+        .stNumberInput div[data-baseweb="input"] > div,
+        .stTextInput div[data-baseweb="input"] > div,
+        .stTextInput div[data-baseweb="base-input"] > div,
+        .stNumberInput div[data-baseweb="base-input"] > div,
+        .stDateInput > div > div,
+        .stTextArea textarea,
+        .stTextInput input,
+        .stNumberInput input,
+        .stDateInput input {{
+            background: var(--rq-card) !important;
+            border: 1px solid var(--rq-border) !important;
+            color: var(--rq-text) !important;
+            -webkit-text-fill-color: var(--rq-text) !important;
+        }}
+        .stButton > button,
+        .stForm button {{
+            background: linear-gradient(90deg, var(--rq-accent) 0%, var(--rq-accent-2) 100%);
+            color: white !important;
+            border: none !important;
+            border-radius: 999px !important;
+        }}
+        [data-testid="stTabs"] button {{
+            background: linear-gradient(180deg, var(--rq-card) 0%, var(--rq-card-alt) 100%);
+            border: 1px solid var(--rq-border);
+            border-radius: 999px;
+        }}
+        [data-testid="stTabs"] button[aria-selected="true"] {{
+            background: linear-gradient(135deg, var(--rq-accent) 0%, var(--rq-accent-2) 100%);
+            border-color: transparent;
+        }}
+        [data-testid="stTabs"] button[aria-selected="true"] p {{
+            color: white !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_auth_gate(auth_service: AuthService) -> AuthUser:
     current_user = get_authenticated_user(auth_service)
     if current_user is not None:
@@ -421,6 +499,7 @@ def initialize_session_state(workspace_id: str, session_defaults: dict[str, Any]
 page_icon_path = ICON_PATH if ICON_PATH.exists() else FALLBACK_ICON_PATH
 PAGE_ICON = Image.open(page_icon_path) if page_icon_path.exists() else None
 st.set_page_config(page_title=f"{settings.app_name} | Operational Dashboard", page_icon=PAGE_ICON, layout="wide")
+apply_pre_auth_theme(LIGHT_THEME)
 AUTH_SERVICE = AuthService(settings.auth_db_path)
 CURRENT_USER = render_auth_gate(AUTH_SERVICE)
 CURRENT_WORKSPACE_ID = resolve_workspace_id(CURRENT_USER)
@@ -625,6 +704,21 @@ def apply_app_theme(theme: dict[str, object]) -> None:
         [data-testid="stTabs"] button[aria-selected="true"] p {{
             color: white;
         }}
+        [data-testid="stFileUploader"] {{
+            background: linear-gradient(180deg, var(--rq-card) 0%, var(--rq-card-alt) 100%);
+            border-radius: 18px;
+        }}
+        [data-testid="stFileUploaderDropzone"] {{
+            background: var(--rq-card) !important;
+            border: 1px dashed var(--rq-border) !important;
+            color: var(--rq-text) !important;
+        }}
+        [data-testid="stFileUploaderDropzone"] * {{
+            color: var(--rq-text) !important;
+        }}
+        [data-testid="stFileUploaderFileName"] {{
+            color: var(--rq-text) !important;
+        }}
         div[data-baseweb="select"] > div,
         div[data-baseweb="input"] > div,
         div[data-baseweb="base-input"] > div,
@@ -701,6 +795,11 @@ def apply_app_theme(theme: dict[str, object]) -> None:
         .stMultiSelect input:focus {{
             border-color: var(--rq-accent-3) !important;
             box-shadow: 0 0 0 1px var(--rq-accent-3) !important;
+        }}
+        .stNumberInput button {{
+            background: var(--rq-card) !important;
+            border: 1px solid var(--rq-border) !important;
+            color: var(--rq-text) !important;
         }}
         .stButton > button,
         .stDownloadButton > button {{
@@ -801,6 +900,39 @@ def apply_app_theme(theme: dict[str, object]) -> None:
         .rq-inline-note {{
             color: var(--rq-muted);
             font-size: 0.9rem;
+        }}
+        .rq-table-wrap {{
+            background: linear-gradient(180deg, var(--rq-card) 0%, var(--rq-card-alt) 100%);
+            border: 1px solid var(--rq-border);
+            border-radius: 18px;
+            box-shadow: 0 10px 24px var(--rq-shadow);
+            overflow-x: auto;
+            padding: 0.35rem;
+        }}
+        .rq-table {{
+            width: 100%;
+            border-collapse: collapse;
+            color: var(--rq-text);
+            font-size: 0.93rem;
+        }}
+        .rq-table th {{
+            background: var(--rq-card-alt);
+            color: var(--rq-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-size: 0.74rem;
+            text-align: left;
+            padding: 0.75rem 0.7rem;
+            border-bottom: 1px solid var(--rq-border);
+        }}
+        .rq-table td {{
+            padding: 0.7rem;
+            border-bottom: 1px solid color-mix(in srgb, var(--rq-border) 78%, transparent);
+            color: var(--rq-text);
+            vertical-align: top;
+        }}
+        .rq-table tr:last-child td {{
+            border-bottom: none;
         }}
         </style>
         """,
@@ -911,6 +1043,37 @@ def render_signal_card(title: str, value: str, subtitle: str, badges: list[str] 
         ),
         unsafe_allow_html=True,
     )
+
+
+def format_table_value(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "--"
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d")
+    if hasattr(value, "isoformat") and not isinstance(value, str):
+        try:
+            return str(value.isoformat())
+        except TypeError:
+            pass
+    if isinstance(value, float):
+        return f"{value:,.2f}"
+    return html.escape(str(value))
+
+
+def render_data_table(df: pd.DataFrame) -> None:
+    if df.empty:
+        st.info("No records available.")
+        return
+
+    display_df = df.copy()
+    for column in display_df.columns:
+        if pd.api.types.is_datetime64_any_dtype(display_df[column]):
+            display_df[column] = pd.to_datetime(display_df[column]).dt.strftime("%Y-%m-%d")
+        else:
+            display_df[column] = display_df[column].map(format_table_value)
+
+    table_html = display_df.to_html(index=False, escape=False, classes="rq-table")
+    st.markdown(f"<div class='rq-table-wrap'>{table_html}</div>", unsafe_allow_html=True)
 
 
 def render_dashboard_header(
@@ -1502,7 +1665,7 @@ with home_tab:
 
     with forecast_col:
         st.subheader("7-Day Forecast")
-        st.dataframe(prepare_forecast_table(weather_bundle.forecast), width="stretch", hide_index=True)
+        render_data_table(prepare_forecast_table(weather_bundle.forecast))
 
     risk_col, alert_col = st.columns([1, 1.15], gap="medium")
     with risk_col:
@@ -1522,7 +1685,7 @@ with home_tab:
 
     with summary_col:
         st.subheader("Pasture Summary")
-        st.dataframe(
+        render_data_table(
             latest_snapshot[
                 [
                     "pasture_id",
@@ -1537,16 +1700,14 @@ with home_tab:
                     "stocking_risk_score",
                     "recommendation",
                 ]
-            ].sort_values(["stocking_risk_score", "water_risk_score"], ascending=[False, False]),
-            width="stretch",
-            hide_index=True,
+            ].sort_values(["stocking_risk_score", "water_risk_score"], ascending=[False, False])
         )
 
     st.subheader("Recommendations Summary")
     if action_pastures.empty:
         st.success("No pastures currently require supplement, reduced stocking, or destocking action in this scenario.")
     else:
-        st.dataframe(
+        render_data_table(
             action_pastures[
                 [
                     "pasture_id",
@@ -1558,9 +1719,7 @@ with home_tab:
                     "stocking_risk_score",
                     "recommendation",
                 ]
-            ],
-            width="stretch",
-            hide_index=True,
+            ]
         )
 
 with sensors_tab:
@@ -1598,7 +1757,7 @@ with pastures_tab:
     pasture_metric_cols[3].metric("Grazing Pressure", format_number(pasture_metrics["grazing_pressure"], "", 3))
     pasture_metric_cols[4].metric("Recommendation", str(pasture_metrics["recommendation"]))
 
-    st.dataframe(
+    render_data_table(
         latest_snapshot[
             [
                 "pasture_id",
@@ -1612,9 +1771,7 @@ with pastures_tab:
                 "stocking_risk_score",
                 "recommendation",
             ]
-        ],
-        width="stretch",
-        hide_index=True,
+        ]
     )
 
     pasture_chart_a, pasture_chart_b = st.columns(2, gap="medium")
@@ -1847,7 +2004,7 @@ with data_tab:
         ]
     )
     provider_rows = pd.DataFrame(provider_rows)
-    st.dataframe(provider_rows, width="stretch", hide_index=True)
+    render_data_table(provider_rows)
 
     sensor_path = Path(runtime_settings.sensors.csv_path)
     file_rows = pd.DataFrame(
@@ -1860,7 +2017,7 @@ with data_tab:
         ]
     )
     st.subheader("File Status")
-    st.dataframe(file_rows, width="stretch", hide_index=True)
+    render_data_table(file_rows)
 
     st.subheader("Mock / Real Mode Indicator")
     st.json(
