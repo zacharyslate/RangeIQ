@@ -389,6 +389,10 @@ class Settings:
         normalized = normalize_workspace_id(workspace_id)
         return self.workspace_user_data_root / normalized
 
+    def workspace_model_dir_for(self, workspace_id: str) -> Path:
+        normalized = normalize_workspace_id(workspace_id)
+        return self.workspace_user_data_root / normalized / "models"
+
 
 def normalize_workspace_id(raw_value: str | None, fallback: str = "workspace") -> str:
     candidate = (raw_value or "").strip().lower()

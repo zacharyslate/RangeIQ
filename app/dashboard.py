@@ -518,6 +518,7 @@ def load_artifacts(
     weeks: int,
     history_years: int,
     seed: int,
+    workspace_id: str | None,
 ) -> MvpArtifacts:
     return run_mvp_pipeline(
         geojson_text=geojson_text,
@@ -528,6 +529,7 @@ def load_artifacts(
         seed=seed,
         write_outputs=False,
         app_settings=runtime_settings,
+        workspace_id=workspace_id,
     )
 
 
@@ -1688,6 +1690,7 @@ artifacts = load_artifacts(
     weeks=int(st.session_state.weeks),
     history_years=int(st.session_state.history_years),
     seed=int(st.session_state.seed),
+    workspace_id=CURRENT_WORKSPACE_ID,
 )
 
 latest_snapshot = artifacts.latest_snapshot.copy()
@@ -2346,6 +2349,9 @@ with settings_tab:
         st.subheader("Current Effective Config")
         preview_settings = build_runtime_settings()
         st.json(preview_settings.to_display_dict())
+
+        st.subheader("Saved Model Status")
+        st.json(artifacts.model_storage_summary)
 
         with st.expander("AI Model Window"):
             st.write(f"Selected forage regressor: `{artifacts.selected_forage_model}`")

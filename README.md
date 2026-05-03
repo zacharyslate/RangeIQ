@@ -56,12 +56,14 @@ Each account gets:
 - a private saved ranch workspace
 - its own uploaded boundary files
 - its own saved provider settings and ranch configuration
+- its own saved ML model artifacts for that ranch workspace
 
 Current MVP behavior:
 
 - users sign up with name, email, password, ranch name, and ranch location
 - account data is stored locally on the server in a SQLite database
 - saved settings and uploaded `KML` / `KMZ` / `GeoJSON` files reopen for that account after login
+- saved forage/stress model artifacts reload for that account when the training inputs have not changed
 
 To keep your setup between launches, open the `Settings` tab and click `Save Current Setup`. RangeIQ now saves settings and uploaded boundaries to the signed-in account instead of relying on a public workspace URL alone.
 
@@ -249,17 +251,16 @@ If a public request fails, the dashboard stays up and marks that component as `f
 
 ## Workspaces
 
-RangeIQ now uses lightweight workspace isolation for hosted use:
+RangeIQ still uses per-workspace folders underneath the hood, but hosted use is now account-based:
 
-- each browser session gets a `workspace` ID in the URL
-- `Save Current Setup` writes settings and uploaded boundaries to that workspace only
-- different users can use different workspace IDs to avoid overwriting one another
-- reopening the same workspace is as simple as revisiting or bookmarking the same URL
+- each signed-in account is assigned a private workspace ID
+- `Save Current Setup` writes settings, uploaded boundaries, and saved model artifacts to that account workspace
+- reopening the same account restores the same private workspace automatically
 
 Important note:
 
-- this is workspace-based separation, not full user authentication
-- if two people intentionally use the same workspace ID, they will share and overwrite the same saved setup
+- workspace folders are now an internal implementation detail of the account system
+- direct file access on the server can still inspect workspace data, so treat the Droplet as an admin environment
 
 Public historical sources are also cached on disk under `data/cache/public_data`, so RangeIQ can:
 

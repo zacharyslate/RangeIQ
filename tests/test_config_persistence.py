@@ -50,3 +50,6 @@ def test_normalize_workspace_id_and_paths():
     assert app_settings.workspace_state_path_for(normalized).as_posix().endswith(
         "config/workspaces/caja-caliente-team-01/dashboard_state.json"
     )
+    assert app_settings.workspace_model_dir_for(normalized).as_posix().endswith(
+        "data/user/workspaces/caja-caliente-team-01/models"
+    )

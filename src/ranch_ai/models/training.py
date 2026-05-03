@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from ranch_ai.models.forage_model import predict_forage_scores, train_forage_model
+from ranch_ai.models.model_store import WorkspaceModelStore
 from ranch_ai.models.stress_model import predict_stress_class, train_stress_model
 from ranch_ai.optimization.recommendations import generate_recommendations
 
@@ -15,6 +16,7 @@ class TrainingArtifacts:
     forage_metrics: dict[str, float]
     stress_metrics: dict[str, float | str]
     selected_forage_model: str
+    model_storage_summary: dict[str, object]
 
 
 def apply_ranchiq_scores(df: pd.DataFrame) -> pd.DataFrame:
@@ -41,13 +43,32 @@ def apply_ranchiq_scores(df: pd.DataFrame) -> pd.DataFrame:
     return scored
 
 
-def train_and_score(df: pd.DataFrame, random_state: int = 42) -> TrainingArtifacts:
+def train_and_score(
+    df: pd.DataFrame,
+    random_state: int = 42,
+    model_store: WorkspaceModelStore | None = None,
+) -> TrainingArtifacts:
     scored = df.copy()
 
-    forage_artifacts = train_forage_model(scored, random_state=random_state)
-    scored["predicted_forage_score"] = predict_forage_scores(forage_artifacts, scored)
+    stored_bundle = model_store.load_matching(scored, random_state=random_state) if model_store is not None else None
+    if stored_bundle is not None:
+        forage_artifacts = stored_bundle.forage_artifacts
+        stress_artifacts = stored_bundle.stress_artifacts
+        model_storage_summary = model_store.summary(status="loaded", metadata=stored_bundle.metadata) if model_store is not None else {"status": "loaded"}
+    else:
+        forage_artifacts = train_forage_model(scored, random_state=random_state)
+        stress_artifacts = train_stress_model(scored.assign(predicted_forage_score=predict_forage_scores(forage_artifacts, scored)), random_state=random_state)
+        model_storage_summary = {"enabled": False, "status": "trained"}
+        if model_store is not None:
+            metadata = model_store.save(
+                scored,
+                random_state=random_state,
+                forage_artifacts=forage_artifacts,
+                stress_artifacts=stress_artifacts,
+            )
+            model_storage_summary = model_store.summary(status="trained", metadata=metadata)
 
-    stress_artifacts = train_stress_model(scored, random_state=random_state)
+    scored["predicted_forage_score"] = predict_forage_scores(forage_artifacts, scored)
     scored["predicted_stress_class"] = predict_stress_class(stress_artifacts, scored)
     scored = apply_ranchiq_scores(scored)
 
@@ -60,4 +81,5 @@ def train_and_score(df: pd.DataFrame, random_state: int = 42) -> TrainingArtifac
         forage_metrics=forage_artifacts.metrics,
         stress_metrics=stress_artifacts.metrics,
         selected_forage_model=forage_artifacts.selected_model_name,
+        model_storage_summary=model_storage_summary,
     )

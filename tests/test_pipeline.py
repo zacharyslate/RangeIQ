@@ -1,3 +1,6 @@
+import copy
+
+from ranch_ai.config import settings
 from ranch_ai.pipeline import run_mvp_pipeline
 
 
@@ -37,6 +40,7 @@ def test_pipeline_produces_required_columns():
     assert artifacts.training_dataset_summary["sensor_data_enabled"] is False
     assert artifacts.training_dataset_summary["public_feature_count"] > 0
     assert artifacts.sensor_readings.empty
+    assert artifacts.model_storage_summary["status"] in {"trained", "loaded"}
 
 
 def test_pipeline_recommendations_are_valid():
@@ -50,3 +54,33 @@ def test_pipeline_recommendations_are_valid():
     }
     assert set(artifacts.latest_snapshot["recommendation"]).issubset(valid_recommendations)
     assert artifacts.vegetation_history["month_start"].nunique() == 60
+
+
+def test_pipeline_persists_models_per_workspace(tmp_path):
+    runtime_settings = copy.deepcopy(settings)
+    runtime_settings.workspace_user_data_root = tmp_path / "workspaces"
+
+    first_run = run_mvp_pipeline(
+        weeks=12,
+        seed=42,
+        write_outputs=False,
+        app_settings=runtime_settings,
+        workspace_id="user-demo-models",
+    )
+    model_dir = runtime_settings.workspace_model_dir_for("user-demo-models")
+
+    assert first_run.model_storage_summary["status"] == "trained"
+    assert (model_dir / "metadata.json").exists()
+    assert (model_dir / "forage_model.pkl").exists()
+    assert (model_dir / "stress_model.pkl").exists()
+
+    second_run = run_mvp_pipeline(
+        weeks=12,
+        seed=42,
+        write_outputs=False,
+        app_settings=runtime_settings,
+        workspace_id="user-demo-models",
+    )
+
+    assert second_run.model_storage_summary["status"] == "loaded"
+    assert second_run.selected_forage_model == first_run.selected_forage_model

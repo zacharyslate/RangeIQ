@@ -14,6 +14,7 @@ from ranch_ai.features.training_dataset import build_training_dataset
 from ranch_ai.data.soil import generate_synthetic_soil_profiles
 from ranch_ai.data.weather import build_week_index, generate_synthetic_weather
 from ranch_ai.features.engineering import build_weekly_table, engineer_pasture_features
+from ranch_ai.models.model_store import WorkspaceModelStore
 from ranch_ai.models.public_data_schema import PublicDataBundle
 from ranch_ai.models.training import TrainingArtifacts, train_and_score
 from ranch_ai.reports.monthly_report import MonthlyReportArtifacts, build_monthly_ranch_report
@@ -35,6 +36,7 @@ class MvpArtifacts:
     selected_forage_model: str
     public_data_bundle: PublicDataBundle
     training_dataset_summary: dict[str, object]
+    model_storage_summary: dict[str, object]
 
 
 def build_synthetic_dataset(
@@ -99,6 +101,7 @@ def run_mvp_pipeline(
     seed: int | None = None,
     write_outputs: bool = True,
     app_settings: Settings = settings,
+    workspace_id: str | None = None,
 ) -> MvpArtifacts:
     pastures, weekly_data, sensor_df, vegetation_history_df = build_synthetic_dataset(
         pasture_path=pasture_path,
@@ -119,7 +122,16 @@ def run_mvp_pipeline(
     training_dataset_artifacts = build_training_dataset(weekly_data, public_data_bundle, app_settings=app_settings)
     weekly_data = training_dataset_artifacts.dataset
 
-    training_artifacts: TrainingArtifacts = train_and_score(weekly_data, random_state=seed or app_settings.random_seed)
+    model_store = WorkspaceModelStore(
+        app_settings.workspace_model_dir_for(workspace_id) if workspace_id else None,
+        workspace_id=workspace_id,
+        enabled=bool(workspace_id),
+    )
+    training_artifacts: TrainingArtifacts = train_and_score(
+        weekly_data,
+        random_state=seed or app_settings.random_seed,
+        model_store=model_store,
+    )
 
     scored_data = training_artifacts.scored_data.sort_values(["pasture_id", "week_start"]).reset_index(drop=True)
     latest_week = scored_data["week_start"].max()
@@ -164,4 +176,5 @@ def run_mvp_pipeline(
         selected_forage_model=training_artifacts.selected_forage_model,
         public_data_bundle=public_data_bundle,
         training_dataset_summary=training_dataset_artifacts.summary,
+        model_storage_summary=training_artifacts.model_storage_summary,
     )
