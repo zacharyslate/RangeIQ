@@ -50,5 +50,7 @@ Next steps:
    sudo systemctl enable --now rangeiq
 5. Check logs:
    sudo journalctl -u rangeiq -f
+6. For repeat deploys later:
+   bash ${APP_DIR}/deploy/ubuntu/update_rangeiq.sh
 
 EOF

@@ -130,6 +130,53 @@ Then put a reverse proxy in front of it. With Caddy, use [Caddyfile.example](</C
 
 This is safer than exposing Streamlit directly because the app is not bound to the public interface.
 
+### Auto Deploy From GitHub
+
+RangeIQ can now redeploy itself to the Droplet automatically whenever `main` is updated.
+
+Workflow file:
+
+- [.github/workflows/deploy-droplet.yml](</C:/Users/zacha/OneDrive/Documents/New project 2/.github/workflows/deploy-droplet.yml>)
+
+Server update helper:
+
+- [update_rangeiq.sh](</C:/Users/zacha/OneDrive/Documents/New project 2/deploy/ubuntu/update_rangeiq.sh>)
+
+GitHub repository secrets to add:
+
+- `DROPLET_HOST`
+  - Example: `138.197.143.23`
+- `DROPLET_USER`
+  - Recommended first setup: `root`
+- `DROPLET_SSH_PRIVATE_KEY`
+  - The private key GitHub Actions should use to SSH into the Droplet
+- `DROPLET_SSH_PORT`
+  - Optional; defaults to `22`
+
+Recommended flow:
+
+1. Use an SSH key that already has login access to the Droplet, or create a dedicated deploy key pair.
+2. Put the private key into the GitHub repository secret `DROPLET_SSH_PRIVATE_KEY`.
+3. Make sure the matching public key is present in the target server user's `~/.ssh/authorized_keys`.
+4. Keep the app checkout at `/opt/rangeiq`, because the workflow deploys there by default.
+5. Push to `main`, or manually run the `Deploy Droplet` workflow from the GitHub Actions tab.
+
+What the workflow does:
+
+- SSH into the Droplet
+- run `deploy/ubuntu/update_rangeiq.sh`
+- `git pull --ff-only origin main`
+- refresh the editable install in `/opt/rangeiq/.venv`
+- restart `rangeiq.service`
+- print the latest service logs
+
+Manual fallback on the server:
+
+```bash
+cd /opt/rangeiq
+bash deploy/ubuntu/update_rangeiq.sh
+```
+
 ## Vegetation History
 
 RangeIQ now combines two different vegetation signals:

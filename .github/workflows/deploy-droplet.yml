@@ -1,0 +1,52 @@
+name: Deploy Droplet
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: rangeiq-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to DigitalOcean
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate deploy secrets
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          DROPLET_USER: ${{ secrets.DROPLET_USER }}
+          DROPLET_SSH_PRIVATE_KEY: ${{ secrets.DROPLET_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${DROPLET_HOST}"
+          test -n "${DROPLET_USER}"
+          test -n "${DROPLET_SSH_PRIVATE_KEY}"
+
+      - name: Prepare SSH
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          DROPLET_PORT: ${{ secrets.DROPLET_SSH_PORT }}
+          DROPLET_SSH_PRIVATE_KEY: ${{ secrets.DROPLET_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          PORT="${DROPLET_PORT:-22}"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${DROPLET_SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${PORT}" -H "${DROPLET_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Run remote deploy
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          DROPLET_PORT: ${{ secrets.DROPLET_SSH_PORT }}
+          DROPLET_USER: ${{ secrets.DROPLET_USER }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          PORT="${DROPLET_PORT:-22}"
+          ssh -p "${PORT}" "${DROPLET_USER}@${DROPLET_HOST}" \
+            "cd /opt/rangeiq && DEPLOY_COMMIT='${GITHUB_SHA}' bash deploy/ubuntu/update_rangeiq.sh"
