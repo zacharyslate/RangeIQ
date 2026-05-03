@@ -67,6 +67,26 @@ Recommended publish flow:
 3. Deploy it from GitHub to Streamlit Community Cloud
 4. Add any optional API keys or secrets in the Streamlit deployment settings, not in the repo
 
+Current hosted deploy settings:
+
+- GitHub repo: `zacharyslate/RangeIQ`
+- Branch: `main`
+- Main file path: `streamlit_app.py`
+
+Streamlit Community Cloud checklist:
+
+1. Open [Streamlit Community Cloud](https://share.streamlit.io/) and create a new app
+2. Select repository `zacharyslate/RangeIQ`
+3. Select branch `main`
+4. Set the entrypoint to `streamlit_app.py`
+5. Add any optional secrets only if you decide to enable non-mock providers later
+6. Deploy
+
+Useful official references:
+
+- [Deploy your app on Streamlit Community Cloud](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy)
+- [Manage app secrets](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management)
+
 ## Vegetation History
 
 RangeIQ now combines two different vegetation signals:
