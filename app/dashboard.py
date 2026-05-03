@@ -47,6 +47,7 @@ from ranch_ai.visualization.plots import (
 
 LIGHT_THEME = {
     "name": "High Plains Day",
+    "color_scheme": "light",
     "background": "#f4ecdf",
     "background_alt": "#efe2cd",
     "app_background": """
@@ -90,6 +91,7 @@ LIGHT_THEME = {
 
 DARK_THEME = {
     "name": "Mesquite Night",
+    "color_scheme": "dark",
     "background": "#091423",
     "background_alt": "#16263a",
     "app_background": """
@@ -514,14 +516,28 @@ def apply_app_theme(theme: dict[str, object]) -> None:
             --rq-shadow: {theme['shadow']};
             --rq-info: {theme['info_bg']};
         }}
+        html, body {{
+            color-scheme: {theme['color_scheme']};
+        }}
         .stApp {{
             background: {theme['app_background']};
             color: var(--rq-text);
+            color-scheme: {theme['color_scheme']};
+        }}
+        [data-testid="stAppViewContainer"],
+        [data-testid="stSidebar"] {{
+            color-scheme: {theme['color_scheme']};
         }}
         [data-testid="stAppViewContainer"] > .main .block-container {{
             padding-top: 1rem;
             padding-bottom: 2rem;
             max-width: 1480px;
+        }}
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"],
+        #MainMenu {{
+            display: none !important;
         }}
         [data-testid="stVerticalBlock"] {{
             gap: 0.9rem;
@@ -615,10 +631,47 @@ def apply_app_theme(theme: dict[str, object]) -> None:
         .stTextInput div[data-baseweb="input"] > div,
         .stMultiSelect div[data-baseweb="select"] > div,
         .stDateInput > div > div,
-        .stTextArea textarea {{
-            background: var(--rq-card);
-            border: 1px solid var(--rq-border);
-            color: var(--rq-text);
+        .stTextArea textarea,
+        .stTextInput input,
+        .stNumberInput input,
+        .stDateInput input,
+        .stTextArea textarea,
+        .stMultiSelect input,
+        div[data-baseweb="select"] input,
+        div[data-baseweb="select"] span {{
+            background: var(--rq-card) !important;
+            border: 1px solid var(--rq-border) !important;
+            color: var(--rq-text) !important;
+            -webkit-text-fill-color: var(--rq-text) !important;
+            box-shadow: none !important;
+        }}
+        .stTextInput input::placeholder,
+        .stNumberInput input::placeholder,
+        .stDateInput input::placeholder,
+        .stTextArea textarea::placeholder,
+        .stMultiSelect input::placeholder,
+        div[data-baseweb="select"] input::placeholder {{
+            color: var(--rq-muted) !important;
+            -webkit-text-fill-color: var(--rq-muted) !important;
+            opacity: 0.9 !important;
+        }}
+        div[data-baseweb="select"] svg,
+        .stDateInput svg,
+        .stMultiSelect svg,
+        .stNumberInput svg,
+        .stTextInput svg {{
+            fill: var(--rq-muted) !important;
+            color: var(--rq-muted) !important;
+        }}
+        div[data-baseweb="select"] *:focus,
+        div[data-baseweb="input"] *:focus,
+        .stTextArea textarea:focus,
+        .stTextInput input:focus,
+        .stNumberInput input:focus,
+        .stDateInput input:focus,
+        .stMultiSelect input:focus {{
+            border-color: var(--rq-accent-3) !important;
+            box-shadow: 0 0 0 1px var(--rq-accent-3) !important;
         }}
         .stButton > button,
         .stDownloadButton > button {{
