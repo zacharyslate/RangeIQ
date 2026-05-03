@@ -29,7 +29,7 @@ if str(SRC_DIR) not in sys.path:
 
 from ranch_ai.config import Settings, normalize_workspace_id, save_settings_file, settings
 from ranch_ai.pipeline import MvpArtifacts, run_mvp_pipeline
-from ranch_ai.services import AlertService, WeatherService, assess_fire_risk
+from ranch_ai.services import AlertService, AuthError, AuthService, AuthUser, WeatherService, assess_fire_risk
 from ranch_ai.visualization.plots import (
     plot_condition_scores,
     plot_forage_trend,
@@ -214,6 +214,13 @@ BASE_SESSION_DEFAULTS = {
     "low_soil_moisture_pct": settings.fire_risk.low_soil_moisture_pct,
 }
 
+AUTH_SESSION_KEYS = {
+    "auth_user_id",
+    "auth_email",
+    "auth_full_name",
+    "auth_workspace_id",
+}
+
 
 def load_dashboard_state(path: Path | None = None) -> dict[str, Any]:
     state_path = path or settings.dashboard_state_path
@@ -253,8 +260,15 @@ def load_saved_boundary_from_state(state: dict[str, Any]) -> tuple[str | None, b
         return None, None, "default"
 
 
-def session_defaults_for_state(state: dict[str, Any]) -> dict[str, Any]:
+def session_defaults_for_state(state: dict[str, Any], auth_user: AuthUser | None = None) -> dict[str, Any]:
     defaults = dict(BASE_SESSION_DEFAULTS)
+    if auth_user is not None:
+        defaults["ranch_name"] = auth_user.ranch_name
+        defaults["ranch_address"] = auth_user.ranch_address
+        if auth_user.ranch_latitude is not None:
+            defaults["ranch_lat"] = auth_user.ranch_latitude
+        if auth_user.ranch_longitude is not None:
+            defaults["ranch_lon"] = auth_user.ranch_longitude
     for persisted_key, persisted_value in state.get("session_state", {}).items():
         if persisted_key in defaults:
             defaults[persisted_key] = persisted_value
@@ -277,7 +291,106 @@ def get_logo_path(mode: str) -> Path:
     return FALLBACK_LOGO_PATH
 
 
-def resolve_workspace_id() -> str:
+def sign_in_user(user: AuthUser) -> None:
+    st.session_state["auth_user_id"] = user.user_id
+    st.session_state["auth_email"] = user.email
+    st.session_state["auth_full_name"] = user.full_name
+    st.session_state["auth_workspace_id"] = user.workspace_id
+
+
+def sign_out_user() -> None:
+    for key in AUTH_SESSION_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state.pop("_loaded_workspace_id", None)
+    st.session_state.pop("workspace_id", None)
+    st.query_params.clear()
+
+
+def get_authenticated_user(auth_service: AuthService) -> AuthUser | None:
+    user_id = str(st.session_state.get("auth_user_id", "") or "").strip()
+    if not user_id:
+        return None
+    user = auth_service.get_user_by_id(user_id)
+    if user is None:
+        sign_out_user()
+        return None
+    sign_in_user(user)
+    return user
+
+
+def render_auth_gate(auth_service: AuthService) -> AuthUser:
+    current_user = get_authenticated_user(auth_service)
+    if current_user is not None:
+        return current_user
+
+    st.title("RangeIQ Access")
+    st.caption(
+        "Create an account to keep your ranch boundary, settings, and latest RangeIQ setup private to you. "
+        "Each account gets its own saved ranch workspace."
+    )
+    if LIGHT_LOGO_PATH.exists() or DARK_LOGO_PATH.exists() or FALLBACK_LOGO_PATH.exists():
+        st.image(str(LIGHT_LOGO_PATH if LIGHT_LOGO_PATH.exists() else FALLBACK_LOGO_PATH), width=280)
+
+    login_tab, signup_tab = st.tabs(["Log In", "Create Account"])
+
+    with login_tab:
+        with st.form("rangeiq_login_form", clear_on_submit=False):
+            login_email = st.text_input("Email", key="login_email")
+            login_password = st.text_input("Password", type="password", key="login_password")
+            login_submitted = st.form_submit_button("Log In")
+
+        if login_submitted:
+            try:
+                user = auth_service.authenticate_user(email=login_email, password=login_password)
+            except AuthError as exc:
+                st.error(str(exc))
+            else:
+                sign_in_user(user)
+                st.query_params["workspace"] = user.workspace_id
+                st.rerun()
+
+    with signup_tab:
+        with st.form("rangeiq_signup_form", clear_on_submit=False):
+            signup_name = st.text_input("Your Name", key="signup_name")
+            signup_email = st.text_input("Email", key="signup_email")
+            signup_password = st.text_input("Password", type="password", key="signup_password")
+            signup_password_confirm = st.text_input("Confirm Password", type="password", key="signup_password_confirm")
+            signup_ranch_name = st.text_input("Ranch Name", value=settings.ranch.name, key="signup_ranch_name")
+            signup_ranch_address = st.text_input("Ranch Address", value=settings.ranch.address, key="signup_ranch_address")
+            signup_lat = st.number_input("Latitude", value=float(settings.ranch.latitude), format="%.6f", key="signup_ranch_lat")
+            signup_lon = st.number_input("Longitude", value=float(settings.ranch.longitude), format="%.6f", key="signup_ranch_lon")
+            signup_submitted = st.form_submit_button("Create Account")
+
+        if signup_submitted:
+            if signup_password != signup_password_confirm:
+                st.error("Passwords do not match.")
+            else:
+                try:
+                    user = auth_service.create_user(
+                        email=signup_email,
+                        password=signup_password,
+                        full_name=signup_name,
+                        ranch_name=signup_ranch_name,
+                        ranch_address=signup_ranch_address,
+                        ranch_latitude=float(signup_lat),
+                        ranch_longitude=float(signup_lon),
+                    )
+                except AuthError as exc:
+                    st.error(str(exc))
+                else:
+                    sign_in_user(user)
+                    st.query_params["workspace"] = user.workspace_id
+                    st.rerun()
+
+    st.stop()
+
+
+def resolve_workspace_id(auth_user: AuthUser | None = None) -> str:
+    if auth_user is not None:
+        normalized = normalize_workspace_id(auth_user.workspace_id, fallback=f"user-{auth_user.user_id[:8]}")
+        if st.query_params.get("workspace") != normalized:
+            st.query_params["workspace"] = normalized
+        return normalized
     raw_value = st.query_params.get("workspace", "")
     if isinstance(raw_value, list):
         raw_value = raw_value[0] if raw_value else ""
@@ -306,10 +419,12 @@ def initialize_session_state(workspace_id: str, session_defaults: dict[str, Any]
 page_icon_path = ICON_PATH if ICON_PATH.exists() else FALLBACK_ICON_PATH
 PAGE_ICON = Image.open(page_icon_path) if page_icon_path.exists() else None
 st.set_page_config(page_title=f"{settings.app_name} | Operational Dashboard", page_icon=PAGE_ICON, layout="wide")
-CURRENT_WORKSPACE_ID = resolve_workspace_id()
+AUTH_SERVICE = AuthService(settings.auth_db_path)
+CURRENT_USER = render_auth_gate(AUTH_SERVICE)
+CURRENT_WORKSPACE_ID = resolve_workspace_id(CURRENT_USER)
 WORKSPACE_STATE_PATH = settings.workspace_state_path_for(CURRENT_WORKSPACE_ID)
 PERSISTED_DASHBOARD_STATE = load_dashboard_state(WORKSPACE_STATE_PATH)
-SESSION_DEFAULTS = session_defaults_for_state(PERSISTED_DASHBOARD_STATE)
+SESSION_DEFAULTS = session_defaults_for_state(PERSISTED_DASHBOARD_STATE, CURRENT_USER)
 initialize_session_state(CURRENT_WORKSPACE_ID, SESSION_DEFAULTS)
 
 
@@ -1668,7 +1783,8 @@ with data_tab:
     st.subheader("Mock / Real Mode Indicator")
     st.json(
         {
-            "workspace_id": st.session_state.workspace_id,
+            "workspace_id": CURRENT_WORKSPACE_ID,
+            "account_email": CURRENT_USER.email,
             "weather_mode": weather_bundle.mode,
             "alerts_mode": alert_bundle.mode,
             "sensors_mode": "under_development",
@@ -1698,20 +1814,20 @@ with data_tab:
     )
 
 with settings_tab:
-    st.subheader("Workspace")
-    workspace_cols = st.columns([1.3, 0.7], gap="medium")
-    workspace_cols[0].text_input("Workspace ID", key="workspace_id")
-    with workspace_cols[1]:
+    st.subheader("Account")
+    account_cols = st.columns([1.2, 1.2, 0.8], gap="medium")
+    with account_cols[0]:
+        st.markdown(f"**Signed in as**  \n{CURRENT_USER.full_name}")
+        st.caption(CURRENT_USER.email)
+    with account_cols[1]:
+        st.markdown(f"**Private workspace**  \n`{CURRENT_WORKSPACE_ID}`")
+        st.caption("This account's ranch files and saved settings reopen here after login.")
+    with account_cols[2]:
         st.write("")
         st.write("")
-        if st.button("Open Workspace"):
-            target_workspace_id = normalize_workspace_id(st.session_state.workspace_id, fallback=f"workspace-{uuid4().hex[:8]}")
-            st.query_params["workspace"] = target_workspace_id
+        if st.button("Log Out"):
+            sign_out_user()
             st.rerun()
-    st.caption(
-        "Each workspace keeps its own saved settings and uploaded boundary. "
-        "Bookmark the current page URL after saving if you want to reopen the same workspace later."
-    )
 
     st.subheader("Ranch Settings")
     ranch_cols = st.columns(2)
@@ -1783,7 +1899,7 @@ with settings_tab:
     with save_cols[0]:
         if st.button("Save Current Setup"):
             current_runtime_settings = build_runtime_settings()
-            target_workspace_id = normalize_workspace_id(st.session_state.workspace_id, fallback=CURRENT_WORKSPACE_ID)
+            target_workspace_id = CURRENT_WORKSPACE_ID
             st.query_params["workspace"] = target_workspace_id
             dashboard_state_payload = build_dashboard_state_payload(
                 current_runtime_settings,
@@ -1796,21 +1912,29 @@ with settings_tab:
                 dashboard_state_payload,
                 path=current_runtime_settings.workspace_state_path_for(target_workspace_id),
             )
+            updated_user = AUTH_SERVICE.update_user_profile(
+                CURRENT_USER.user_id,
+                ranch_name=current_runtime_settings.ranch.name,
+                ranch_address=current_runtime_settings.ranch.address,
+                ranch_latitude=current_runtime_settings.ranch.latitude,
+                ranch_longitude=current_runtime_settings.ranch.longitude,
+            )
+            sign_in_user(updated_user)
             saved_boundary_notice = "No custom boundary was saved; RangeIQ will reopen on the default corners."
             if dashboard_state_payload.get("saved_boundary", {}).get("path"):
                 saved_boundary_notice = (
                     f"Saved boundary file: {dashboard_state_payload['saved_boundary']['filename']}"
                 )
             st.success(
-                f"Workspace {target_workspace_id} saved to {saved_state_path}. {saved_boundary_notice} "
-                "Bookmark this workspace URL to reopen the same setup later."
+                f"Account settings saved to {saved_state_path}. {saved_boundary_notice} "
+                "Log back into this account later to reopen the same ranch setup."
             )
     with save_cols[1]:
         boundary_save_mode = "current upload" if boundary_mode == "uploaded" else "saved boundary" if boundary_mode == "saved" else "default corners"
         st.markdown(
-            f"Current workspace: **{st.session_state.workspace_id}**. "
+            f"Current workspace: **{CURRENT_WORKSPACE_ID}**. "
             f"Reopen state: **{boundary_save_mode}**. "
-            f"Providers, ranch name/address/GPS, map settings, time horizon, and thresholds are saved per workspace."
+            "Providers, ranch name/address/GPS, map settings, time horizon, and thresholds are saved to this account."
         )
 
     st.subheader("Current Effective Config")

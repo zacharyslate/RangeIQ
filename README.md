@@ -47,7 +47,23 @@ On Windows you can launch with [Launch RangeIQ.cmd](</C:/Users/zacha/OneDrive/Do
 
 Boundary uploads in the dashboard now accept `GeoJSON`, `JSON`, `KML`, and `KMZ`.
 
-To keep your setup between launches, open the `Settings` tab and click `Save Current Setup`. RangeIQ now saves settings and uploaded boundaries per `Workspace ID`, so different users can keep separate setups without overwriting one another. Bookmark the current URL after saving if you want the same workspace to reopen later.
+## Accounts and saved ranch data
+
+RangeIQ now supports account-based sign up and log in inside the Streamlit app.
+
+Each account gets:
+
+- a private saved ranch workspace
+- its own uploaded boundary files
+- its own saved provider settings and ranch configuration
+
+Current MVP behavior:
+
+- users sign up with name, email, password, ranch name, and ranch location
+- account data is stored locally on the server in a SQLite database
+- saved settings and uploaded `KML` / `KMZ` / `GeoJSON` files reopen for that account after login
+
+To keep your setup between launches, open the `Settings` tab and click `Save Current Setup`. RangeIQ now saves settings and uploaded boundaries to the signed-in account instead of relying on a public workspace URL alone.
 
 ## GitHub And Launch Prep
 

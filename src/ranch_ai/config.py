@@ -322,6 +322,7 @@ class Settings:
     vegetation_cache_dir: Path = PROJECT_ROOT / "data" / "cache" / "vegetation"
     user_data_dir: Path = PROJECT_ROOT / "data" / "user"
     config_dir: Path = PROJECT_ROOT / "config"
+    auth_db_path: Path = PROJECT_ROOT / "data" / "processed" / "rangeiq_auth.sqlite"
     api_source_config_path: Path = PROJECT_ROOT / "config" / "api_sources.yaml"
     dashboard_state_path: Path = PROJECT_ROOT / "config" / "dashboard_state.json"
     workspace_profile_root: Path = PROJECT_ROOT / "config" / "workspaces"
