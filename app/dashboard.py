@@ -627,35 +627,60 @@ def apply_app_theme(theme: dict[str, object]) -> None:
         }}
         div[data-baseweb="select"] > div,
         div[data-baseweb="input"] > div,
+        div[data-baseweb="base-input"] > div,
         .stNumberInput div[data-baseweb="input"] > div,
+        .stNumberInput div[data-baseweb="base-input"] > div,
         .stTextInput div[data-baseweb="input"] > div,
+        .stTextInput div[data-baseweb="base-input"] > div,
         .stMultiSelect div[data-baseweb="select"] > div,
         .stDateInput > div > div,
         .stTextArea textarea,
+        input,
+        textarea,
+        select,
         .stTextInput input,
         .stNumberInput input,
         .stDateInput input,
         .stTextArea textarea,
         .stMultiSelect input,
+        div[data-baseweb="base-input"] input,
         div[data-baseweb="select"] input,
         div[data-baseweb="select"] span {{
             background: var(--rq-card) !important;
             border: 1px solid var(--rq-border) !important;
             color: var(--rq-text) !important;
             -webkit-text-fill-color: var(--rq-text) !important;
+            caret-color: var(--rq-text) !important;
             box-shadow: none !important;
+        }}
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover,
+        input:-webkit-autofill:focus,
+        textarea:-webkit-autofill,
+        textarea:-webkit-autofill:hover,
+        textarea:-webkit-autofill:focus,
+        select:-webkit-autofill,
+        select:-webkit-autofill:hover,
+        select:-webkit-autofill:focus {{
+            -webkit-text-fill-color: var(--rq-text) !important;
+            caret-color: var(--rq-text) !important;
+            -webkit-box-shadow: 0 0 0 1000px var(--rq-card) inset !important;
+            box-shadow: 0 0 0 1000px var(--rq-card) inset !important;
+            transition: background-color 9999s ease-in-out 0s !important;
         }}
         .stTextInput input::placeholder,
         .stNumberInput input::placeholder,
         .stDateInput input::placeholder,
         .stTextArea textarea::placeholder,
         .stMultiSelect input::placeholder,
+        div[data-baseweb="base-input"] input::placeholder,
         div[data-baseweb="select"] input::placeholder {{
             color: var(--rq-muted) !important;
             -webkit-text-fill-color: var(--rq-muted) !important;
             opacity: 0.9 !important;
         }}
         div[data-baseweb="select"] svg,
+        div[data-baseweb="base-input"] svg,
         .stDateInput svg,
         .stMultiSelect svg,
         .stNumberInput svg,
@@ -665,7 +690,11 @@ def apply_app_theme(theme: dict[str, object]) -> None:
         }}
         div[data-baseweb="select"] *:focus,
         div[data-baseweb="input"] *:focus,
+        div[data-baseweb="base-input"] *:focus,
         .stTextArea textarea:focus,
+        input:focus,
+        textarea:focus,
+        select:focus,
         .stTextInput input:focus,
         .stNumberInput input:focus,
         .stDateInput input:focus,
