@@ -49,4 +49,15 @@ jobs:
           set -euo pipefail
           PORT="${DROPLET_PORT:-22}"
           ssh -p "${PORT}" "${DROPLET_USER}@${DROPLET_HOST}" \
-            "cd /opt/rangeiq && DEPLOY_COMMIT='${GITHUB_SHA}' bash deploy/ubuntu/update_rangeiq.sh"
+            "set -euo pipefail; \
+             APP_DIR='/opt/rangeiq'; \
+             APP_USER='rangeiq'; \
+             SERVICE_NAME='rangeiq'; \
+             echo '==> Deploy target commit: ${GITHUB_SHA}'; \
+             sudo -u \"${APP_USER}\" git -C \"${APP_DIR}\" fetch origin; \
+             sudo -u \"${APP_USER}\" git -C \"${APP_DIR}\" checkout main; \
+             sudo -u \"${APP_USER}\" git -C \"${APP_DIR}\" pull --ff-only origin main; \
+             sudo -u \"${APP_USER}\" \"${APP_DIR}/.venv/bin/pip\" install -e \"${APP_DIR}\"; \
+             sudo systemctl restart \"${SERVICE_NAME}\"; \
+             sudo systemctl is-active --quiet \"${SERVICE_NAME}\"; \
+             sudo journalctl -u \"${SERVICE_NAME}\" -n 20 --no-pager"

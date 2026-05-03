@@ -164,11 +164,11 @@ Recommended flow:
 What the workflow does:
 
 - SSH into the Droplet
-- run `deploy/ubuntu/update_rangeiq.sh`
 - `git pull --ff-only origin main`
 - refresh the editable install in `/opt/rangeiq/.venv`
 - restart `rangeiq.service`
 - print the latest service logs
+- keep the same steps available manually through [update_rangeiq.sh](</C:/Users/zacha/OneDrive/Documents/New project 2/deploy/ubuntu/update_rangeiq.sh>)
 
 Manual fallback on the server:
 
