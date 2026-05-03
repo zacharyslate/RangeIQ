@@ -1706,7 +1706,6 @@ with settings_tab:
         st.write("")
         if st.button("Open Workspace"):
             target_workspace_id = normalize_workspace_id(st.session_state.workspace_id, fallback=f"workspace-{uuid4().hex[:8]}")
-            st.session_state.workspace_id = target_workspace_id
             st.query_params["workspace"] = target_workspace_id
             st.rerun()
     st.caption(
@@ -1785,7 +1784,6 @@ with settings_tab:
         if st.button("Save Current Setup"):
             current_runtime_settings = build_runtime_settings()
             target_workspace_id = normalize_workspace_id(st.session_state.workspace_id, fallback=CURRENT_WORKSPACE_ID)
-            st.session_state.workspace_id = target_workspace_id
             st.query_params["workspace"] = target_workspace_id
             dashboard_state_payload = build_dashboard_state_payload(
                 current_runtime_settings,
