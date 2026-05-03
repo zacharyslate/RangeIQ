@@ -13,6 +13,9 @@ pytest-cache-files-*/
 *.pyo
 *.pyd
 *.lnk
+
+# Accidental nested GitHub Desktop stub repo
+RangeIQ/
 rangeiq-git-data/
 data/cache/
 data/processed/*
