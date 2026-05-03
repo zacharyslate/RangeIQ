@@ -6,6 +6,18 @@ ranch:
   timezone: "America/Chicago"
   units: "imperial"
 
+ranch_profile:
+  ranch_type: "mixed livestock ranch"
+  management_style: "not sure"
+  primary_goals:
+    - "general land monitoring"
+  rotates_animals: false
+  preferred_unit_term: "management unit"
+  default_unit_type: "pasture"
+  livestock_species:
+    - "cattle"
+  notes: ""
+
 weather:
   provider: "openmeteo"
   refresh_minutes: 30

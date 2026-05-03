@@ -16,6 +16,10 @@ def test_save_settings_file_round_trips_config_values(tmp_path):
     runtime_settings = copy.deepcopy(settings)
     runtime_settings.ranch.name = "Saved Ranch"
     runtime_settings.ranch.address = "123 Ranch Road"
+    runtime_settings.ranch_profile.ranch_type = "horse property"
+    runtime_settings.ranch_profile.management_style = "horse turnout"
+    runtime_settings.ranch_profile.primary_goals = ["manage horse turnout", "monitor bare ground"]
+    runtime_settings.ranch_profile.livestock_species = ["horses"]
     runtime_settings.public_data.vegetation.provider = "earth_search_stac"
     runtime_settings.sensors.csv_path = str(runtime_settings.project_root / "data" / "sensors" / "sensor_readings.csv")
 
@@ -25,6 +29,10 @@ def test_save_settings_file_round_trips_config_values(tmp_path):
 
     assert reloaded.ranch.name == "Saved Ranch"
     assert reloaded.ranch.address == "123 Ranch Road"
+    assert reloaded.ranch_profile.ranch_type == "horse property"
+    assert reloaded.ranch_profile.management_style == "horse turnout"
+    assert reloaded.ranch_profile.primary_goals == ["manage horse turnout", "monitor bare ground"]
+    assert reloaded.ranch_profile.livestock_species == ["horses"]
     assert reloaded.public_data.vegetation.provider == "earth_search_stac"
 
 

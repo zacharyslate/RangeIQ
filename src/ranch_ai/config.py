@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from ranch_ai.models.ranch_domain import RanchProfile
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,14 +39,29 @@ def _coerce_scalar(raw_value: str) -> Any:
 def _simple_yaml_load(text: str) -> dict[str, Any]:
     """Parse a minimal subset of YAML for nested key/value configuration."""
     root: dict[str, Any] = {}
-    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    stack: list[tuple[int, Any]] = [(-1, root)]
+    lines = text.splitlines()
 
-    for raw_line in text.splitlines():
+    def _next_relevant_line(start_index: int) -> tuple[int, str] | None:
+        for next_index in range(start_index + 1, len(lines)):
+            candidate = lines[next_index]
+            if not candidate.strip() or candidate.lstrip().startswith("#"):
+                continue
+            next_indent = len(candidate) - len(candidate.lstrip(" "))
+            return next_indent, candidate.strip()
+        return None
+
+    for index, raw_line in enumerate(lines):
         if not raw_line.strip() or raw_line.lstrip().startswith("#"):
             continue
 
         indent = len(raw_line) - len(raw_line.lstrip(" "))
         stripped = raw_line.strip()
+        if stripped.startswith("- "):
+            parent = stack[-1][1]
+            if isinstance(parent, list):
+                parent.append(_coerce_scalar(stripped[2:]))
+            continue
         if ":" not in stripped:
             continue
 
@@ -57,7 +74,12 @@ def _simple_yaml_load(text: str) -> dict[str, Any]:
 
         parent = stack[-1][1]
         if not raw_value:
-            nested: dict[str, Any] = {}
+            next_line = _next_relevant_line(index)
+            nested: Any = {}
+            if next_line is not None:
+                next_indent, next_stripped = next_line
+                if next_indent > indent and next_stripped.startswith("- "):
+                    nested = []
             parent[key] = nested
             stack.append((indent, nested))
         else:
@@ -348,6 +370,7 @@ class Settings:
     app_name: str = "RangeIQ"
     pilot_name: str = "RangeIQ - Ranch Intelligence Pilot"
     ranch: RanchConfig = field(default_factory=RanchConfig)
+    ranch_profile: RanchProfile = field(default_factory=RanchProfile)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     sensors: SensorsConfig = field(default_factory=SensorsConfig)
@@ -444,6 +467,7 @@ def _relative_to_project_or_string(path_value: str | Path, project_root: Path) -
 def settings_to_config_payload(app_settings: Settings) -> dict[str, Any]:
     payload = {
         "ranch": _serialize(app_settings.ranch),
+        "ranch_profile": _serialize(app_settings.ranch_profile),
         "weather": _serialize(app_settings.weather),
         "alerts": _serialize(app_settings.alerts),
         "sensors": _serialize(app_settings.sensors),

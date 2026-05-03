@@ -38,6 +38,17 @@ def _copy_model_artifacts(source_dir: Path, destination_dir: Path) -> list[str]:
     return copied
 
 
+def _portable_relative_path(path: Path, *, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def _bundle_path(bundle_root: Path, relative_value: str | Path) -> Path:
+    text = str(relative_value).strip()
+    if not text:
+        return bundle_root
+    return bundle_root / Path(text.replace("\\", "/"))
+
+
 def _build_runtime_settings_for_manifest(base_settings: Settings, manifest: dict[str, Any]) -> Settings:
     runtime_settings = copy.deepcopy(base_settings)
     ranch_payload = manifest.get("ranch", {})
@@ -247,16 +258,16 @@ def create_pretrained_workspace_bundle(
         },
         "boundary": {
             "filename": copied_boundary.name,
-            "relative_path": str(copied_boundary.relative_to(bundle_root)),
+            "relative_path": _portable_relative_path(copied_boundary, root=bundle_root),
         },
         "models": {
-            "relative_dir": str(models_dir.relative_to(bundle_root)),
+            "relative_dir": _portable_relative_path(models_dir, root=bundle_root),
             "files": copied_models,
         },
         "reports": {
-            "latest_snapshot_csv": str(latest_snapshot_path.relative_to(bundle_root)),
-            "monthly_report_csv": str(monthly_report_csv_path.relative_to(bundle_root)),
-            "monthly_report_md": str(monthly_report_md_path.relative_to(bundle_root)),
+            "latest_snapshot_csv": _portable_relative_path(latest_snapshot_path, root=bundle_root),
+            "monthly_report_csv": _portable_relative_path(monthly_report_csv_path, root=bundle_root),
+            "monthly_report_md": _portable_relative_path(monthly_report_md_path, root=bundle_root),
         },
         "training": {
             "pasture_count": int(len(artifacts.pastures)),
@@ -319,7 +330,7 @@ def apply_pretrained_workspace_bundle(
     workspace_id = updated_user.workspace_id
 
     boundary_payload = manifest.get("boundary", {})
-    boundary_source = bundle_root / str(boundary_payload.get("relative_path", ""))
+    boundary_source = _bundle_path(bundle_root, boundary_payload.get("relative_path", ""))
     if not boundary_source.exists():
         raise FileNotFoundError(f"Bundle boundary file was not found: {boundary_source}")
     boundary_suffix = boundary_source.suffix.lower() or ".geojson"
@@ -332,7 +343,7 @@ def apply_pretrained_workspace_bundle(
     shutil.copy2(boundary_source, boundary_destination)
 
     models_payload = manifest.get("models", {})
-    model_source_dir = bundle_root / str(models_payload.get("relative_dir", "models"))
+    model_source_dir = _bundle_path(bundle_root, models_payload.get("relative_dir", "models"))
     copied_models = _copy_model_artifacts(model_source_dir, app_settings.workspace_model_dir_for(workspace_id))
 
     runtime_settings = _build_runtime_settings_for_manifest(app_settings, manifest)
