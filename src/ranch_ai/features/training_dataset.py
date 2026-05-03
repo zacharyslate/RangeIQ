@@ -25,8 +25,9 @@ def _aggregate_public_weather_weekly(history_df: pd.DataFrame) -> pd.DataFrame:
             public_humidity_7d_pct=("public_humidity_pct", "mean"),
             public_wind_speed_7d_mph=("public_wind_speed_mph", "mean"),
         )
-        .round(3)
     )
+    numeric_columns = [column for column in weekly.columns if column != "week_start"]
+    weekly[numeric_columns] = weekly[numeric_columns].round(3)
     return weekly
 
 

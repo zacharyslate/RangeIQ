@@ -5,4 +5,4 @@ import runpy
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-runpy.run_path(PROJECT_ROOT / "app" / "dashboard.py", run_name="__main__")
+runpy.run_path(str(PROJECT_ROOT / "app" / "dashboard.py"), run_name="__main__")
