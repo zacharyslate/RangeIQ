@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import copy
 import html
 import json
@@ -850,6 +851,36 @@ def apply_app_theme(theme: dict[str, object]) -> None:
             padding: 1rem 1.05rem;
             box-shadow: 0 10px 24px var(--rq-shadow);
         }}
+        .rq-brand-banner {{
+            display: grid;
+            grid-template-columns: minmax(96px, 132px) 1fr;
+            gap: 1rem;
+            align-items: center;
+            min-height: 100%;
+        }}
+        .rq-brand-mark {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.28), transparent 55%), var(--rq-card);
+            border: 1px solid var(--rq-border);
+            border-radius: 24px;
+            min-height: 118px;
+            padding: 0.8rem;
+        }}
+        .rq-brand-logo {{
+            width: 100%;
+            max-width: 108px;
+            height: auto;
+            object-fit: contain;
+            filter: drop-shadow(0 8px 18px rgba(0,0,0,0.12));
+        }}
+        .rq-brand-copy {{
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-width: 0;
+        }}
         .rq-hero-card {{
             min-height: 100%;
             display: flex;
@@ -869,6 +900,19 @@ def apply_app_theme(theme: dict[str, object]) -> None:
             font-weight: 700;
             line-height: 1.05;
             margin-bottom: 0.45rem;
+        }}
+        .rq-brand-title {{
+            color: var(--rq-accent);
+            font-size: clamp(1.8rem, 2vw, 2.45rem);
+            font-weight: 750;
+            line-height: 1.02;
+            margin-bottom: 0.3rem;
+            text-wrap: balance;
+        }}
+        .rq-brand-meta {{
+            color: var(--rq-muted);
+            font-size: 0.94rem;
+            line-height: 1.5;
         }}
         .rq-hero-meta {{
             color: var(--rq-muted);
@@ -929,6 +973,31 @@ def apply_app_theme(theme: dict[str, object]) -> None:
             color: var(--rq-muted);
             font-size: 0.9rem;
         }}
+        .rq-control-kicker {{
+            color: var(--rq-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            font-size: 0.74rem;
+            margin-bottom: 0.28rem;
+        }}
+        .rq-control-title {{
+            color: var(--rq-accent);
+            font-size: 1.15rem;
+            font-weight: 700;
+            margin-bottom: 0.2rem;
+        }}
+        .rq-control-copy {{
+            color: var(--rq-muted);
+            font-size: 0.9rem;
+            line-height: 1.45;
+            margin-bottom: 0.7rem;
+        }}
+        .rq-section-intro {{
+            color: var(--rq-muted);
+            font-size: 0.95rem;
+            line-height: 1.55;
+            margin-bottom: 0.55rem;
+        }}
         .rq-table-wrap {{
             background: linear-gradient(180deg, var(--rq-card) 0%, var(--rq-card-alt) 100%);
             border: 1px solid var(--rq-border);
@@ -961,6 +1030,15 @@ def apply_app_theme(theme: dict[str, object]) -> None:
         }}
         .rq-table tr:last-child td {{
             border-bottom: none;
+        }}
+        @media (max-width: 980px) {{
+            .rq-brand-banner {{
+                grid-template-columns: 1fr;
+            }}
+            .rq-brand-mark {{
+                min-height: 96px;
+                max-width: 140px;
+            }}
         }}
         </style>
         """,
@@ -1104,6 +1182,19 @@ def render_data_table(df: pd.DataFrame) -> None:
     st.markdown(f"<div class='rq-table-wrap'>{table_html}</div>", unsafe_allow_html=True)
 
 
+def image_data_uri(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    suffix = path.suffix.lower()
+    mime = "image/png"
+    if suffix == ".svg":
+        mime = "image/svg+xml"
+    elif suffix == ".ico":
+        mime = "image/x-icon"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
 def render_dashboard_header(
     runtime_settings: Settings,
     last_updated: pd.Timestamp,
@@ -1111,6 +1202,7 @@ def render_dashboard_header(
     pasture_count: int,
     boundary_mode: str,
     map_basemap: str,
+    logo_path: Path,
 ) -> None:
     pasture_label = "1 pasture" if pasture_count == 1 else f"{pasture_count} pastures"
     boundary_badge = highlight_badge("info", "DEFAULT BOUNDARY")
@@ -1119,15 +1211,25 @@ def render_dashboard_header(
     elif boundary_mode == "saved":
         boundary_badge = highlight_badge("success", "SAVED BOUNDARY")
     basemap_badge = highlight_badge("info", f"{MAP_BASEMAP_LABELS.get(map_basemap, map_basemap).upper()} MAP")
+    logo_uri = image_data_uri(logo_path)
+    logo_html = (
+        f"<div class='rq-brand-mark'><img class='rq-brand-logo' src='{logo_uri}' alt='RangeIQ logo' /></div>"
+        if logo_uri
+        else ""
+    )
     st.markdown(
         (
-            "<div class='rq-card rq-hero-card'>"
+            "<div class='rq-card rq-brand-banner'>"
+            f"{logo_html}"
+            "<div class='rq-brand-copy'>"
             f"<div class='rq-hero-kicker'>{html.escape(runtime_settings.pilot_name)}</div>"
-            f"<div class='rq-hero-title'>{html.escape(runtime_settings.ranch.name)}</div>"
-            f"<div class='rq-hero-meta'>{html.escape(runtime_settings.ranch.address)}</div>"
-            f"<div class='rq-hero-meta'>{runtime_settings.ranch.latitude:.4f}, {runtime_settings.ranch.longitude:.4f} | "
-            f"{pasture_label} | {total_acres:,.1f} acres | Updated {last_updated.strftime('%Y-%m-%d %H:%M')}</div>"
+            f"<div class='rq-brand-title'>{html.escape(runtime_settings.ranch.name)}</div>"
+            f"<div class='rq-brand-meta'>{html.escape(runtime_settings.ranch.address)}</div>"
+            f"<div class='rq-brand-meta'>{runtime_settings.ranch.latitude:.4f}, {runtime_settings.ranch.longitude:.4f} | "
+            f"{pasture_label} | {total_acres:,.1f} acres</div>"
+            f"<div class='rq-brand-meta'>Updated {last_updated.strftime('%Y-%m-%d %H:%M')}</div>"
             f"<div style='margin-top:0.8rem'>{boundary_badge}{basemap_badge}</div>"
+            "</div>"
             "</div>"
         ),
         unsafe_allow_html=True,
@@ -1549,14 +1651,6 @@ def render_station_cards(status_df: pd.DataFrame) -> None:
 theme = get_theme(st.session_state.theme_mode)
 apply_app_theme(theme)
 
-theme_bar_cols = st.columns([1.2, 1.8], gap="medium")
-with theme_bar_cols[0]:
-    st.radio("Color Mode", options=["High Plains Day", "Mesquite Night"], key="theme_mode", horizontal=True)
-with theme_bar_cols[1]:
-    st.caption(
-        "RangeIQ display mode now lives at the top of the dashboard. Boundary uploads, scenario controls, and model details live in Settings."
-    )
-
 home_tab, sensors_tab, sensor_network_tab, pastures_tab, data_tab, settings_tab = st.tabs(
     ["Home", "Sensors", "Sensor Network", "Pastures", "Data", "Settings"]
 )
@@ -1654,12 +1748,9 @@ vegetation_source_status = next(
     None,
 )
 
-header_logo_col, header_meta_col = st.columns([1.05, 1], gap="medium")
-with header_logo_col:
+top_shell_cols = st.columns([1.45, 0.78], gap="medium")
+with top_shell_cols[0]:
     logo_path = get_logo_path(st.session_state.theme_mode)
-    if logo_path.exists():
-        st.image(str(logo_path), width=360)
-with header_meta_col:
     render_dashboard_header(
         runtime_settings=runtime_settings,
         last_updated=last_updated,
@@ -1667,7 +1758,23 @@ with header_meta_col:
         pasture_count=pasture_count,
         boundary_mode=boundary_mode,
         map_basemap=st.session_state.map_basemap,
+        logo_path=logo_path,
     )
+with top_shell_cols[1]:
+    st.markdown("<div class='rq-control-kicker'>Display</div>", unsafe_allow_html=True)
+    st.markdown("<div class='rq-control-title'>Appearance</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='rq-control-copy'>Switch between a warm daylight field view and a darker low-glare operations mode.</div>",
+        unsafe_allow_html=True,
+    )
+    st.segmented_control(
+        "Color Mode",
+        options=["High Plains Day", "Mesquite Night"],
+        key="theme_mode",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+    st.caption("Boundary uploads, scenario controls, and model diagnostics live in Settings.")
 
 with home_tab:
     if boundary_mode == "default":
@@ -2092,134 +2199,155 @@ with data_tab:
     )
 
 with settings_tab:
-    st.subheader("Account")
-    account_cols = st.columns([1.2, 1.2, 0.8], gap="medium")
-    with account_cols[0]:
-        st.markdown(f"**Signed in as**  \n{CURRENT_USER.full_name}")
-        st.caption(CURRENT_USER.email)
-    with account_cols[1]:
-        st.markdown(f"**Private workspace**  \n`{CURRENT_WORKSPACE_ID}`")
-        st.caption("This account's ranch files and saved settings reopen here after login.")
-    with account_cols[2]:
-        st.write("")
-        st.write("")
-        if st.button("Log Out"):
-            sign_out_user()
-            st.rerun()
-
-    st.subheader("Ranch Settings")
-    ranch_cols = st.columns(2)
-    ranch_cols[0].text_input("Ranch Name", key="ranch_name")
-    ranch_cols[1].text_input("Ranch Address", key="ranch_address")
-    ranch_cols = st.columns(3)
-    ranch_cols[0].number_input("Latitude", format="%.6f", key="ranch_lat")
-    ranch_cols[1].number_input("Longitude", format="%.6f", key="ranch_lon")
-    ranch_cols[2].text_input("Timezone", key="ranch_timezone")
-    st.selectbox("Units", options=["imperial"], key="ranch_units")
-    st.selectbox(
-        "Map Basemap",
-        options=list(MAP_BASEMAP_LABELS.keys()),
-        key="map_basemap",
-        format_func=lambda value: MAP_BASEMAP_LABELS[value],
+    st.markdown(
+        "<div class='rq-section-intro'>Use this control center to tune the ranch profile, public-data mix, alert thresholds, and saved workspace behavior.</div>",
+        unsafe_allow_html=True,
     )
-    st.caption(
-        "USGS NAIP aerial imagery is the best free ranch-view option for small Texas properties. "
-        "Plain keeps the ranch polygon visible even when you are offline."
+    workspace_settings_tab, provider_settings_tab, safety_settings_tab, diagnostics_settings_tab = st.tabs(
+        ["Workspace", "Providers", "Risk & Save", "Diagnostics"]
     )
 
-    st.subheader("Provider Settings")
-    provider_cols = st.columns(2)
-    provider_cols[0].selectbox("Weather Provider", options=["mock", "nws", "openmeteo"], key="weather_provider")
-    provider_cols[1].selectbox("Alert Provider", options=["mock", "nws"], key="alerts_provider")
-    st.caption("Sensor provider settings are temporarily hidden while the sensor stack is under development.")
-
-    st.subheader("Public Data Providers")
-    public_provider_cols = st.columns(3)
-    public_provider_cols[0].selectbox("Historical Weather", options=["mock", "nasa_power"], key="historical_weather_provider")
-    public_provider_cols[1].selectbox("Soils", options=["mock", "usda_sda"], key="soils_provider")
-    public_provider_cols[2].selectbox("Drought", options=["mock", "usdm"], key="drought_provider")
-    cache_cols = st.columns(5)
-    cache_cols[0].toggle("Enable Public Cache", key="public_cache_enabled")
-    cache_cols[1].number_input("Weather Refresh (h)", min_value=1, step=12, key="historical_weather_refresh_hours")
-    cache_cols[2].number_input("Soils Refresh (h)", min_value=1, step=24, key="soils_refresh_hours")
-    cache_cols[3].number_input("Drought Refresh (h)", min_value=1, step=12, key="drought_refresh_hours")
-    cache_cols[4].number_input("Vegetation Refresh (h)", min_value=1, step=24, key="vegetation_refresh_hours")
-    public_provider_cols = st.columns(1)
-    public_provider_cols[0].selectbox("Vegetation", options=["mock", "earth_search_stac", "climate_engine"], key="vegetation_provider")
-    st.caption(
-        "Public historical sources are cached on disk so RangeIQ can reuse them offline and avoid unnecessary refreshes. "
-        "Vegetation history now combines Earth Search STAC NDVI with RAP. Earth Search STAC is the default live NDVI source, "
-        "and Climate Engine remains optional. If live vegetation providers fail, RangeIQ falls back to mock history."
-    )
-
-    st.subheader("Sensors")
-    st.info(
-        "Sensor monitoring and sensor-network controls are currently under development. "
-        "They are paused in the hosted dashboard while we improve performance and finish the next implementation pass."
-    )
-
-    st.subheader("Fire Risk Thresholds")
-    fire_cols = st.columns(3)
-    fire_cols[0].number_input("High Wind (mph)", min_value=5, step=1, key="high_wind_mph")
-    fire_cols[1].number_input("High Gust (mph)", min_value=10, step=1, key="high_gust_mph")
-    fire_cols[2].number_input("Low Humidity (%)", min_value=5, max_value=60, step=1, key="low_humidity_pct")
-    fire_cols = st.columns(3)
-    fire_cols[0].number_input("High Temperature (F)", min_value=60, max_value=120, step=1, key="high_temperature_f")
-    fire_cols[1].number_input("Low Rainfall 7d (in)", min_value=0.0, max_value=2.0, step=0.01, format="%.2f", key="low_rainfall_7d_in")
-    fire_cols[2].number_input("Low Soil Moisture (%)", min_value=1, max_value=50, step=1, key="low_soil_moisture_pct")
-
-    st.subheader("Save This Setup")
-    st.caption(
-        "Save writes your current ranch settings to `config.yaml` and remembers the current uploaded boundary file "
-        "so RangeIQ can reopen with the same setup next time."
-    )
-    save_cols = st.columns([1, 2], gap="medium")
-    with save_cols[0]:
-        if st.button("Save Current Setup"):
-            current_runtime_settings = build_runtime_settings()
-            target_workspace_id = CURRENT_WORKSPACE_ID
-            st.query_params["workspace"] = target_workspace_id
-            dashboard_state_payload = build_dashboard_state_payload(
-                current_runtime_settings,
-                workspace_id=target_workspace_id,
-                boundary_filename=effective_boundary_name,
-                boundary_bytes=effective_boundary_bytes,
-                existing_state=PERSISTED_DASHBOARD_STATE,
-            )
-            saved_state_path = save_dashboard_state(
-                dashboard_state_payload,
-                path=current_runtime_settings.workspace_state_path_for(target_workspace_id),
-            )
-            updated_user = AUTH_SERVICE.update_user_profile(
-                CURRENT_USER.user_id,
-                ranch_name=current_runtime_settings.ranch.name,
-                ranch_address=current_runtime_settings.ranch.address,
-                ranch_latitude=current_runtime_settings.ranch.latitude,
-                ranch_longitude=current_runtime_settings.ranch.longitude,
-            )
-            sign_in_user(updated_user)
-            saved_boundary_notice = "No custom boundary was saved; RangeIQ will reopen on the default corners."
-            if dashboard_state_payload.get("saved_boundary", {}).get("path"):
-                saved_boundary_notice = (
-                    f"Saved boundary file: {dashboard_state_payload['saved_boundary']['filename']}"
-                )
-            st.success(
-                f"Account settings saved to {saved_state_path}. {saved_boundary_notice} "
-                "Log back into this account later to reopen the same ranch setup."
-            )
-    with save_cols[1]:
+    with workspace_settings_tab:
         boundary_save_mode = "current upload" if boundary_mode == "uploaded" else "saved boundary" if boundary_mode == "saved" else "default corners"
-        st.markdown(
-            f"Current workspace: **{CURRENT_WORKSPACE_ID}**. "
-            f"Reopen state: **{boundary_save_mode}**. "
-            "Providers, ranch name/address/GPS, map settings, time horizon, and thresholds are saved to this account."
+        account_cols = st.columns([1, 1, 0.8], gap="medium")
+        with account_cols[0]:
+            render_signal_card(
+                title="Account",
+                value=CURRENT_USER.full_name,
+                subtitle=CURRENT_USER.email,
+                badges=[highlight_badge("info", "SIGNED IN")],
+            )
+        with account_cols[1]:
+            render_signal_card(
+                title="Workspace",
+                value="Private",
+                subtitle=f"{CURRENT_WORKSPACE_ID} | Reopens with {boundary_save_mode}.",
+                badges=[highlight_badge("success", "PERSISTED")],
+            )
+        with account_cols[2]:
+            st.markdown("<div class='rq-control-kicker'>Session</div>", unsafe_allow_html=True)
+            st.markdown("<div class='rq-control-title'>Access</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div class='rq-control-copy'>Sign out here if you want to switch ranch accounts on this device.</div>",
+                unsafe_allow_html=True,
+            )
+            if st.button("Log Out"):
+                sign_out_user()
+                st.rerun()
+
+        st.subheader("Ranch Profile")
+        ranch_cols = st.columns(2)
+        ranch_cols[0].text_input("Ranch Name", key="ranch_name")
+        ranch_cols[1].text_input("Ranch Address", key="ranch_address")
+        ranch_cols = st.columns(3)
+        ranch_cols[0].number_input("Latitude", format="%.6f", key="ranch_lat")
+        ranch_cols[1].number_input("Longitude", format="%.6f", key="ranch_lon")
+        ranch_cols[2].text_input("Timezone", key="ranch_timezone")
+        st.selectbox("Units", options=["imperial"], key="ranch_units")
+        st.selectbox(
+            "Map Basemap",
+            options=list(MAP_BASEMAP_LABELS.keys()),
+            key="map_basemap",
+            format_func=lambda value: MAP_BASEMAP_LABELS[value],
+        )
+        st.caption(
+            "USGS NAIP aerial imagery is the best free ranch-view option for small Texas properties. "
+            "Plain keeps the ranch polygon visible even when you are offline."
         )
 
-    st.subheader("Current Effective Config")
-    preview_settings = build_runtime_settings()
-    st.json(preview_settings.to_display_dict())
+    with provider_settings_tab:
+        st.subheader("Operational Providers")
+        provider_cols = st.columns(2)
+        provider_cols[0].selectbox("Weather Provider", options=["mock", "nws", "openmeteo"], key="weather_provider")
+        provider_cols[1].selectbox("Alert Provider", options=["mock", "nws"], key="alerts_provider")
 
-    with st.expander("AI Model Window"):
-        st.write(f"Selected forage regressor: `{artifacts.selected_forage_model}`")
-        st.json(artifacts.model_metrics["forage_model"])
-        st.text(artifacts.model_metrics["stress_model"]["report"])
+        st.subheader("Public Data Providers")
+        public_provider_cols = st.columns(3)
+        public_provider_cols[0].selectbox("Historical Weather", options=["mock", "nasa_power"], key="historical_weather_provider")
+        public_provider_cols[1].selectbox("Soils", options=["mock", "usda_sda"], key="soils_provider")
+        public_provider_cols[2].selectbox("Drought", options=["mock", "usdm"], key="drought_provider")
+        cache_cols = st.columns(5)
+        cache_cols[0].toggle("Enable Public Cache", key="public_cache_enabled")
+        cache_cols[1].number_input("Weather Refresh (h)", min_value=1, step=12, key="historical_weather_refresh_hours")
+        cache_cols[2].number_input("Soils Refresh (h)", min_value=1, step=24, key="soils_refresh_hours")
+        cache_cols[3].number_input("Drought Refresh (h)", min_value=1, step=12, key="drought_refresh_hours")
+        cache_cols[4].number_input("Vegetation Refresh (h)", min_value=1, step=24, key="vegetation_refresh_hours")
+        st.selectbox("Vegetation", options=["mock", "earth_search_stac", "climate_engine"], key="vegetation_provider")
+        st.caption(
+            "Public historical sources are cached on disk so RangeIQ can reuse them offline and avoid unnecessary refreshes. "
+            "Vegetation history now combines Earth Search STAC NDVI with RAP. Earth Search STAC is the default live NDVI source, "
+            "and Climate Engine remains optional. If live vegetation providers fail, RangeIQ falls back to mock history."
+        )
+
+        st.subheader("Sensor Stack")
+        st.info(
+            "Sensor monitoring and sensor-network controls are currently under development. "
+            "They are paused in the hosted dashboard while we improve performance and finish the next implementation pass."
+        )
+
+    with safety_settings_tab:
+        st.subheader("Fire Risk Thresholds")
+        fire_cols = st.columns(3)
+        fire_cols[0].number_input("High Wind (mph)", min_value=5, step=1, key="high_wind_mph")
+        fire_cols[1].number_input("High Gust (mph)", min_value=10, step=1, key="high_gust_mph")
+        fire_cols[2].number_input("Low Humidity (%)", min_value=5, max_value=60, step=1, key="low_humidity_pct")
+        fire_cols = st.columns(3)
+        fire_cols[0].number_input("High Temperature (F)", min_value=60, max_value=120, step=1, key="high_temperature_f")
+        fire_cols[1].number_input("Low Rainfall 7d (in)", min_value=0.0, max_value=2.0, step=0.01, format="%.2f", key="low_rainfall_7d_in")
+        fire_cols[2].number_input("Low Soil Moisture (%)", min_value=1, max_value=50, step=1, key="low_soil_moisture_pct")
+
+        st.subheader("Save This Setup")
+        st.caption(
+            "Save writes your current ranch settings to `config.yaml` and remembers the current uploaded boundary file "
+            "so RangeIQ can reopen with the same setup next time."
+        )
+        save_cols = st.columns([1, 2], gap="medium")
+        with save_cols[0]:
+            if st.button("Save Current Setup"):
+                current_runtime_settings = build_runtime_settings()
+                target_workspace_id = CURRENT_WORKSPACE_ID
+                st.query_params["workspace"] = target_workspace_id
+                dashboard_state_payload = build_dashboard_state_payload(
+                    current_runtime_settings,
+                    workspace_id=target_workspace_id,
+                    boundary_filename=effective_boundary_name,
+                    boundary_bytes=effective_boundary_bytes,
+                    existing_state=PERSISTED_DASHBOARD_STATE,
+                )
+                saved_state_path = save_dashboard_state(
+                    dashboard_state_payload,
+                    path=current_runtime_settings.workspace_state_path_for(target_workspace_id),
+                )
+                updated_user = AUTH_SERVICE.update_user_profile(
+                    CURRENT_USER.user_id,
+                    ranch_name=current_runtime_settings.ranch.name,
+                    ranch_address=current_runtime_settings.ranch.address,
+                    ranch_latitude=current_runtime_settings.ranch.latitude,
+                    ranch_longitude=current_runtime_settings.ranch.longitude,
+                )
+                sign_in_user(updated_user)
+                saved_boundary_notice = "No custom boundary was saved; RangeIQ will reopen on the default corners."
+                if dashboard_state_payload.get("saved_boundary", {}).get("path"):
+                    saved_boundary_notice = (
+                        f"Saved boundary file: {dashboard_state_payload['saved_boundary']['filename']}"
+                    )
+                st.success(
+                    f"Account settings saved to {saved_state_path}. {saved_boundary_notice} "
+                    "Log back into this account later to reopen the same ranch setup."
+                )
+        with save_cols[1]:
+            st.markdown(
+                f"Current workspace: **{CURRENT_WORKSPACE_ID}**. "
+                f"Reopen state: **{boundary_save_mode}**. "
+                "Providers, ranch name/address/GPS, map settings, time horizon, and thresholds are saved to this account."
+            )
+
+    with diagnostics_settings_tab:
+        st.subheader("Current Effective Config")
+        preview_settings = build_runtime_settings()
+        st.json(preview_settings.to_display_dict())
+
+        with st.expander("AI Model Window"):
+            st.write(f"Selected forage regressor: `{artifacts.selected_forage_model}`")
+            st.json(artifacts.model_metrics["forage_model"])
+            st.text(artifacts.model_metrics["stress_model"]["report"])
