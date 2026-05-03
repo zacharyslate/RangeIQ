@@ -1,0 +1,134 @@
+[
+  {
+    "station_id": "NP1",
+    "timestamp": "2026-04-26T18:00:00",
+    "values": {
+      "air_temp_f": 81.69,
+      "humidity_pct": 44.14,
+      "pressure_hpa": 1001.03,
+      "rainfall_in": 0.0,
+      "soil_moisture_10cm": 14.08,
+      "soil_moisture_30cm": 18.82,
+      "soil_moisture_60cm": 20.52,
+      "soil_temp_f": 74.76,
+      "battery_voltage": 3.97,
+      "solar_voltage": 5.41,
+      "rssi": -94.2,
+      "snr": 9.12,
+      "hop_count": 1,
+      "notes": "Dry ridge profile."
+    },
+    "packet_format": "compact_json",
+    "firmware_version": "rangeiq-mock-0.1"
+  },
+  {
+    "station_id": "WT1",
+    "timestamp": "2026-04-26T18:00:00",
+    "values": {
+      "air_temp_f": 82.92,
+      "humidity_pct": 46.99,
+      "pressure_hpa": 1013.32,
+      "rainfall_in": 0.0,
+      "soil_moisture_10cm": 18.34,
+      "soil_moisture_30cm": 19.84,
+      "soil_moisture_60cm": 23.58,
+      "soil_temp_f": 76.33,
+      "water_tank_pct": 12.43,
+      "trough_level_pct": 6.37,
+      "battery_voltage": 3.29,
+      "solar_voltage": 5.34,
+      "rssi": -97.8,
+      "snr": 5.18,
+      "hop_count": 1
+    },
+    "packet_format": "pipe_delimited",
+    "firmware_version": ""
+  },
+  {
+    "station_id": "WX1",
+    "timestamp": "2026-04-26T18:00:00",
+    "values": {
+      "air_temp_f": 81.11,
+      "humidity_pct": 42.03,
+      "pressure_hpa": 1012.27,
+      "rainfall_in": 0.0,
+      "soil_temp_f": 75.74,
+      "battery_voltage": 3.96,
+      "solar_voltage": 5.32,
+      "rssi": -93.4,
+      "snr": 4.49,
+      "hop_count": 1,
+      "notes": "Primary weather station."
+    },
+    "packet_format": "compact_json",
+    "firmware_version": "rangeiq-mock-0.1"
+  },
+  {
+    "station_id": "RLY1",
+    "timestamp": "2026-04-26T18:00:00",
+    "values": {
+      "air_temp_f": null,
+      "humidity_pct": null,
+      "pressure_hpa": null,
+      "rainfall_in": null,
+      "soil_moisture_10cm": null,
+      "soil_moisture_30cm": null,
+      "soil_moisture_60cm": null,
+      "soil_temp_f": null,
+      "water_tank_pct": null,
+      "trough_level_pct": null,
+      "battery_voltage": 3.78,
+      "solar_voltage": 5.61,
+      "rssi": -119.6,
+      "snr": 2.0,
+      "hop_count": 0
+    },
+    "packet_format": "pipe_delimited",
+    "firmware_version": ""
+  },
+  {
+    "station_id": "NP1",
+    "timestamp": "2026-04-26T17:00:00",
+    "values": {
+      "air_temp_f": 83.67,
+      "humidity_pct": 26.05,
+      "pressure_hpa": 1006.28,
+      "rainfall_in": 0.0,
+      "soil_moisture_10cm": 14.43,
+      "soil_moisture_30cm": 17.14,
+      "soil_moisture_60cm": 21.23,
+      "soil_temp_f": 77.67,
+      "battery_voltage": 3.93,
+      "solar_voltage": 5.24,
+      "rssi": -90.4,
+      "snr": 6.14,
+      "hop_count": 1,
+      "notes": "Dry ridge profile."
+    },
+    "packet_format": "compact_json",
+    "firmware_version": "rangeiq-mock-0.1"
+  },
+  {
+    "station_id": "WT1",
+    "timestamp": "2026-04-26T17:00:00",
+    "values": {
+      "air_temp_f": 87.7,
+      "humidity_pct": 38.49,
+      "pressure_hpa": 1010.51,
+      "rainfall_in": 0.0,
+      "soil_moisture_10cm": 18.47,
+      "soil_moisture_30cm": 19.38,
+      "soil_moisture_60cm": 23.49,
+      "soil_temp_f": 81.34,
+      "water_tank_pct": 12.68,
+      "trough_level_pct": 6.43,
+      "battery_voltage": 3.29,
+      "solar_voltage": 5.33,
+      "rssi": -102.7,
+      "snr": 8.33,
+      "hop_count": 1
+    },
+    "packet_format": "pipe_delimited",
+    "firmware_version": ""
+  }
+]

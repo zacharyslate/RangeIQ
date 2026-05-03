@@ -1,0 +1,106 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "pasture_id": "P-101",
+        "name": "North Flats",
+        "acres": 185
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-99.423, 32.436],
+            [-99.411, 32.436],
+            [-99.411, 32.446],
+            [-99.423, 32.446],
+            [-99.423, 32.436]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "pasture_id": "P-102",
+        "name": "Mesquite East",
+        "acres": 210
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-99.399, 32.429],
+            [-99.386, 32.429],
+            [-99.386, 32.439],
+            [-99.399, 32.439],
+            [-99.399, 32.429]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "pasture_id": "P-103",
+        "name": "Cottonwood Draw",
+        "acres": 165
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-99.419, 32.404],
+            [-99.406, 32.404],
+            [-99.406, 32.414],
+            [-99.419, 32.414],
+            [-99.419, 32.404]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "pasture_id": "P-104",
+        "name": "West Trap",
+        "acres": 142
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-99.447, 32.418],
+            [-99.435, 32.418],
+            [-99.435, 32.428],
+            [-99.447, 32.428],
+            [-99.447, 32.418]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "pasture_id": "P-105",
+        "name": "South Creek",
+        "acres": 236
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-99.394, 32.392],
+            [-99.379, 32.392],
+            [-99.379, 32.404],
+            [-99.394, 32.404],
+            [-99.394, 32.392]
+          ]
+        ]
+      }
+    }
+  ]
+}
+

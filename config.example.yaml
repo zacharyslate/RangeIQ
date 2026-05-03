@@ -1,0 +1,115 @@
+ranch:
+  name: "Caja Caliente"
+  address: "711 N Scotty Road, Alpine, TX 79830"
+  latitude: 29.606333
+  longitude: -103.509750
+  timezone: "America/Chicago"
+  units: "imperial"
+
+weather:
+  provider: "mock"
+  refresh_minutes: 30
+  user_agent: "RangeIQ/0.1 (contact@example.com)"
+  timeout_seconds: 10
+
+alerts:
+  provider: "mock"
+  refresh_minutes: 15
+  timeout_seconds: 10
+
+sensors:
+  provider: "csv"
+  csv_path: "data/sensors/sensor_readings.csv"
+  expected_interval_minutes: 60
+  stale_after_minutes: 180
+  offline_after_minutes: 720
+  low_battery_voltage: 3.5
+  low_signal_threshold: -110
+  mock_days: 14
+
+sensor_network:
+  enabled: true
+  mode: "mock"
+  expected_interval_minutes: 60
+  stale_after_minutes: 180
+  offline_after_minutes: 720
+  sqlite_path: "data/processed/rangeiq_sensor_network.sqlite"
+  station_registry_path: "data/sensors/station_registry.example.yaml"
+
+meshtastic:
+  region: "US"
+  frequency_band: "915MHz"
+  channel_name: "RangeIQ-Telemetry"
+  use_private_channel: true
+  mqtt:
+    enabled: false
+    host: "localhost"
+    port: 1883
+    root_topic: "msh/US/2/json"
+    channel_topic: "RangeIQ-Telemetry"
+    username: ""
+    password: ""
+  serial:
+    enabled: false
+    port: "/dev/ttyUSB0"
+    baudrate: 115200
+
+thresholds:
+  low_battery_voltage: 3.5
+  low_signal_rssi: -115
+  low_soil_moisture_pct: 15
+  low_water_tank_pct: 25
+
+fire_risk:
+  high_wind_mph: 20
+  high_gust_mph: 30
+  low_humidity_pct: 25
+  high_temperature_f: 90
+  low_rainfall_7d_in: 0.1
+  low_soil_moisture_pct: 15
+
+public_data:
+  enabled: true
+  cache_enabled: true
+  historical_weather:
+    provider: "mock"  # mock, nasa_power
+    timeout_seconds: 20
+    refresh_hours: 168
+  soils:
+    provider: "mock"  # mock, usda_sda
+    timeout_seconds: 20
+    refresh_hours: 720
+  drought:
+    provider: "mock"  # mock, usdm
+    timeout_seconds: 20
+    refresh_hours: 48
+  vegetation:
+    provider: "earth_search_stac"  # mock, earth_search_stac, climate_engine, appeears
+    timeout_seconds: 30
+    refresh_hours: 336
+    ndvi_refresh_hours: 168
+    rap_refresh_hours: 720
+    cache_ttl_days: 30
+    earth_search_stac_url: "https://earth-search.aws.element84.com/v1"
+    ndvi_default_collection: "sentinel-2-l2a"
+    ndvi_cloud_cover_max: 30
+    ndvi_temporal_aggregation: "monthly_median"
+    earth_search_max_items: 240
+    climate_engine_api_key_env: "CLIMATE_ENGINE_API_KEY"
+    appeears_username_env: "APPEEARS_USERNAME"
+    appeears_password_env: "APPEEARS_PASSWORD"
+    climate_engine_base_url: "https://geodata.dri.edu"
+    climate_engine_dataset: "SENTINEL2"
+    climate_engine_variable: "NDVI"
+    climate_engine_area_reducer: "mean"
+    rap_cover_url: "https://us-central1-rap-data-365417.cloudfunctions.net/coverV3"
+    rap_cover_meteorology_url: "https://us-central1-rap-data-365417.cloudfunctions.net/coverMeteorologyV3"
+    rap_production_url: "https://us-central1-rap-data-365417.cloudfunctions.net/productionV3"
+    rap_production_16day_url: "https://us-central1-rap-data-365417.cloudfunctions.net/production16dayV3"
+    max_aoi_acres: 500000
+    notes: "RangeIQ combines short-term NDVI greenness from Earth Search STAC / Sentinel-2 with long-term RAP cover and production history."
+
+training:
+  use_public_data: true
+  use_sensor_data: true
+  minimum_training_weeks: 12

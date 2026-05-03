@@ -1,0 +1,184 @@
+api_sources:
+  nws:
+    enabled: true
+    requires_key: false
+    access_level: "free_open_government"
+    commercial_safe: true
+    citation_url: "https://www.weather.gov/documentation/services-web-api"
+    user_agent: "RangeIQ/0.1 (contact@example.com)"
+    accept: "application/geo+json"
+    timeout_seconds: 10
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 1
+
+  open_meteo:
+    enabled: true
+    requires_key: false
+    access_level: "no_key_free_noncommercial"
+    commercial_safe: false
+    citation_url: "https://open-meteo.com/en/pricing"
+    warning: "Free Open-Meteo access is appropriate for evaluation, prototyping, and development. Production/commercial use needs a commercial license/API key."
+    endpoint_url: "https://api.open-meteo.com/v1/forecast"
+    timeout_seconds: 10
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 1
+
+  nasa_power:
+    enabled: true
+    requires_key: false
+    access_level: "free_open_government"
+    commercial_safe: true
+    citation_url: "https://power.larc.nasa.gov/docs/services/api/"
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 168
+
+  texmesonet:
+    enabled: true
+    requires_key: false
+    access_level: "free_open_state"
+    commercial_safe: true
+    citation_url: "https://www.texmesonet.org/Apis"
+    endpoint_url: "https://www.texmesonet.org"
+    timeout_seconds: 15
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 1
+
+  nrcs_soil_data_access:
+    enabled: true
+    requires_key: false
+    access_level: "free_open_government"
+    commercial_safe: true
+    citation_url: "https://sdmdataaccess.nrcs.usda.gov/"
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 720
+
+  drought_monitor:
+    enabled: true
+    requires_key: false
+    access_level: "free_open_government"
+    commercial_safe: true
+    citation_url: "https://www.drought.gov/data-maps-tools/us-drought-monitor"
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 48
+
+  usgs_water:
+    enabled: true
+    requires_key: false
+    optional_key_env: "USGS_API_KEY"
+    access_level: "free_open_government_optional_key"
+    commercial_safe: true
+    citation_url: "https://api.waterdata.usgs.gov/docs/"
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 1
+
+  twdb:
+    enabled: false
+    requires_key: false
+    access_level: "free_open_state_optional_service"
+    commercial_safe: true
+    citation_url: "https://www.twdb.texas.gov/mapping/data-services.asp"
+    warning: "TWDB groundwater and aquifer integration is scaffolded only in this MVP."
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 24
+
+  nasa_firms:
+    enabled: false
+    requires_key: true
+    key_env: "NASA_FIRMS_MAP_KEY"
+    access_level: "free_key_required"
+    commercial_safe: true
+    citation_url: "https://firms2.modaps.eosdis.nasa.gov/api/map_key/"
+    warning: "NASA FIRMS is optional and disabled by default until a free MAP_KEY is configured."
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 1
+
+  nlcd_mrlc:
+    enabled: false
+    requires_key: false
+    access_level: "free_open_government_advanced_raster"
+    commercial_safe: true
+    citation_url: "https://www.mrlc.gov/home"
+    warning: "MRLC / NLCD is useful, but RangeIQ currently exposes only a scaffold because raster sampling and zonal summaries need a dedicated geospatial pass."
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 720
+
+  nass_cdl:
+    enabled: false
+    requires_key: false
+    access_level: "free_open_government_optional_service"
+    commercial_safe: true
+    citation_url: "https://www.usda.gov/about-usda/news/blog/find-where-your-food-grown-using-nass-cropland-data-layer"
+    warning: "NASS Cropland Data Layer is scaffolded only in this MVP."
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 720
+
+  nass_quickstats:
+    enabled: false
+    requires_key: true
+    key_env: "USDA_NASS_API_KEY"
+    access_level: "free_key_required"
+    commercial_safe: true
+    citation_url: "https://quickstats.nass.usda.gov/api"
+    warning: "USDA NASS Quick Stats is optional and disabled by default until a free API key is configured."
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 24
+
+  epa_aqs:
+    enabled: false
+    requires_key: true
+    key_env: "EPA_AQS_KEY"
+    access_level: "free_key_required"
+    commercial_safe: true
+    citation_url: "https://aqs.epa.gov/aqsweb/documents/data_api.html"
+    warning: "EPA AQS is not yet wired into the provider registry and remains a documented future source."
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 24
+
+  planetary_computer:
+    enabled: false
+    requires_key: false
+    access_level: "advanced_optional_stac"
+    commercial_safe: true
+    citation_url: "https://learn.microsoft.com/en-us/azure/planetary-computer/stac-overview"
+    warning: "Planetary Computer STAC integration is scaffolded only in this MVP."
+    timeout_seconds: 20
+    retries: 2
+    backoff_seconds: 0.5
+    rate_limit_seconds: 0.25
+    ttl_hours: 24

@@ -1,0 +1,17 @@
+meshtastic:
+  region: "US"
+  frequency_band: "915MHz"
+  channel_name: "RangeIQ-Telemetry"
+  use_private_channel: true
+  mqtt:
+    enabled: false
+    host: "localhost"
+    port: 1883
+    root_topic: "msh/US/2/json"
+    channel_topic: "RangeIQ-Telemetry"
+    username: ""
+    password: ""
+  serial:
+    enabled: false
+    port: "/dev/ttyUSB0"
+    baudrate: 115200

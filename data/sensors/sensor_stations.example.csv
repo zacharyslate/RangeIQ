@@ -1,0 +1,6 @@
+station_id,station_name,pasture_id,station_type,latitude,longitude,installed_at,expected_interval_minutes,sensors,active,notes
+NP1,North Pasture Soil Station,CC-001,soil,29.608033,-103.51115,2026-03-15 08:00:00,60,"air_temp_f,humidity_pct,soil_moisture_10cm,soil_moisture_30cm,soil_moisture_60cm,soil_temp_f,battery_voltage,solar_voltage,rssi,snr",True,Mock RangeIQ sensor-network starter station.
+SP1,South Pasture Soil Station,CC-001,soil,29.605133,-103.50835,2026-03-15 08:00:00,60,"air_temp_f,humidity_pct,soil_moisture_10cm,soil_moisture_30cm,soil_moisture_60cm,soil_temp_f,battery_voltage,solar_voltage,rssi,snr",True,Mock RangeIQ sensor-network starter station.
+WT1,Main Stock Tank,CC-001,water_tank,29.606932999999998,-103.50925,2026-03-15 08:00:00,60,"water_tank_pct,trough_level_pct,battery_voltage,solar_voltage,rssi,snr",True,Mock RangeIQ sensor-network starter station.
+WX1,Ranch Weather Station,CC-001,weather,29.607433,-103.50795,2026-03-15 08:00:00,60,"air_temp_f,humidity_pct,pressure_hpa,rainfall_in,battery_voltage,solar_voltage,rssi,snr",True,Mock RangeIQ sensor-network starter station.
+RLY1,Hilltop Relay,CC-001,relay,29.609233,-103.50954999999999,2026-03-15 08:00:00,60,"battery_voltage,solar_voltage,rssi,snr,hop_count",True,Mock RangeIQ sensor-network starter station.

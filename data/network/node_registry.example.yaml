@@ -1,0 +1,26 @@
+nodes:
+  NP1:
+    station_id: "NP1"
+    role: "soil"
+    pasture_id: "CC-001"
+    notes: "Mock node definition for RangeIQ demo."
+  SP1:
+    station_id: "SP1"
+    role: "soil"
+    pasture_id: "CC-001"
+    notes: "Mock node definition for RangeIQ demo."
+  WT1:
+    station_id: "WT1"
+    role: "water_tank"
+    pasture_id: "CC-001"
+    notes: "Mock node definition for RangeIQ demo."
+  WX1:
+    station_id: "WX1"
+    role: "weather"
+    pasture_id: "CC-001"
+    notes: "Mock node definition for RangeIQ demo."
+  RLY1:
+    station_id: "RLY1"
+    role: "relay"
+    pasture_id: "CC-001"
+    notes: "Mock node definition for RangeIQ demo."

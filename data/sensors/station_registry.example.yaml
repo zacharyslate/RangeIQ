@@ -1,0 +1,56 @@
+stations:
+  NP1:
+    station_name: "North Pasture Soil Station"
+    pasture_id: "CC-001"
+    station_type: "soil"
+    latitude: 29.608033
+    longitude: -103.51115
+    installed_at: "2026-03-15T08:00:00"
+    expected_interval_minutes: 60
+    sensors: "air_temp_f,humidity_pct,soil_moisture_10cm,soil_moisture_30cm,soil_moisture_60cm,soil_temp_f,battery_voltage,solar_voltage,rssi,snr"
+    active: true
+    notes: "Mock RangeIQ sensor-network starter station."
+  SP1:
+    station_name: "South Pasture Soil Station"
+    pasture_id: "CC-001"
+    station_type: "soil"
+    latitude: 29.605133
+    longitude: -103.50835
+    installed_at: "2026-03-15T08:00:00"
+    expected_interval_minutes: 60
+    sensors: "air_temp_f,humidity_pct,soil_moisture_10cm,soil_moisture_30cm,soil_moisture_60cm,soil_temp_f,battery_voltage,solar_voltage,rssi,snr"
+    active: true
+    notes: "Mock RangeIQ sensor-network starter station."
+  WT1:
+    station_name: "Main Stock Tank"
+    pasture_id: "CC-001"
+    station_type: "water_tank"
+    latitude: 29.606932999999998
+    longitude: -103.50925
+    installed_at: "2026-03-15T08:00:00"
+    expected_interval_minutes: 60
+    sensors: "water_tank_pct,trough_level_pct,battery_voltage,solar_voltage,rssi,snr"
+    active: true
+    notes: "Mock RangeIQ sensor-network starter station."
+  WX1:
+    station_name: "Ranch Weather Station"
+    pasture_id: "CC-001"
+    station_type: "weather"
+    latitude: 29.607433
+    longitude: -103.50795
+    installed_at: "2026-03-15T08:00:00"
+    expected_interval_minutes: 60
+    sensors: "air_temp_f,humidity_pct,pressure_hpa,rainfall_in,battery_voltage,solar_voltage,rssi,snr"
+    active: true
+    notes: "Mock RangeIQ sensor-network starter station."
+  RLY1:
+    station_name: "Hilltop Relay"
+    pasture_id: "CC-001"
+    station_type: "relay"
+    latitude: 29.609233
+    longitude: -103.50954999999999
+    installed_at: "2026-03-15T08:00:00"
+    expected_interval_minutes: 60
+    sensors: "battery_voltage,solar_voltage,rssi,snr,hop_count"
+    active: true
+    notes: "Mock RangeIQ sensor-network starter station."

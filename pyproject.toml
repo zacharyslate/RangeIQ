@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ranchiq"
+version = "0.1.0"
+description = "Synthetic-data-first RangeIQ pilot for ranch monitoring and decision support."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "OpenAI Codex" }
+]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "plotly>=6.0",
+  "rasterio>=1.3",
+  "requests>=2.31",
+  "scikit-learn>=1.5",
+  "streamlit>=1.40",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+ranch-ai = "ranch_ai.cli:main"
+ranchiq = "ranch_ai.cli:main"
+rangeiq = "ranch_ai.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"

@@ -1,0 +1,28 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "pasture_id": "CC-001",
+        "name": "Caja Caliente Main Pasture",
+        "acres": 4.77,
+        "boundary_status": "user-provided",
+        "source_address": "711 N Scotty Road, Alpine, TX 79830",
+        "notes": "Single rectangular pasture drawn from user-provided property corners."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-103.5083611111, 29.6066666667],
+            [-103.5111666667, 29.6066388889],
+            [-103.5111388889, 29.6060000000],
+            [-103.5083333333, 29.6060277778],
+            [-103.5083611111, 29.6066666667]
+          ]
+        ]
+      }
+    }
+  ]
+}
