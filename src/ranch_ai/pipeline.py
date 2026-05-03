@@ -9,7 +9,7 @@ from ranch_ai.config import Settings, settings
 from ranch_ai.data.drought import generate_synthetic_drought
 from ranch_ai.data.grazing_records import generate_synthetic_grazing_records
 from ranch_ai.data.satellite import generate_synthetic_satellite, generate_synthetic_vegetation_history
-from ranch_ai.data.sensors import aggregate_weekly_sensor_features, generate_synthetic_sensor_readings, save_sensor_schema
+from ranch_ai.data.sensors import SENSOR_COLUMNS, aggregate_weekly_sensor_features, generate_synthetic_sensor_readings, save_sensor_schema
 from ranch_ai.features.training_dataset import build_training_dataset
 from ranch_ai.data.soil import generate_synthetic_soil_profiles
 from ranch_ai.data.weather import build_week_index, generate_synthetic_weather
@@ -63,14 +63,18 @@ def build_synthetic_dataset(
     satellite_df = generate_synthetic_satellite(pastures, weather_df, soil_df, seed=active_seed)
     drought_df = generate_synthetic_drought(weather_df)
     grazing_df = generate_synthetic_grazing_records(pastures, weather_df, seed=active_seed)
-    sensor_df = generate_synthetic_sensor_readings(pastures, weather_df, soil_df, seed=active_seed)
     vegetation_history_df = generate_synthetic_vegetation_history(
         pastures,
         soil_df,
         years=active_history_years,
         seed=active_seed,
     )
-    weekly_sensor_df = aggregate_weekly_sensor_features(sensor_df)
+    if app_settings.training.use_sensor_data:
+        sensor_df = generate_synthetic_sensor_readings(pastures, weather_df, soil_df, seed=active_seed)
+        weekly_sensor_df = aggregate_weekly_sensor_features(sensor_df)
+    else:
+        sensor_df = pd.DataFrame(columns=SENSOR_COLUMNS)
+        weekly_sensor_df = None
 
     weekly_data = build_weekly_table(
         pastures=pastures,
@@ -141,7 +145,8 @@ def run_mvp_pipeline(
         save_dataframe(vegetation_export, app_settings.default_history_output_path)
         save_dataframe(monthly_report_artifacts.report_table, app_settings.default_monthly_report_csv_path)
         save_text(monthly_report_artifacts.markdown, app_settings.default_monthly_report_md_path)
-        save_sensor_schema(sensor_df, app_settings.default_sensor_output_path)
+        if not sensor_df.empty:
+            save_sensor_schema(sensor_df, app_settings.default_sensor_output_path)
 
     return MvpArtifacts(
         pastures=pastures,

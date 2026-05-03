@@ -27,10 +27,8 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from ranch_ai.config import Settings, save_settings_file, settings
-from ranch_ai.ingestion import SensorIngestionService
 from ranch_ai.pipeline import MvpArtifacts, run_mvp_pipeline
-from ranch_ai.services import AlertService, SensorService, WeatherService, assess_fire_risk
-from ranch_ai.visualization.network_plots import plot_packets_per_station, plot_signal_history, plot_station_status_counts
+from ranch_ai.services import AlertService, WeatherService, assess_fire_risk
 from ranch_ai.visualization.plots import (
     plot_condition_scores,
     plot_forage_trend,
@@ -44,17 +42,6 @@ from ranch_ai.visualization.plots import (
     plot_rap_production_history,
     plot_water_vs_stocking_risk,
 )
-from ranch_ai.visualization.sensor_plots import (
-    filter_sensor_time_range,
-    plot_air_temp_and_humidity,
-    plot_battery_voltage,
-    plot_network_soil_moisture,
-    plot_rainfall_history,
-    plot_sensor_variable,
-    plot_soil_moisture_comparison,
-    plot_water_tank_level,
-)
-from ranch_ai.visualization.station_cards import render_station_cards as render_network_station_cards
 
 
 LIGHT_THEME = {
@@ -314,9 +301,51 @@ def load_artifacts(
         weeks=weeks,
         history_years=history_years,
         seed=seed,
-        write_outputs=True,
+        write_outputs=False,
         app_settings=runtime_settings,
     )
+
+
+def _hash_settings(app_settings: Settings) -> str:
+    return json.dumps(app_settings.to_display_dict(), sort_keys=True, default=str)
+
+
+def _refresh_bucket(minutes: int) -> str:
+    safe_minutes = max(int(minutes), 1)
+    return pd.Timestamp.now(tz="UTC").floor(f"{safe_minutes}min").isoformat()
+
+
+load_artifacts = st.cache_data(
+    show_spinner="Building the RangeIQ scenario...",
+    hash_funcs={Settings: _hash_settings},
+    max_entries=8,
+)(load_artifacts)
+
+
+@st.cache_data(show_spinner=False, hash_funcs={Settings: _hash_settings}, max_entries=12)
+def load_weather_bundle_cached(
+    runtime_settings: Settings,
+    lat: float,
+    lon: float,
+    provider: str,
+    refresh_bucket: str,
+):
+    del refresh_bucket
+    weather_service = WeatherService(runtime_settings)
+    return weather_service.load_weather_bundle(lat=lat, lon=lon, provider=provider)
+
+
+@st.cache_data(show_spinner=False, hash_funcs={Settings: _hash_settings}, max_entries=12)
+def load_alert_bundle_cached(
+    runtime_settings: Settings,
+    lat: float,
+    lon: float,
+    provider: str,
+    refresh_bucket: str,
+):
+    del refresh_bucket
+    alert_service = AlertService(runtime_settings)
+    return alert_service.load_alert_bundle(lat=lat, lon=lon, provider=provider)
 
 
 def apply_app_theme(theme: dict[str, object]) -> None:
@@ -725,6 +754,7 @@ def build_runtime_settings() -> Settings:
     runtime.fire_risk.high_temperature_f = float(st.session_state.high_temperature_f)
     runtime.fire_risk.low_rainfall_7d_in = float(st.session_state.low_rainfall_7d_in)
     runtime.fire_risk.low_soil_moisture_pct = float(st.session_state.low_soil_moisture_pct)
+    runtime.training.use_sensor_data = False
     return runtime
 
 
@@ -769,13 +799,11 @@ def build_dashboard_state_payload(
     }
 
 
-def derive_sensor_context(artifacts: MvpArtifacts) -> tuple[pd.DataFrame, pd.DataFrame]:
-    latest_context = (
-        artifacts.weekly_data.sort_values("week_start").groupby("pasture_id", as_index=False).tail(1).reset_index(drop=True)
+def render_under_development_notice(title: str, detail: str) -> None:
+    st.subheader(title)
+    st.info(
+        f"{title} is currently under development and temporarily disabled in the hosted app. {detail}"
     )
-    weather_df = latest_context[["pasture_id", "week_start", "rainfall_7d", "temp_avg_7d"]].copy()
-    soil_df = latest_context[["pasture_id", "soil_water_capacity"]].drop_duplicates("pasture_id").copy()
-    return weather_df, soil_df
 
 
 def _rgba_to_css(color: list[int] | tuple[int, ...], opacity_override: float | None = None) -> str:
@@ -1147,44 +1175,27 @@ if not vegetation_ndvi_df.empty:
         vegetation_ndvi_df["month_start"] = pd.to_datetime(vegetation_ndvi_df["month_start"])
     elif "date" in vegetation_ndvi_df.columns:
         vegetation_ndvi_df["month_start"] = pd.to_datetime(vegetation_ndvi_df["date"]).dt.to_period("M").dt.to_timestamp()
-weather_context_df, soil_context_df = derive_sensor_context(artifacts)
-
-weather_service = WeatherService(runtime_settings)
-weather_bundle = weather_service.load_weather_bundle(
+weather_bundle = load_weather_bundle_cached(
+    runtime_settings=runtime_settings,
     lat=runtime_settings.ranch.latitude,
     lon=runtime_settings.ranch.longitude,
     provider=runtime_settings.weather.provider,
+    refresh_bucket=_refresh_bucket(runtime_settings.weather.refresh_minutes),
 )
-
-alert_service = AlertService(runtime_settings)
-alert_bundle = alert_service.load_alert_bundle(
+alert_bundle = load_alert_bundle_cached(
+    runtime_settings=runtime_settings,
     lat=runtime_settings.ranch.latitude,
     lon=runtime_settings.ranch.longitude,
     provider=runtime_settings.alerts.provider,
-)
-
-sensor_service = SensorService(runtime_settings)
-sensor_bundle = sensor_service.load_sensor_bundle(
-    pastures=artifacts.pastures,
-    weather_df=weather_context_df,
-    soil_df=soil_context_df,
-    provider=runtime_settings.sensors.provider,
-    seed=int(st.session_state.seed),
-)
-
-sensor_network_service = SensorIngestionService(runtime_settings)
-sensor_network_bundle = sensor_network_service.load_network_bundle(
-    mode=runtime_settings.sensor_network.mode,
-    seed=int(st.session_state.seed),
-    packet_limit=int(st.session_state.sensor_network_packet_limit),
+    refresh_bucket=_refresh_bucket(runtime_settings.alerts.refresh_minutes),
 )
 
 fire_assessment = assess_fire_risk(
     current_weather=WeatherService.current_as_dict(weather_bundle),
     alerts_df=alert_bundle.alerts,
     latest_snapshot=latest_snapshot,
-    sensor_status_df=sensor_bundle.latest_status,
-    sensor_readings_df=sensor_bundle.readings,
+    sensor_status_df=pd.DataFrame(),
+    sensor_readings_df=pd.DataFrame(),
     app_settings=runtime_settings,
 )
 
@@ -1195,14 +1206,18 @@ if st.session_state.get("selected_pasture") not in set(latest_snapshot["pasture_
 selected_pasture = st.session_state.selected_pasture
 selected_pasture_name = latest_snapshot.loc[latest_snapshot["pasture_id"] == selected_pasture, "name"].iloc[0]
 current_weather = weather_bundle.current
-last_updated = max(weather_bundle.loaded_at, alert_bundle.loaded_at, sensor_bundle.loaded_at, sensor_network_bundle.loaded_at)
+last_updated = max(weather_bundle.loaded_at, alert_bundle.loaded_at, artifacts.public_data_bundle.loaded_at)
 total_acres = float(latest_snapshot["acres"].sum()) if "acres" in latest_snapshot.columns else 0.0
 pasture_count = int(len(latest_snapshot))
-provider_fallback_active = any(mode.endswith("fallback-mock") for mode in [weather_bundle.mode, alert_bundle.mode, sensor_bundle.mode])
+provider_modes = [weather_bundle.mode, alert_bundle.mode] + [status.mode for status in artifacts.public_data_bundle.source_status]
+provider_fallback_active = any(mode.endswith("fallback-mock") or mode == "stale-cache" for mode in provider_modes)
 action_pastures = latest_snapshot.loc[
     latest_snapshot["recommendation"].isin(["SUPPLEMENT", "REDUCE STOCKING", "DESTOCK WARNING"])
 ].copy()
-online_station_count = int((sensor_bundle.latest_status["status"] == "ONLINE").sum()) if not sensor_bundle.latest_status.empty else 0
+vegetation_source_status = next(
+    (status for status in artifacts.public_data_bundle.source_status if status.component == "Vegetation"),
+    None,
+)
 
 header_logo_col, header_meta_col = st.columns([1.05, 1], gap="medium")
 with header_logo_col:
@@ -1236,7 +1251,7 @@ with home_tab:
     top_metrics[0].metric("Current Temp", format_number(current_weather.temperature_f, " F", 1), f"Feels like {format_number(current_weather.feels_like_f, ' F', 1)}")
     top_metrics[1].metric("Wind", format_number(current_weather.wind_speed_mph, " mph", 1), f"Gust {format_number(current_weather.wind_gust_mph, ' mph', 1)}")
     top_metrics[2].metric("Fire Risk", f"{fire_assessment.category}", f"Score {fire_assessment.score:.1f}")
-    top_metrics[3].metric("Stations Online", f"{online_station_count}", f"of {len(sensor_bundle.latest_status)}")
+    top_metrics[3].metric("Pastures", f"{pasture_count}", f"{total_acres:,.1f} acres")
 
     weather_col, forecast_col = st.columns([1, 1.2], gap="medium")
     with weather_col:
@@ -1320,200 +1335,15 @@ with home_tab:
         )
 
 with sensors_tab:
-    st.subheader("Sensor Status")
-    if not sensor_bundle.alerts.empty:
-        alert_messages = sensor_bundle.alerts.copy()
-        st.dataframe(alert_messages, width="stretch", hide_index=True)
-    else:
-        st.info("No sensor condition alerts are active.")
-
-    st.dataframe(
-        sensor_bundle.latest_status[
-            [
-                "station_id",
-                "station_name",
-                "pasture_id",
-                "last_contact",
-                "status",
-                "data_freshness_minutes",
-                "battery_voltage",
-                "signal_strength",
-                "air_temp_f",
-                "humidity_pct",
-                "rainfall_in",
-                "soil_moisture_10cm",
-                "soil_moisture_30cm",
-                "soil_temp_f",
-                "water_tank_pct",
-                "trough_level_pct",
-                "camera_status",
-            ]
-        ],
-        width="stretch",
-        hide_index=True,
-    )
-
-    st.subheader("Station Cards")
-    render_station_cards(sensor_bundle.latest_status)
-
-    station_controls = st.columns(4)
-    pasture_filter = station_controls[0].selectbox(
-        "Pasture",
-        options=["All"] + latest_snapshot["pasture_id"].tolist(),
-        index=0,
-    )
-    filtered_status = sensor_bundle.latest_status.copy()
-    if pasture_filter != "All":
-        filtered_status = filtered_status.loc[filtered_status["pasture_id"] == pasture_filter].copy()
-    station_options = filtered_status["station_id"].tolist() or sensor_bundle.latest_status["station_id"].tolist()
-    selected_station = station_controls[1].selectbox(
-        "Station",
-        options=station_options,
-        format_func=lambda station_id: f"{station_id} - {sensor_bundle.latest_status.loc[sensor_bundle.latest_status['station_id'] == station_id, 'station_name'].iloc[0]}",
-    )
-    time_range = station_controls[2].selectbox("Time Range", options=["24h", "7d", "30d"], index=1)
-    sensor_variable_label = station_controls[3].selectbox("Variable", options=list(SENSOR_VARIABLES.keys()), index=3)
-
-    filtered_readings = filter_sensor_time_range(sensor_bundle.readings, time_range)
-    sensor_column, sensor_title = SENSOR_VARIABLES[sensor_variable_label]
-
-    plot_col_a, plot_col_b = st.columns(2, gap="medium")
-    with plot_col_a:
-        st.plotly_chart(
-            apply_chart_theme(plot_sensor_variable(filtered_readings, selected_station, sensor_column, sensor_title), theme),
-            width="stretch",
-        )
-    with plot_col_b:
-        st.plotly_chart(
-            apply_chart_theme(plot_soil_moisture_comparison(filtered_readings, selected_station), theme),
-            width="stretch",
-        )
-
-    st.plotly_chart(
-        apply_chart_theme(plot_rainfall_history(filtered_readings, selected_station), theme),
-        width="stretch",
+    render_under_development_notice(
+        "Sensors",
+        "We paused live station monitoring while we optimize dashboard performance and finish the next sensor architecture pass.",
     )
 
 with sensor_network_tab:
-    st.subheader("Meshtastic / LoRa Sensor Network")
-    st.caption(
-        f"Mode: {sensor_network_bundle.mode.upper()} | Transport: {sensor_network_bundle.source_transport} | "
-        f"{sensor_network_bundle.source_message}"
-    )
-    st.info("This page uses the new sensor-network architecture and currently runs in mock mode by default while real Meshtastic transports remain scaffolded.")
-
-    network_summary_cols = st.columns(5)
-    network_summary_cols[0].metric("Nodes", f"{len(sensor_network_bundle.stations)}")
-    network_summary_cols[1].metric("Offline / Stale", f"{len(sensor_network_bundle.network_summary['offline_nodes'])}")
-    network_summary_cols[2].metric("Low Signal", f"{len(sensor_network_bundle.network_summary['low_signal_nodes'])}")
-    network_summary_cols[3].metric("Packets", f"{sensor_network_bundle.network_summary['packet_count']}")
-    network_summary_cols[4].metric("Relay Nodes", f"{len(sensor_network_bundle.network_summary['relay_nodes'])}")
-
-    if not sensor_network_bundle.alerts.empty:
-        st.dataframe(sensor_network_bundle.alerts, width="stretch", hide_index=True)
-    else:
-        st.success("No network alerts are active in the current mock run.")
-
-    st.subheader("Station Network Health")
-    st.dataframe(
-        sensor_network_bundle.network_health[
-            [
-                "station_id",
-                "station_name",
-                "station_type",
-                "last_seen",
-                "status",
-                "battery_status",
-                "signal_status",
-                "sensor_error_status",
-                "packet_count",
-                "avg_rssi",
-                "avg_snr",
-                "alerts",
-            ]
-        ],
-        width="stretch",
-        hide_index=True,
-    )
-
-    st.subheader("Latest Station Readings")
-    st.dataframe(
-        sensor_network_bundle.latest_readings[
-            [
-                "station_id",
-                "pasture_id",
-                "timestamp",
-                "air_temp_f",
-                "humidity_pct",
-                "rainfall_in",
-                "soil_moisture_10cm",
-                "soil_moisture_30cm",
-                "soil_moisture_60cm",
-                "water_tank_pct",
-                "battery_voltage",
-                "solar_voltage",
-                "rssi",
-                "snr",
-                "hop_count",
-            ]
-        ],
-        width="stretch",
-        hide_index=True,
-    )
-
-    st.subheader("Station Cards")
-    render_network_station_cards(sensor_network_bundle.network_health, sensor_network_bundle.latest_readings)
-
-    network_controls = st.columns(3)
-    network_station_options = sensor_network_bundle.stations["station_id"].tolist()
-    selected_network_station = network_controls[0].selectbox(
-        "Network Station",
-        options=network_station_options,
-        format_func=lambda station_id: f"{station_id} - {sensor_network_bundle.stations.loc[sensor_network_bundle.stations['station_id'] == station_id, 'station_name'].iloc[0]}",
-    )
-    network_time_range = network_controls[1].selectbox("Network Time Range", options=["24h", "7d", "30d"], index=1)
-    network_variable = network_controls[2].selectbox(
-        "Network Plot",
-        options=["Soil Moisture", "Rainfall", "Water Tank", "Battery", "Air Temp / Humidity"],
-        index=0,
-    )
-
-    filtered_network_readings = filter_sensor_time_range(sensor_network_bundle.readings, network_time_range)
-    filtered_network_packets = filter_time_range_by_column(sensor_network_bundle.raw_packets, "received_at", network_time_range)
-
-    if network_variable == "Soil Moisture":
-        primary_network_figure = plot_network_soil_moisture(filtered_network_readings, selected_network_station)
-    elif network_variable == "Rainfall":
-        primary_network_figure = plot_rainfall_history(filtered_network_readings, selected_network_station)
-    elif network_variable == "Water Tank":
-        primary_network_figure = plot_water_tank_level(filtered_network_readings, selected_network_station)
-    elif network_variable == "Battery":
-        primary_network_figure = plot_battery_voltage(filtered_network_readings, selected_network_station)
-    else:
-        primary_network_figure = plot_air_temp_and_humidity(filtered_network_readings, selected_network_station)
-
-    network_plot_col_a, network_plot_col_b = st.columns(2, gap="medium")
-    with network_plot_col_a:
-        st.plotly_chart(apply_chart_theme(primary_network_figure, theme), width="stretch")
-    with network_plot_col_b:
-        st.plotly_chart(
-            apply_chart_theme(plot_signal_history(filtered_network_packets, selected_network_station), theme),
-            width="stretch",
-        )
-
-    network_plot_col_c, network_plot_col_d = st.columns(2, gap="medium")
-    with network_plot_col_c:
-        st.plotly_chart(apply_chart_theme(plot_packets_per_station(filtered_network_packets), theme), width="stretch")
-    with network_plot_col_d:
-        st.plotly_chart(apply_chart_theme(plot_station_status_counts(sensor_network_bundle.station_status), theme), width="stretch")
-
-    st.subheader("Latest Raw Packets")
-    st.dataframe(
-        sensor_network_bundle.raw_packets[
-            ["packet_id", "received_at", "source_transport", "from_node", "payload_raw", "rssi", "snr", "hop_count", "decoded_ok", "error_message"]
-        ].sort_values("received_at", ascending=False).head(20),
-        width="stretch",
-        hide_index=True,
+    render_under_development_notice(
+        "Sensor Network",
+        "Meshtastic and remote-station ingestion are still in progress, so the hosted app is not loading that stack right now.",
     )
 
 with pastures_tab:
@@ -1676,11 +1506,18 @@ with data_tab:
             badges=[status_badge(alert_bundle.mode)],
         )
     with source_card_cols[2]:
+        vegetation_value = runtime_settings.public_data.vegetation.provider.upper()
+        vegetation_subtitle = (
+            "Vegetation history combines Earth Search STAC NDVI with RAP."
+            if vegetation_source_status is None
+            else vegetation_source_status.status
+        )
+        vegetation_badge = status_badge("mock" if vegetation_source_status is None else vegetation_source_status.mode)
         render_signal_card(
-            title="Sensor Source",
-            value=sensor_bundle.provider_name.upper(),
-            subtitle=sensor_bundle.source_message,
-            badges=[status_badge(sensor_bundle.mode)],
+            title="Vegetation Source",
+            value=vegetation_value if vegetation_source_status is None else vegetation_source_status.active_provider.upper(),
+            subtitle=vegetation_subtitle,
+            badges=[vegetation_badge],
         )
     with source_card_cols[3]:
         boundary_value = "DEFAULT CORNERS"
@@ -1723,21 +1560,21 @@ with data_tab:
         },
         {
             "Component": "Sensors",
-            "Configured provider": runtime_settings.sensors.provider,
-            "Active provider": sensor_bundle.provider_name,
-            "Mode": sensor_bundle.mode,
-            "Status": sensor_bundle.source_message,
-            "Last updated": format_timestamp(sensor_bundle.loaded_at),
-            "Citation": "local CSV / mock sensor history",
+            "Configured provider": "under_development",
+            "Active provider": "under_development",
+            "Mode": "paused",
+            "Status": "Sensor monitoring is temporarily disabled in the hosted dashboard while performance work continues.",
+            "Last updated": format_timestamp(last_updated),
+            "Citation": "under development",
         },
         {
             "Component": "Sensor Network",
-            "Configured provider": runtime_settings.sensor_network.mode,
-            "Active provider": sensor_network_bundle.source_transport,
-            "Mode": sensor_network_bundle.mode,
-            "Status": sensor_network_bundle.source_message,
-            "Last updated": format_timestamp(sensor_network_bundle.loaded_at),
-            "Citation": "local mock ingestion / transport scaffold",
+            "Configured provider": "under_development",
+            "Active provider": "under_development",
+            "Mode": "paused",
+            "Status": "Meshtastic / LoRa network pages are paused in the hosted app while the rest of RangeIQ is optimized.",
+            "Last updated": format_timestamp(last_updated),
+            "Citation": "under development",
         },
     ]
     provider_rows.extend(
@@ -1791,9 +1628,6 @@ with data_tab:
             {"Path": str(runtime_settings.default_history_output_path), "Exists": Path(runtime_settings.default_history_output_path).exists()},
             {"Path": str(runtime_settings.default_monthly_report_csv_path), "Exists": Path(runtime_settings.default_monthly_report_csv_path).exists()},
             {"Path": str(runtime_settings.default_monthly_report_md_path), "Exists": Path(runtime_settings.default_monthly_report_md_path).exists()},
-            {"Path": str(sensor_path), "Exists": sensor_path.exists()},
-            {"Path": str(runtime_settings.sensor_network.sqlite_path), "Exists": Path(runtime_settings.sensor_network.sqlite_path).exists()},
-            {"Path": str(runtime_settings.sensor_network.station_registry_path), "Exists": Path(runtime_settings.sensor_network.station_registry_path).exists()},
         ]
     )
     st.subheader("File Status")
@@ -1804,9 +1638,8 @@ with data_tab:
         {
             "weather_mode": weather_bundle.mode,
             "alerts_mode": alert_bundle.mode,
-            "sensors_mode": sensor_bundle.mode,
-            "sensor_network_mode": sensor_network_bundle.mode,
-            "sensor_network_transport": sensor_network_bundle.source_transport,
+            "sensors_mode": "under_development",
+            "sensor_network_mode": "under_development",
             "public_data_modes": {status.component: status.mode for status in artifacts.public_data_bundle.source_status},
             "boundary_mode": boundary_mode if boundary_mode != "default" else runtime_settings.boundary_status,
             "units": runtime_settings.ranch.units,
@@ -1853,10 +1686,10 @@ with settings_tab:
     )
 
     st.subheader("Provider Settings")
-    provider_cols = st.columns(3)
+    provider_cols = st.columns(2)
     provider_cols[0].selectbox("Weather Provider", options=["mock", "nws", "openmeteo"], key="weather_provider")
     provider_cols[1].selectbox("Alert Provider", options=["mock", "nws"], key="alerts_provider")
-    provider_cols[2].selectbox("Sensor Provider", options=["csv", "mock"], key="sensor_provider")
+    st.caption("Sensor provider settings are temporarily hidden while the sensor stack is under development.")
 
     st.subheader("Public Data Providers")
     public_provider_cols = st.columns(3)
@@ -1877,18 +1710,11 @@ with settings_tab:
         "and Climate Engine remains optional. If live vegetation providers fail, RangeIQ falls back to mock history."
     )
 
-    st.subheader("Sensor Network Settings")
-    network_cols = st.columns(2)
-    network_cols[0].selectbox("Sensor Network Mode", options=["mock", "csv", "meshtastic_mqtt", "meshtastic_serial"], key="sensor_network_mode")
-    network_cols[1].number_input("Packet Limit", min_value=24, max_value=500, step=12, key="sensor_network_packet_limit")
-
-    st.subheader("Sensor Thresholds")
-    sensor_cols = st.columns(5)
-    sensor_cols[0].number_input("Expected Interval (min)", min_value=15, step=15, key="expected_interval_minutes")
-    sensor_cols[1].number_input("Stale After (min)", min_value=30, step=30, key="stale_after_minutes")
-    sensor_cols[2].number_input("Offline After (min)", min_value=60, step=60, key="offline_after_minutes")
-    sensor_cols[3].number_input("Low Battery (V)", min_value=3.0, max_value=4.5, step=0.05, format="%.2f", key="low_battery_voltage")
-    sensor_cols[4].number_input("Low Signal (dBm)", min_value=-130, max_value=-60, step=1, key="low_signal_threshold")
+    st.subheader("Sensors")
+    st.info(
+        "Sensor monitoring and sensor-network controls are currently under development. "
+        "They are paused in the hosted dashboard while we improve performance and finish the next implementation pass."
+    )
 
     st.subheader("Fire Risk Thresholds")
     fire_cols = st.columns(3)
@@ -1899,11 +1725,6 @@ with settings_tab:
     fire_cols[0].number_input("High Temperature (F)", min_value=60, max_value=120, step=1, key="high_temperature_f")
     fire_cols[1].number_input("Low Rainfall 7d (in)", min_value=0.0, max_value=2.0, step=0.01, format="%.2f", key="low_rainfall_7d_in")
     fire_cols[2].number_input("Low Soil Moisture (%)", min_value=1, max_value=50, step=1, key="low_soil_moisture_pct")
-
-    st.subheader("Network Thresholds")
-    network_threshold_cols = st.columns(2)
-    network_threshold_cols[0].number_input("Low Signal RSSI", min_value=-140, max_value=-60, step=1, key="network_low_signal_rssi")
-    network_threshold_cols[1].number_input("Low Water Tank (%)", min_value=1, max_value=100, step=1, key="network_low_water_tank_pct")
 
     st.subheader("Save This Setup")
     st.caption(
