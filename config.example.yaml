@@ -7,13 +7,13 @@ ranch:
   units: "imperial"
 
 weather:
-  provider: "mock"
+  provider: "openmeteo"
   refresh_minutes: 30
   user_agent: "RangeIQ/0.1 (contact@example.com)"
   timeout_seconds: 10
 
 alerts:
-  provider: "mock"
+  provider: "nws"
   refresh_minutes: 15
   timeout_seconds: 10
 
@@ -72,15 +72,15 @@ public_data:
   enabled: true
   cache_enabled: true
   historical_weather:
-    provider: "mock"  # mock, nasa_power
+    provider: "nasa_power"  # mock, nasa_power
     timeout_seconds: 20
     refresh_hours: 168
   soils:
-    provider: "mock"  # mock, usda_sda
+    provider: "usda_sda"  # mock, usda_sda
     timeout_seconds: 20
     refresh_hours: 720
   drought:
-    provider: "mock"  # mock, usdm
+    provider: "usdm"  # mock, usdm
     timeout_seconds: 20
     refresh_hours: 48
   vegetation:

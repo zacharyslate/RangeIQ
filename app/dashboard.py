@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -26,7 +27,7 @@ FALLBACK_LOGO_PATH = PROJECT_ROOT / "RangeIQ_logo_white.png"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ranch_ai.config import Settings, save_settings_file, settings
+from ranch_ai.config import Settings, normalize_workspace_id, save_settings_file, settings
 from ranch_ai.pipeline import MvpArtifacts, run_mvp_pipeline
 from ranch_ai.services import AlertService, WeatherService, assess_fire_risk
 from ranch_ai.visualization.plots import (
@@ -172,7 +173,7 @@ MAP_BASEMAP_LABELS = {
     "plain": "Plain",
 }
 
-SESSION_DEFAULTS = {
+BASE_SESSION_DEFAULTS = {
     "theme_mode": "High Plains Day",
     "weeks": settings.default_weeks,
     "history_years": settings.default_history_years,
@@ -252,10 +253,12 @@ def load_saved_boundary_from_state(state: dict[str, Any]) -> tuple[str | None, b
         return None, None, "default"
 
 
-PERSISTED_DASHBOARD_STATE = load_dashboard_state()
-for persisted_key, persisted_value in PERSISTED_DASHBOARD_STATE.get("session_state", {}).items():
-    if persisted_key in SESSION_DEFAULTS:
-        SESSION_DEFAULTS[persisted_key] = persisted_value
+def session_defaults_for_state(state: dict[str, Any]) -> dict[str, Any]:
+    defaults = dict(BASE_SESSION_DEFAULTS)
+    for persisted_key, persisted_value in state.get("session_state", {}).items():
+        if persisted_key in defaults:
+            defaults[persisted_key] = persisted_value
+    return defaults
 
 
 def get_theme(mode: str) -> dict[str, object]:
@@ -274,15 +277,40 @@ def get_logo_path(mode: str) -> Path:
     return FALLBACK_LOGO_PATH
 
 
-def initialize_session_state() -> None:
-    for key, value in SESSION_DEFAULTS.items():
-        st.session_state.setdefault(key, value)
+def resolve_workspace_id() -> str:
+    raw_value = st.query_params.get("workspace", "")
+    if isinstance(raw_value, list):
+        raw_value = raw_value[0] if raw_value else ""
+    normalized = normalize_workspace_id(str(raw_value), fallback="")
+    if normalized:
+        if str(raw_value) != normalized:
+            st.query_params["workspace"] = normalized
+        return normalized
+
+    generated = normalize_workspace_id(f"workspace-{uuid4().hex[:8]}")
+    st.query_params["workspace"] = generated
+    return generated
+
+
+def initialize_session_state(workspace_id: str, session_defaults: dict[str, Any]) -> None:
+    if st.session_state.get("_loaded_workspace_id") != workspace_id:
+        for key, value in session_defaults.items():
+            st.session_state[key] = value
+        st.session_state["_loaded_workspace_id"] = workspace_id
+    else:
+        for key, value in session_defaults.items():
+            st.session_state.setdefault(key, value)
+    st.session_state["workspace_id"] = workspace_id
 
 
 page_icon_path = ICON_PATH if ICON_PATH.exists() else FALLBACK_ICON_PATH
 PAGE_ICON = Image.open(page_icon_path) if page_icon_path.exists() else None
 st.set_page_config(page_title=f"{settings.app_name} | Operational Dashboard", page_icon=PAGE_ICON, layout="wide")
-initialize_session_state()
+CURRENT_WORKSPACE_ID = resolve_workspace_id()
+WORKSPACE_STATE_PATH = settings.workspace_state_path_for(CURRENT_WORKSPACE_ID)
+PERSISTED_DASHBOARD_STATE = load_dashboard_state(WORKSPACE_STATE_PATH)
+SESSION_DEFAULTS = session_defaults_for_state(PERSISTED_DASHBOARD_STATE)
+initialize_session_state(CURRENT_WORKSPACE_ID, SESSION_DEFAULTS)
 
 
 def load_artifacts(
@@ -758,9 +786,10 @@ def build_runtime_settings() -> Settings:
     return runtime
 
 
-def persist_boundary_file(filename: str, payload: bytes) -> Path:
+def persist_boundary_file(filename: str, payload: bytes, workspace_id: str) -> Path:
     suffix = Path(filename).suffix.lower() or ".geojson"
-    destination = settings.user_data_dir / f"saved_boundary{suffix}"
+    destination_dir = settings.workspace_boundary_dir_for(workspace_id)
+    destination = destination_dir / f"saved_boundary{suffix}"
     destination.parent.mkdir(parents=True, exist_ok=True)
     for existing in destination.parent.glob("saved_boundary.*"):
         if existing != destination and existing.is_file():
@@ -772,16 +801,18 @@ def persist_boundary_file(filename: str, payload: bytes) -> Path:
 def build_dashboard_state_payload(
     runtime_settings: Settings,
     *,
+    workspace_id: str,
     boundary_filename: str | None,
     boundary_bytes: bytes | None,
     existing_state: dict[str, Any],
 ) -> dict[str, Any]:
-    config_path = save_settings_file(runtime_settings)
-    session_payload = {key: st.session_state.get(key) for key in SESSION_DEFAULTS}
+    normalized_workspace_id = normalize_workspace_id(workspace_id, fallback=CURRENT_WORKSPACE_ID)
+    config_path = save_settings_file(runtime_settings, path=runtime_settings.workspace_config_path_for(normalized_workspace_id))
+    session_payload = {key: st.session_state.get(key) for key in BASE_SESSION_DEFAULTS}
     boundary_payload: dict[str, Any] = {}
 
     if boundary_filename is not None and boundary_bytes is not None:
-        saved_boundary_path = persist_boundary_file(boundary_filename, boundary_bytes)
+        saved_boundary_path = persist_boundary_file(boundary_filename, boundary_bytes, normalized_workspace_id)
         boundary_payload = {
             "filename": boundary_filename,
             "path": str(saved_boundary_path),
@@ -792,6 +823,7 @@ def build_dashboard_state_payload(
             boundary_payload = dict(existing_state["saved_boundary"])
 
     return {
+        "workspace_id": normalized_workspace_id,
         "saved_at": pd.Timestamp.now().isoformat(),
         "config_path": str(config_path),
         "session_state": session_payload,
@@ -1636,6 +1668,7 @@ with data_tab:
     st.subheader("Mock / Real Mode Indicator")
     st.json(
         {
+            "workspace_id": st.session_state.workspace_id,
             "weather_mode": weather_bundle.mode,
             "alerts_mode": alert_bundle.mode,
             "sensors_mode": "under_development",
@@ -1665,6 +1698,22 @@ with data_tab:
     )
 
 with settings_tab:
+    st.subheader("Workspace")
+    workspace_cols = st.columns([1.3, 0.7], gap="medium")
+    workspace_cols[0].text_input("Workspace ID", key="workspace_id")
+    with workspace_cols[1]:
+        st.write("")
+        st.write("")
+        if st.button("Open Workspace"):
+            target_workspace_id = normalize_workspace_id(st.session_state.workspace_id, fallback=f"workspace-{uuid4().hex[:8]}")
+            st.session_state.workspace_id = target_workspace_id
+            st.query_params["workspace"] = target_workspace_id
+            st.rerun()
+    st.caption(
+        "Each workspace keeps its own saved settings and uploaded boundary. "
+        "Bookmark the current page URL after saving if you want to reopen the same workspace later."
+    )
+
     st.subheader("Ranch Settings")
     ranch_cols = st.columns(2)
     ranch_cols[0].text_input("Ranch Name", key="ranch_name")
@@ -1735,26 +1784,35 @@ with settings_tab:
     with save_cols[0]:
         if st.button("Save Current Setup"):
             current_runtime_settings = build_runtime_settings()
+            target_workspace_id = normalize_workspace_id(st.session_state.workspace_id, fallback=CURRENT_WORKSPACE_ID)
+            st.session_state.workspace_id = target_workspace_id
+            st.query_params["workspace"] = target_workspace_id
             dashboard_state_payload = build_dashboard_state_payload(
                 current_runtime_settings,
+                workspace_id=target_workspace_id,
                 boundary_filename=effective_boundary_name,
                 boundary_bytes=effective_boundary_bytes,
                 existing_state=PERSISTED_DASHBOARD_STATE,
             )
-            saved_state_path = save_dashboard_state(dashboard_state_payload)
+            saved_state_path = save_dashboard_state(
+                dashboard_state_payload,
+                path=current_runtime_settings.workspace_state_path_for(target_workspace_id),
+            )
             saved_boundary_notice = "No custom boundary was saved; RangeIQ will reopen on the default corners."
             if dashboard_state_payload.get("saved_boundary", {}).get("path"):
                 saved_boundary_notice = (
                     f"Saved boundary file: {dashboard_state_payload['saved_boundary']['filename']}"
                 )
             st.success(
-                f"Setup saved to {current_runtime_settings.config_path} and {saved_state_path}. {saved_boundary_notice}"
+                f"Workspace {target_workspace_id} saved to {saved_state_path}. {saved_boundary_notice} "
+                "Bookmark this workspace URL to reopen the same setup later."
             )
     with save_cols[1]:
         boundary_save_mode = "current upload" if boundary_mode == "uploaded" else "saved boundary" if boundary_mode == "saved" else "default corners"
         st.markdown(
-            f"Current reopen state: **{boundary_save_mode}**. "
-            f"Providers, ranch name/address/GPS, map settings, time horizon, and thresholds will be remembered."
+            f"Current workspace: **{st.session_state.workspace_id}**. "
+            f"Reopen state: **{boundary_save_mode}**. "
+            f"Providers, ranch name/address/GPS, map settings, time horizon, and thresholds are saved per workspace."
         )
 
     st.subheader("Current Effective Config")

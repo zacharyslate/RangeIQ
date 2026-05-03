@@ -8,6 +8,7 @@ __pycache__/
 !.streamlit/config.toml
 config.yaml
 config/dashboard_state.json
+config/workspaces/
 pytest-cache-files-*/
 *.pyc
 *.pyo

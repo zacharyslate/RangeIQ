@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 
@@ -154,7 +155,7 @@ class RanchConfig:
 
 @dataclass
 class WeatherConfig:
-    provider: str = "mock"
+    provider: str = "openmeteo"
     refresh_minutes: int = 30
     user_agent: str = "RangeIQ/0.1 (contact@example.com)"
     timeout_seconds: int = 10
@@ -162,7 +163,7 @@ class WeatherConfig:
 
 @dataclass
 class AlertsConfig:
-    provider: str = "mock"
+    provider: str = "nws"
     refresh_minutes: int = 15
     timeout_seconds: int = 10
 
@@ -239,21 +240,21 @@ class FireRiskConfig:
 
 @dataclass
 class HistoricalWeatherSourceConfig:
-    provider: str = "mock"
+    provider: str = "nasa_power"
     timeout_seconds: int = 20
     refresh_hours: int = 168
 
 
 @dataclass
 class SoilsSourceConfig:
-    provider: str = "mock"
+    provider: str = "usda_sda"
     timeout_seconds: int = 20
     refresh_hours: int = 720
 
 
 @dataclass
 class DroughtSourceConfig:
-    provider: str = "mock"
+    provider: str = "usdm"
     timeout_seconds: int = 20
     refresh_hours: int = 48
 
@@ -323,6 +324,8 @@ class Settings:
     config_dir: Path = PROJECT_ROOT / "config"
     api_source_config_path: Path = PROJECT_ROOT / "config" / "api_sources.yaml"
     dashboard_state_path: Path = PROJECT_ROOT / "config" / "dashboard_state.json"
+    workspace_profile_root: Path = PROJECT_ROOT / "config" / "workspaces"
+    workspace_user_data_root: Path = PROJECT_ROOT / "data" / "user" / "workspaces"
     default_pasture_path: Path = PROJECT_ROOT / "data" / "example" / "caja_caliente_ranch.geojson"
     default_sensor_output_path: Path = PROJECT_ROOT / "data" / "sensors" / "sensor_readings.csv"
     default_sensor_network_db_path: Path = PROJECT_ROOT / "data" / "processed" / "rangeiq_sensor_network.sqlite"
@@ -372,6 +375,27 @@ class Settings:
 
     def to_display_dict(self) -> dict[str, Any]:
         return _serialize(self)
+
+    def workspace_state_path_for(self, workspace_id: str) -> Path:
+        normalized = normalize_workspace_id(workspace_id)
+        return self.workspace_profile_root / normalized / "dashboard_state.json"
+
+    def workspace_config_path_for(self, workspace_id: str) -> Path:
+        normalized = normalize_workspace_id(workspace_id)
+        return self.workspace_profile_root / normalized / "config.yaml"
+
+    def workspace_boundary_dir_for(self, workspace_id: str) -> Path:
+        normalized = normalize_workspace_id(workspace_id)
+        return self.workspace_user_data_root / normalized
+
+
+def normalize_workspace_id(raw_value: str | None, fallback: str = "workspace") -> str:
+    candidate = (raw_value or "").strip().lower()
+    candidate = re.sub(r"[^a-z0-9_-]+", "-", candidate)
+    candidate = re.sub(r"-{2,}", "-", candidate).strip("-_")
+    if not candidate:
+        candidate = fallback.strip().lower()
+    return candidate[:64]
 
 
 def load_settings(config_path: str | Path | None = None) -> Settings:

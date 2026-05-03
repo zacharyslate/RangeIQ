@@ -47,7 +47,7 @@ On Windows you can launch with [Launch RangeIQ.cmd](</C:/Users/zacha/OneDrive/Do
 
 Boundary uploads in the dashboard now accept `GeoJSON`, `JSON`, `KML`, and `KMZ`.
 
-To keep your setup between launches, open the `Settings` tab and click `Save Current Setup`. That writes the current ranch/provider config to `config.yaml` and remembers the current uploaded boundary so RangeIQ reopens with the same setup next time.
+To keep your setup between launches, open the `Settings` tab and click `Save Current Setup`. RangeIQ now saves settings and uploaded boundaries per `Workspace ID`, so different users can keep separate setups without overwriting one another. Bookmark the current URL after saving if you want the same workspace to reopen later.
 
 ## GitHub And Launch Prep
 
@@ -171,15 +171,29 @@ No API keys are required.
 
 Default behavior:
 
-- weather provider: `mock`
-- alerts provider: `mock`
-- sensor provider: `csv` with fallback to `mock`
-- historical weather provider: `mock` with optional `nasa_power`
-- soils provider: `mock` with optional `usda_sda`
-- drought provider: `mock` with optional `usdm`
+- weather provider: `openmeteo`
+- alerts provider: `nws`
+- sensor provider: paused in the hosted dashboard while under development
+- historical weather provider: `nasa_power`
+- soils provider: `usda_sda`
+- drought provider: `usdm`
 - vegetation provider: `earth_search_stac` by default, with optional `mock`, `climate_engine`, or legacy `appeears`
 
 If a public request fails, the dashboard stays up and marks that component as `fallback-mock`.
+
+## Workspaces
+
+RangeIQ now uses lightweight workspace isolation for hosted use:
+
+- each browser session gets a `workspace` ID in the URL
+- `Save Current Setup` writes settings and uploaded boundaries to that workspace only
+- different users can use different workspace IDs to avoid overwriting one another
+- reopening the same workspace is as simple as revisiting or bookmarking the same URL
+
+Important note:
+
+- this is workspace-based separation, not full user authentication
+- if two people intentionally use the same workspace ID, they will share and overwrite the same saved setup
 
 Public historical sources are also cached on disk under `data/cache/public_data`, so RangeIQ can:
 
@@ -253,11 +267,11 @@ ranch:
   longitude: -103.509750
 
 weather:
-  provider: "mock"
+  provider: "openmeteo"
   user_agent: "RangeIQ/0.1 (contact@example.com)"
 
 alerts:
-  provider: "mock"
+  provider: "nws"
 
 sensors:
   provider: "csv"
@@ -266,13 +280,13 @@ sensors:
 public_data:
   cache_enabled: true
   historical_weather:
-    provider: "mock"  # or nasa_power
+    provider: "nasa_power"
     refresh_hours: 168
   soils:
-    provider: "mock"  # or usda_sda
+    provider: "usda_sda"
     refresh_hours: 720
   drought:
-    provider: "mock"  # or usdm
+    provider: "usdm"
     refresh_hours: 48
   vegetation:
     provider: "earth_search_stac"  # or mock, climate_engine, appeears
