@@ -2019,14 +2019,7 @@ def build_leaflet_map_html(
     card_color = str(theme["card"])
     text_color = str(theme["text"])
     muted_color = str(theme["muted"])
-    accent_color = str(theme["accent"])
-    legend_fill = {
-        key: _rgba_to_css(value, opacity_override=0.18) for key, value in recommendation_rgba.items()
-    }
-    legend_stroke = {
-        key: _rgba_to_css(value, opacity_override=0.95) for key, value in recommendation_rgba.items()
-    }
-    selected_polygon = next((polygon for polygon in polygon_records if polygon["unit_id"] == selected_unit_id), polygon_records[0] if polygon_records else None)
+    selected_polygon = next((polygon for polygon in polygon_records if polygon["unit_id"] == selected_unit_id), None)
     selected_summary = {}
     if selected_polygon is not None:
         selected_summary = {
@@ -2117,58 +2110,11 @@ def build_leaflet_map_html(
           top: 12px;
           left: 12px;
         }}
-        #rq-map-legend {{
-          top: 12px;
-          right: 12px;
-          max-width: 220px;
-        }}
-        #rq-map-footer {{
-          left: 12px;
-          right: 12px;
-          bottom: 12px;
-          max-width: none;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 1rem;
-          flex-wrap: wrap;
-        }}
-        .rq-legend-row {{
-          display: flex;
-          align-items: center;
-          gap: 0.55rem;
-          margin-top: 0.35rem;
-          font-size: 0.78rem;
-        }}
-        .rq-legend-swatch {{
-          width: 18px;
-          height: 12px;
-          border-radius: 999px;
-          border: 1px solid transparent;
-        }}
       </style>
     </head>
     <body>
       <div id="rangeiq-map">
         <div id="rq-selected-unit-panel" class="rq-map-panel"></div>
-        <div id="rq-map-legend" class="rq-map-panel">
-          <div class="rq-map-kicker">Legend</div>
-          <h4>Attention & Guidance</h4>
-          <div class="rq-legend-row"><span class="rq-legend-swatch" style="background:{legend_fill['GRAZE']}; border-color:{legend_stroke['GRAZE']};"></span>Ready / strong</div>
-          <div class="rq-legend-row"><span class="rq-legend-swatch" style="background:{legend_fill['REST']}; border-color:{legend_stroke['REST']};"></span>Recover / watch</div>
-          <div class="rq-legend-row"><span class="rq-legend-swatch" style="background:{legend_fill['SUPPLEMENT']}; border-color:{legend_stroke['SUPPLEMENT']};"></span>Support / moderate concern</div>
-          <div class="rq-legend-row"><span class="rq-legend-swatch" style="background:{legend_fill['REDUCE STOCKING']}; border-color:{legend_stroke['REDUCE STOCKING']};"></span>Pressure building</div>
-          <div class="rq-legend-row"><span class="rq-legend-swatch" style="background:{legend_fill['DESTOCK WARNING']}; border-color:{legend_stroke['DESTOCK WARNING']};"></span>High attention</div>
-        </div>
-        <div id="rq-map-footer" class="rq-map-panel">
-          <div>
-            <div class="rq-map-kicker">Map Workspace</div>
-            <p><strong>{MAP_BASEMAP_LABELS.get(basemap, basemap)}</strong> basemap with direct polygon focus.</p>
-          </div>
-          <div style="font-size:0.82rem; color:{muted_color};">
-            Click any polygon to focus it. Use the map first, then inspect details below.
-          </div>
-        </div>
       </div>
       <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
       <script>
@@ -2186,13 +2132,11 @@ def build_leaflet_map_html(
 
         const renderSelectedPanel = (polygon) => {{
           if (!polygon) {{
-            selectedPanel.innerHTML = `
-              <div class="rq-map-kicker">Selected Unit</div>
-              <h4>No management unit selected</h4>
-              <p>Click a polygon to focus a unit.</p>
-            `;
+            selectedPanel.style.display = 'none';
+            selectedPanel.innerHTML = '';
             return;
           }}
+          selectedPanel.style.display = 'block';
           selectedPanel.innerHTML = `
             <div class="rq-map-kicker">Selected Unit</div>
             <h4>${{polygon.name}}</h4>
@@ -2217,7 +2161,7 @@ def build_leaflet_map_html(
           }}
           L.tileLayer(basemapConfig.url, tileOptions).addTo(map);
         }}
-        renderSelectedPanel(defaultSelected);
+        renderSelectedPanel(defaultSelected && Object.keys(defaultSelected).length ? defaultSelected : null);
 
         polygons.forEach((polygon) => {{
           const popup = `
@@ -2243,8 +2187,6 @@ def build_leaflet_map_html(
             fillColor: polygon.fill_color,
             fillOpacity: polygon.is_selected ? 1.0 : 0.82
           }}).addTo(map).bindPopup(popup);
-          layer.bindTooltip(`${{polygon.name}}`, {{sticky: true, direction: 'top'}});
-          layer.on('mouseover', () => renderSelectedPanel(polygon));
           layer.on('click', () => {{
             renderSelectedPanel(polygon);
             if (polygon.is_selected) {{
@@ -2283,6 +2225,41 @@ def render_pasture_map(
         )
     except Exception as exc:
         st.warning(f"RangeIQ could not render the interactive ranch map for the current basemap. {exc}")
+
+
+def render_map_attention_legend(theme: dict[str, object]) -> None:
+    recommendation_rgba = theme["recommendation_rgba"]
+    border_color = str(theme["border"])
+    card_color = str(theme["card"])
+    text_color = str(theme["text"])
+    muted_color = str(theme["muted"])
+    legend_rows = [
+        ("GRAZE", "Ready / strong"),
+        ("REST", "Recover / watch"),
+        ("SUPPLEMENT", "Support / moderate concern"),
+        ("REDUCE STOCKING", "Pressure building"),
+        ("DESTOCK WARNING", "High attention"),
+    ]
+    row_html = "".join(
+        (
+            "<div style='display:flex; align-items:center; gap:0.6rem; margin-top:0.42rem;'>"
+            f"<span style=\"width:18px; height:12px; border-radius:999px; display:inline-block; background:{_rgba_to_css(recommendation_rgba[key], opacity_override=0.18)}; border:1px solid {_rgba_to_css(recommendation_rgba[key], opacity_override=0.95)};\"></span>"
+            f"<span>{html.escape(label)}</span>"
+            "</div>"
+        )
+        for key, label in legend_rows
+    )
+    st.markdown(
+        (
+            f"<div style='border:1px solid {border_color}; border-radius:18px; background:{card_color}; color:{text_color}; "
+            "padding:0.9rem 1rem; margin-top:0.35rem;'>"
+            f"<div style='font-size:0.72rem; letter-spacing:0.18em; text-transform:uppercase; color:{muted_color}; margin-bottom:0.35rem;'>Map Legend</div>"
+            "<div style='font-weight:700; font-size:1rem;'>Attention & Guidance</div>"
+            f"{row_html}"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def plot_fire_risk_gauge(score: float, category: str, color: str, theme: dict[str, object]):
@@ -2688,9 +2665,10 @@ with top_shell_cols[1]:
                 )
                 st.caption(
                     "This map centers the ranch boundary and uploaded management-unit polygons first. "
-                    "RangeIQ shades each area by current attention level while the popup keeps vegetation, water, and grazing context together. "
-                    "Click any polygon to focus that unit directly, or use the quick-focus buttons below for the highest-priority areas."
+                    "RangeIQ shades each area by current attention level, but the only on-map detail panel appears when a management unit is selected. "
+                    "Use the legend below the map and the quick-focus buttons for extra context without crowding the map view."
                 )
+                render_map_attention_legend(theme)
                 focus_candidates = management_units_df.sort_values(["attention_score", "condition_score"], ascending=[False, True]).head(6)
                 st.markdown("**Quick Focus Units**")
                 focus_cols = responsive_columns(max(1, min(3, len(focus_candidates))), field_mode=field_mode, gap="small")
