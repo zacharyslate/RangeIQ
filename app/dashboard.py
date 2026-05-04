@@ -2946,6 +2946,9 @@ with top_shell_cols[1]:
                 if existing_override and existing_override.assigned_livestock
                 else list(current_unit.assigned_livestock)
             )
+            default_assigned_livestock = [
+                value for value in default_assigned_livestock if value in LIVESTOCK_SPECIES_OPTIONS
+            ]
             default_notes = existing_override.notes if existing_override is not None else str(source_unit_row.get("notes") or "")
 
             st.subheader("Edit Management Unit Metadata")
