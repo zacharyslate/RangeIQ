@@ -1797,7 +1797,7 @@ def persist_boundary_file(filename: str, payload: bytes, workspace_id: str) -> P
     destination = destination_dir / f"saved_boundary{suffix}"
     destination.parent.mkdir(parents=True, exist_ok=True)
     for existing in destination.parent.glob("saved_boundary.*"):
-        if existing != destination and existing.is_file():
+        if existing.is_file():
             existing.unlink(missing_ok=True)
     destination.write_bytes(payload)
     return destination

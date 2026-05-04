@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import shutil
 from typing import Any
@@ -47,6 +48,22 @@ def _bundle_path(bundle_root: Path, relative_value: str | Path) -> Path:
     if not text:
         return bundle_root
     return bundle_root / Path(text.replace("\\", "/"))
+
+
+def _sync_owner_from_reference(path: Path, reference: Path) -> None:
+    if os.name == "nt" or not path.exists() or not reference.exists():
+        return
+
+    reference_stat = reference.stat()
+    targets = [path]
+    if path.is_dir():
+        targets.extend(sorted(path.rglob("*")))
+
+    for target in targets:
+        try:
+            os.chown(target, reference_stat.st_uid, reference_stat.st_gid)
+        except OSError:
+            continue
 
 
 def _build_runtime_settings_for_manifest(base_settings: Settings, manifest: dict[str, Any]) -> Settings:
@@ -338,13 +355,15 @@ def apply_pretrained_workspace_bundle(
     boundary_destination = boundary_destination_dir / f"saved_boundary{boundary_suffix}"
     boundary_destination_dir.mkdir(parents=True, exist_ok=True)
     for existing in boundary_destination_dir.glob("saved_boundary.*"):
-        if existing != boundary_destination and existing.is_file():
+        if existing.is_file():
             existing.unlink(missing_ok=True)
     shutil.copy2(boundary_source, boundary_destination)
+    _sync_owner_from_reference(boundary_destination_dir, app_settings.workspace_user_data_root)
 
     models_payload = manifest.get("models", {})
     model_source_dir = _bundle_path(bundle_root, models_payload.get("relative_dir", "models"))
     copied_models = _copy_model_artifacts(model_source_dir, app_settings.workspace_model_dir_for(workspace_id))
+    _sync_owner_from_reference(app_settings.workspace_model_dir_for(workspace_id), app_settings.workspace_user_data_root)
 
     runtime_settings = _build_runtime_settings_for_manifest(app_settings, manifest)
     config_path = save_settings_file(runtime_settings, path=runtime_settings.workspace_config_path_for(workspace_id))
@@ -356,6 +375,7 @@ def apply_pretrained_workspace_bundle(
         saved_boundary_filename=boundary_source.name,
         saved_boundary_path=boundary_destination,
     )
+    _sync_owner_from_reference(config_path.parent, app_settings.workspace_profile_root)
 
     return {
         "email": updated_user.email,
