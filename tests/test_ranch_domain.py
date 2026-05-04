@@ -325,6 +325,67 @@ def test_unit_activity_summary_marks_active_operations():
     assert frame.loc[0, "current_activity"] == "Horse Turnout"
 
 
+def test_activity_and_utilization_summaries_accept_timezone_aware_as_of():
+    latest_snapshot = pd.DataFrame(
+        [
+            {
+                "pasture_id": "P-001",
+                "name": "North Pasture",
+                "acres": 100.0,
+                "centroid_lat": 32.1,
+                "centroid_lon": -99.4,
+                "geometry": [[[-99.4, 32.1], [-99.39, 32.1], [-99.39, 32.11], [-99.4, 32.1]]][0],
+                "pasture_condition_score": 58.0,
+                "drought_category": "D1",
+                "grazing_pressure": 0.42,
+                "water_risk_score": 35.0,
+                "stocking_risk_score": 41.0,
+                "recommendation": "REST",
+                "notes": "Source notes",
+            }
+        ]
+    )
+    vegetation_summary = pd.DataFrame(
+        [
+            {
+                "pasture_id": "P-001",
+                "ndvi_status": "Below normal",
+                "ndvi_anomaly_percent": -12.5,
+            }
+        ]
+    )
+    units = build_management_units(latest_snapshot, vegetation_summary, RanchProfile())
+    groups = {
+        "cow-calf": LivestockGroup(
+            group_id="cow-calf",
+            group_name="Cow-Calf Pairs",
+            species="cattle",
+            animal_count=25,
+            average_weight=1000.0,
+            assigned_unit_id="P-001",
+        )
+    }
+    events = {
+        "activity-1": UnitActivityEvent(
+            event_id="activity-1",
+            unit_id="P-001",
+            activity_type="grazing / occupancy",
+            livestock_group_id="cow-calf",
+            start_date="2026-05-01",
+            end_date="2026-05-05",
+            notes="Short grazing window.",
+        )
+    }
+    as_of = pd.Timestamp("2026-05-04T12:00:00Z")
+
+    activity_summary = build_unit_activity_summary_lookup(events, groups, units, as_of=as_of)
+    utilization = build_unit_utilization_summaries(units, groups, events, as_of=as_of)
+
+    assert activity_summary["P-001"].status_label == "Active"
+    assert utilization["P-001"].occupancy_days_30 == 4
+    assert utilization["P-001"].animal_unit_days_30 == 100.0
+
+
 def test_group_load_and_unit_utilization_summaries():
     latest_snapshot = pd.DataFrame(
         [

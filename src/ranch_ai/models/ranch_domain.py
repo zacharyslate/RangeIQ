@@ -675,15 +675,13 @@ def serialize_livestock_groups(groups: dict[str, LivestockGroup]) -> dict[str, d
 
 
 def _normalize_date_string(raw_value: Any) -> str:
-    if raw_value is None or str(raw_value).strip() in {"", "None", "none"}:
-        return ""
-    timestamp = pd.to_datetime(raw_value, errors="coerce")
-    if pd.isna(timestamp):
+    timestamp = _normalize_timestamp(raw_value)
+    if timestamp is None:
         return ""
     return timestamp.date().isoformat()
 
 
-def _parse_activity_date(raw_value: str | None) -> pd.Timestamp | None:
+def _normalize_timestamp(raw_value: Any) -> pd.Timestamp | None:
     if raw_value is None or str(raw_value).strip() == "":
         return None
     timestamp = pd.to_datetime(raw_value, errors="coerce")
@@ -692,6 +690,10 @@ def _parse_activity_date(raw_value: str | None) -> pd.Timestamp | None:
     if getattr(timestamp, "tzinfo", None) is not None:
         timestamp = timestamp.tz_convert("UTC").tz_localize(None)
     return timestamp.normalize()
+
+
+def _parse_activity_date(raw_value: str | None) -> pd.Timestamp | None:
+    return _normalize_timestamp(raw_value)
 
 
 def coerce_unit_activity_events(raw_value: Any) -> dict[str, UnitActivityEvent]:
@@ -899,7 +901,7 @@ def build_unit_activity_summary_lookup(
     *,
     as_of: pd.Timestamp | None = None,
 ) -> dict[str, UnitActivitySummary]:
-    effective_now = as_of or pd.Timestamp.utcnow().normalize()
+    effective_now = _normalize_timestamp(as_of) or _normalize_timestamp(pd.Timestamp.utcnow()) or pd.Timestamp.now().normalize()
     unit_lookup = {unit.unit_id: unit for unit in units}
     grouped_events: dict[str, list[UnitActivityEvent]] = {unit.unit_id: [] for unit in units}
     for event in events.values():
@@ -972,7 +974,7 @@ def build_livestock_group_load_summaries(
     as_of: pd.Timestamp | None = None,
     lookback_days: int = 30,
 ) -> dict[str, LivestockGroupLoadSummary]:
-    effective_now = (as_of or pd.Timestamp.utcnow()).normalize()
+    effective_now = _normalize_timestamp(as_of) or _normalize_timestamp(pd.Timestamp.utcnow()) or pd.Timestamp.now().normalize()
     window_start = effective_now - pd.Timedelta(days=max(lookback_days - 1, 0))
     unit_lookup = {unit.unit_id: unit.name for unit in units}
     summary_lookup: dict[str, LivestockGroupLoadSummary] = {}
@@ -1059,7 +1061,7 @@ def build_unit_utilization_summaries(
     as_of: pd.Timestamp | None = None,
     lookback_days: int = 30,
 ) -> dict[str, UnitUtilizationSummary]:
-    effective_now = (as_of or pd.Timestamp.utcnow()).normalize()
+    effective_now = _normalize_timestamp(as_of) or _normalize_timestamp(pd.Timestamp.utcnow()) or pd.Timestamp.now().normalize()
     window_start = effective_now - pd.Timedelta(days=max(lookback_days - 1, 0))
     summaries: dict[str, UnitUtilizationSummary] = {}
     for unit in units:
@@ -1164,7 +1166,7 @@ def build_operation_planner_suggestions(
     *,
     as_of: pd.Timestamp | None = None,
 ) -> list[OperationPlannerSuggestion]:
-    effective_now = (as_of or pd.Timestamp.utcnow()).normalize()
+    effective_now = _normalize_timestamp(as_of) or _normalize_timestamp(pd.Timestamp.utcnow()) or pd.Timestamp.now().normalize()
     suggestions: list[OperationPlannerSuggestion] = []
     style = str(profile.management_style or ManagementStyle.NOT_SURE.value)
     for unit in units:
@@ -1337,7 +1339,7 @@ def unit_activity_frame(
     *,
     as_of: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    effective_now = as_of or pd.Timestamp.utcnow().normalize()
+    effective_now = _normalize_timestamp(as_of) or _normalize_timestamp(pd.Timestamp.utcnow()) or pd.Timestamp.now().normalize()
     unit_lookup = {unit.unit_id: unit.name for unit in units}
     rows: list[dict[str, Any]] = []
     for event in events.values():
