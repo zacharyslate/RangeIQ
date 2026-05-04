@@ -2434,7 +2434,7 @@ if field_mode:
     )
     st.radio(
         "Appearance",
-        options=list(THEME_LOOKUP.keys()),
+        options=[LIGHT_THEME["name"], DARK_THEME["name"]],
         key="theme_mode",
         horizontal=True,
         label_visibility="collapsed",
