@@ -1,7 +1,9 @@
 import pandas as pd
 
 from ranch_ai.models.ranch_domain import (
+    UnitFeedbackLabel,
     LivestockGroup,
+    coerce_unit_feedback_labels,
     attach_utilization_summaries,
     build_operation_planner_suggestions,
     build_livestock_group_load_summaries,
@@ -17,10 +19,12 @@ from ranch_ai.models.ranch_domain import (
     coerce_unit_activity_events,
     livestock_group_load_frame,
     management_units_frame,
+    serialize_unit_feedback_labels,
     serialize_unit_activity_events,
     serialize_livestock_groups,
     serialize_management_unit_overrides,
     unit_utilization_frame,
+    unit_feedback_frame,
 )
 
 
@@ -160,6 +164,88 @@ def test_unit_activity_serialization_round_trip():
     assert reloaded["activity-1"].livestock_group_id == "cow-calf"
     assert reloaded["activity-1"].start_date == "2026-05-01"
     assert reloaded["activity-1"].end_date == "2026-05-14"
+
+
+def test_unit_feedback_label_serialization_round_trip():
+    labels = {
+        "feedback-1": UnitFeedbackLabel(
+            label_id="feedback-1",
+            unit_id="P-001",
+            label_type="forage / vegetation condition",
+            label_value="stressed",
+            observed_on="2026-05-04",
+            confidence="high",
+            notes="Greenness fell off after the last dry week.",
+        )
+    }
+
+    payload = serialize_unit_feedback_labels(labels)
+    reloaded = coerce_unit_feedback_labels(payload)
+
+    assert reloaded["feedback-1"].unit_id == "P-001"
+    assert reloaded["feedback-1"].label_type == "forage / vegetation condition"
+    assert reloaded["feedback-1"].label_value == "stressed"
+    assert reloaded["feedback-1"].confidence == "high"
+
+
+def test_unit_feedback_frame_uses_unit_names_and_sorts_latest_first():
+    management_units = build_management_units(
+        pd.DataFrame(
+            [
+                {
+                    "pasture_id": "P-001",
+                    "name": "North Pasture",
+                    "acres": 120.0,
+                    "centroid_lat": 32.1,
+                    "centroid_lon": -99.4,
+                    "geometry": [[[-99.4, 32.1], [-99.39, 32.1], [-99.39, 32.11], [-99.4, 32.1]]][0],
+                    "pasture_condition_score": 58.0,
+                    "drought_category": "D1",
+                    "grazing_pressure": 0.42,
+                    "water_risk_score": 35.0,
+                    "stocking_risk_score": 41.0,
+                    "recommendation": "REST",
+                    "notes": "Source notes",
+                }
+            ]
+        ),
+        pd.DataFrame(
+            [
+                {
+                    "pasture_id": "P-001",
+                    "ndvi_status": "Below normal",
+                    "ndvi_anomaly_percent": -12.5,
+                }
+            ]
+        ),
+        RanchProfile(),
+    )
+    labels = {
+        "feedback-older": UnitFeedbackLabel(
+            label_id="feedback-older",
+            unit_id="P-001",
+            label_type="general observation",
+            label_value="mixed",
+            observed_on="2026-05-01",
+            confidence="medium",
+            notes="Earlier note.",
+        ),
+        "feedback-latest": UnitFeedbackLabel(
+            label_id="feedback-latest",
+            unit_id="P-001",
+            label_type="move / turnout readiness",
+            label_value="hold",
+            observed_on="2026-05-05",
+            confidence="high",
+            notes="Recent note.",
+        ),
+    }
+
+    frame = unit_feedback_frame(labels, management_units)
+
+    assert frame.loc[0, "unit_name"] == "North Pasture"
+    assert frame.loc[0, "label_id"] == "feedback-latest"
+    assert frame.loc[1, "label_id"] == "feedback-older"
 
 
 def test_unit_activity_summary_marks_active_operations():

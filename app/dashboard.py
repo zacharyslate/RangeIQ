@@ -29,7 +29,18 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from ranch_ai.config import Settings, normalize_workspace_id, save_settings_file, settings
+from ranch_ai.features.feedback_dataset import (
+    build_feedback_calibration_dataset,
+    build_feedback_dataset,
+    build_feedback_shadow_review_dataset,
+    summarize_feedback_shadow_review_dataset,
+    summarize_feedback_calibration_dataset,
+    summarize_feedback_dataset,
+)
 from ranch_ai.models.ranch_domain import (
+    FEEDBACK_CONFIDENCE_OPTIONS,
+    FEEDBACK_LABEL_TYPE_OPTIONS,
+    FEEDBACK_VALUE_OPTIONS,
     LIVESTOCK_SPECIES_OPTIONS,
     MANAGEMENT_STYLE_OPTIONS,
     MANAGEMENT_UNIT_TYPE_OPTIONS,
@@ -38,6 +49,7 @@ from ranch_ai.models.ranch_domain import (
     UNIT_ACTIVITY_TYPE_OPTIONS,
     ManagementUnit,
     ManagementUnitOverride,
+    UnitFeedbackLabel,
     LivestockGroup,
     RanchProfile,
     UnitActivityEvent,
@@ -50,6 +62,7 @@ from ranch_ai.models.ranch_domain import (
     build_unit_activity_summary_lookup,
     build_unit_utilization_summaries,
     coerce_management_unit_overrides,
+    coerce_unit_feedback_labels,
     coerce_unit_activity_events,
     coerce_livestock_groups,
     livestock_groups_frame,
@@ -59,9 +72,11 @@ from ranch_ai.models.ranch_domain import (
     OperationPlannerSuggestion,
     primary_livestock_group,
     serialize_unit_activity_events,
+    serialize_unit_feedback_labels,
     serialize_livestock_groups,
     serialize_management_unit_overrides,
     unit_activity_frame,
+    unit_feedback_frame,
     unit_utilization_frame,
     unit_term,
 )
@@ -212,6 +227,26 @@ MAP_BASEMAP_LABELS = {
     "plain": "Plain",
 }
 
+FIELD_SECTION_OPTIONS = [
+    "Dashboard",
+    "Management Units",
+    "Vegetation & Land Health",
+    "Livestock & Management",
+    "Data & Providers",
+    "Settings",
+    "Sensors",
+]
+
+FIELD_SECTION_SHORT_LABELS = {
+    "Dashboard": "Map & Alerts",
+    "Management Units": "Units",
+    "Vegetation & Land Health": "Land Health",
+    "Livestock & Management": "Livestock",
+    "Data & Providers": "Data",
+    "Settings": "Settings",
+    "Sensors": "Sensors",
+}
+
 LEAFLET_BASEMAPS: dict[str, dict[str, Any]] = {
     "naip": {
         "url": "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
@@ -266,9 +301,12 @@ BASE_SESSION_DEFAULTS = {
     "ranch_profile_notes": settings.ranch_profile.notes,
     "livestock_groups": {},
     "map_basemap": "naip",
+    "view_mode": "Desktop Workspace",
+    "field_shell_section": "Dashboard",
     "selected_unit_id": "",
     "management_unit_overrides": {},
     "unit_activity_events": {},
+    "unit_feedback_labels": {},
     "weather_provider": settings.weather.provider,
     "alerts_provider": settings.alerts.provider,
     "sensor_provider": settings.sensors.provider,
@@ -614,6 +652,13 @@ def get_unit_activity_events() -> dict[str, UnitActivityEvent]:
     events = coerce_unit_activity_events(raw_value)
     st.session_state["unit_activity_events"] = serialize_unit_activity_events(events)
     return events
+
+
+def get_unit_feedback_labels() -> dict[str, UnitFeedbackLabel]:
+    raw_value = st.session_state.get("unit_feedback_labels", {})
+    labels = coerce_unit_feedback_labels(raw_value)
+    st.session_state["unit_feedback_labels"] = serialize_unit_feedback_labels(labels)
+    return labels
 
 
 def save_planner_suggestion_event(suggestion: OperationPlannerSuggestion) -> bool:
@@ -1202,6 +1247,59 @@ def apply_app_theme(theme: dict[str, object]) -> None:
     )
 
 
+def apply_display_mode(view_mode: str) -> None:
+    field_mode = view_mode == "Field Mode"
+    field_css = ""
+    if field_mode:
+        field_css = """
+        [data-testid='stAppViewContainer'] > .main .block-container { max-width: 920px; }
+        .rq-field-intro { color: var(--rq-muted); font-size: 0.92rem; line-height: 1.45; margin: 0.1rem 0 0.6rem 0; }
+        .rq-card-value { font-size: 1.45rem; }
+        [data-testid='stMetric'] { padding: 12px 14px; }
+        """
+    st.markdown(
+        f"""
+        <style>
+        [data-testid="stTabs"] [data-baseweb="tab-list"] {{
+            flex-wrap: nowrap !important;
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            scrollbar-width: thin;
+            padding-bottom: 0.35rem;
+        }}
+        [data-testid="stTabs"] [data-baseweb="tab-list"]::-webkit-scrollbar {{
+            height: 6px;
+        }}
+        [data-testid="stTabs"] [data-baseweb="tab-list"]::-webkit-scrollbar-thumb {{
+            background: var(--rq-border);
+            border-radius: 999px;
+        }}
+        @media (max-width: 980px) {{
+            [data-testid="stAppViewContainer"] > .main .block-container {{
+                padding-left: 0.85rem;
+                padding-right: 0.85rem;
+            }}
+            [data-testid="stTabs"] button {{
+                min-height: 42px;
+                padding: 0.5rem 0.8rem;
+            }}
+            [data-testid="stTabs"] button p {{
+                font-size: 0.86rem;
+            }}
+            .rq-card {{
+                padding: 0.9rem 0.92rem;
+            }}
+            .rq-card-value {{
+                font-size: 1.55rem;
+            }}
+        }}
+        {field_css}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def apply_chart_theme(figure, theme: dict[str, object]):
     figure.update_layout(
         paper_bgcolor=theme["card"],
@@ -1241,6 +1339,13 @@ def format_timestamp(value: Any) -> str:
     if value is None or pd.isna(value):
         return "--"
     return pd.to_datetime(value).strftime("%Y-%m-%d %H:%M")
+
+
+def responsive_columns(spec: int | list[float], *, field_mode: bool, gap: str = "medium") -> list[Any]:
+    if field_mode:
+        count = spec if isinstance(spec, int) else len(spec)
+        return [st.container() for _ in range(max(1, count))]
+    return list(st.columns(spec, gap=gap))
 
 
 def filter_time_range_by_column(df: pd.DataFrame, column: str, time_range: str) -> pd.DataFrame:
@@ -2279,12 +2384,12 @@ def render_fire_risk_panel(assessment) -> None:
     )
 
 
-def render_station_cards(status_df: pd.DataFrame) -> None:
+def render_station_cards(status_df: pd.DataFrame, *, field_mode: bool = False) -> None:
     if status_df.empty:
         st.info("No station status records are available.")
         return
 
-    columns = st.columns(min(3, len(status_df)))
+    columns = responsive_columns(min(3, len(status_df)), field_mode=field_mode, gap="small")
     for idx, row in enumerate(status_df.itertuples(index=False)):
         with columns[idx % len(columns)]:
             badges = [highlight_badge("success" if row.status == "ONLINE" else "warning", row.status)]
@@ -2307,30 +2412,77 @@ def render_station_cards(status_df: pd.DataFrame) -> None:
 
 theme = get_theme(st.session_state.theme_mode)
 apply_app_theme(theme)
+apply_display_mode(str(st.session_state.view_mode))
+field_mode = str(st.session_state.view_mode) == "Field Mode"
+if st.session_state.get("field_shell_section") not in FIELD_SECTION_OPTIONS:
+    st.session_state.field_shell_section = FIELD_SECTION_OPTIONS[0]
 
-dashboard_tab, units_tab, vegetation_tab, livestock_tab, data_tab, settings_tab, sensors_tab = st.tabs(
-    [
-        "Dashboard",
-        "Management Units",
-        "Vegetation & Land Health",
-        "Livestock & Management",
-        "Data & Providers",
-        "Settings",
-        "Sensors",
-    ]
-)
+active_field_section = str(st.session_state.field_shell_section) if field_mode else None
 
-with settings_tab:
-    st.subheader("Scenario & Boundary")
-    uploaded_boundary = st.file_uploader("Upload ranch or management-unit boundary", type=["geojson", "json", "kml", "kmz"])
-    scenario_cols = st.columns(3)
-    scenario_cols[0].slider("Weekly modeling window", min_value=12, max_value=104, step=2, key="weeks")
-    scenario_cols[1].slider("Vegetation history (years)", min_value=5, max_value=10, key="history_years")
-    scenario_cols[2].number_input("Scenario seed", min_value=1, step=1, key="seed")
-    st.caption(
-        "Upload a GeoJSON, JSON, KML, or KMZ file from Google Earth Pro or another mapping tool to replace the default ranch geometry. "
-        "These settings drive the current ranch-intelligence run and can be saved to your account."
+if field_mode:
+    st.markdown("<div class='rq-control-kicker'>Field Mode</div>", unsafe_allow_html=True)
+    st.markdown("<div class='rq-control-title'>Phone Workspace</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='rq-control-copy'>Use this compact shell for quick ranch checks, map review, and field observations without the full desktop tab layout.</div>",
+        unsafe_allow_html=True,
     )
+    st.selectbox(
+        "Field Navigation",
+        options=FIELD_SECTION_OPTIONS,
+        key="field_shell_section",
+        format_func=lambda value: FIELD_SECTION_SHORT_LABELS.get(value, value),
+    )
+    st.radio(
+        "Appearance",
+        options=list(THEME_LOOKUP.keys()),
+        key="theme_mode",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    st.radio(
+        "Workspace Layout",
+        options=["Desktop Workspace", "Field Mode"],
+        key="view_mode",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    if st.button("Refresh Ranch Intelligence", use_container_width=True):
+        st.session_state.data_refresh_nonce += 1
+        st.rerun()
+    st.caption("Phone mode keeps the map, selected unit, and current operational context close at hand. Data and model outputs stay cached until you refresh.")
+
+if field_mode:
+    dashboard_shell = st.container() if active_field_section == "Dashboard" else None
+    units_shell = st.container() if active_field_section == "Management Units" else None
+    vegetation_shell = st.container() if active_field_section == "Vegetation & Land Health" else None
+    livestock_shell = st.container() if active_field_section == "Livestock & Management" else None
+    data_shell = st.container() if active_field_section == "Data & Providers" else None
+    settings_shell = st.container() if active_field_section == "Settings" else None
+    sensors_shell = st.container() if active_field_section == "Sensors" else None
+else:
+    (
+        dashboard_shell,
+        units_shell,
+        vegetation_shell,
+        livestock_shell,
+        data_shell,
+        settings_shell,
+        sensors_shell,
+    ) = st.tabs(FIELD_SECTION_OPTIONS)
+
+uploaded_boundary = None
+if settings_shell is not None:
+    with settings_shell:
+            st.subheader("Scenario & Boundary")
+            uploaded_boundary = st.file_uploader("Upload ranch or management-unit boundary", type=["geojson", "json", "kml", "kmz"])
+            scenario_cols = responsive_columns(3, field_mode=field_mode, gap="medium")
+            scenario_cols[0].slider("Weekly modeling window", min_value=12, max_value=104, step=2, key="weeks")
+            scenario_cols[1].slider("Vegetation history (years)", min_value=5, max_value=10, key="history_years")
+            scenario_cols[2].number_input("Scenario seed", min_value=1, step=1, key="seed")
+            st.caption(
+                "Upload a GeoJSON, JSON, KML, or KMZ file from Google Earth Pro or another mapping tool to replace the default ranch geometry. "
+                "These settings drive the current ranch-intelligence run and can be saved to your account."
+            )
 
 runtime_settings = build_runtime_settings()
 uploaded_boundary_name = uploaded_boundary.name if uploaded_boundary is not None else None
@@ -2378,6 +2530,7 @@ ranch_profile = runtime_settings.ranch_profile
 management_unit_overrides = get_management_unit_overrides()
 livestock_groups = get_livestock_groups()
 unit_activity_events = get_unit_activity_events()
+unit_feedback_labels = get_unit_feedback_labels()
 management_units = build_management_units(
     latest_snapshot,
     vegetation_summary_df,
@@ -2391,6 +2544,13 @@ utilization_summary_lookup = build_unit_utilization_summaries(management_units, 
 management_units = attach_utilization_summaries(management_units, utilization_summary_lookup)
 management_units_df = management_units_frame(management_units)
 activity_log_df = unit_activity_frame(unit_activity_events, livestock_groups, management_units)
+unit_feedback_df = unit_feedback_frame(unit_feedback_labels, management_units)
+feedback_dataset_df = build_feedback_dataset(unit_feedback_labels, management_units, ranch_profile, livestock_groups)
+feedback_dataset_summary = summarize_feedback_dataset(feedback_dataset_df)
+feedback_calibration_df = build_feedback_calibration_dataset(feedback_dataset_df)
+feedback_calibration_summary = summarize_feedback_calibration_dataset(feedback_calibration_df)
+feedback_shadow_review_df = build_feedback_shadow_review_dataset(feedback_calibration_df, latest_snapshot)
+feedback_shadow_review_summary = summarize_feedback_shadow_review_dataset(feedback_shadow_review_df)
 group_load_df = livestock_group_load_frame(build_livestock_group_load_summaries(livestock_groups, unit_activity_events, management_units))
 unit_utilization_df = unit_utilization_frame(utilization_summary_lookup, management_units)
 planner_suggestions = build_operation_planner_suggestions(management_units, ranch_profile, livestock_groups)
@@ -2432,6 +2592,11 @@ selected_pasture_name = selected_unit.name
 selected_activity_summary = activity_summary_lookup.get(selected_unit.unit_id, UnitActivitySummary(unit_id=selected_unit.unit_id))
 selected_utilization_summary = utilization_summary_lookup.get(selected_unit.unit_id)
 selected_planner_suggestion = next((item for item in planner_suggestions if item.unit_id == selected_unit.unit_id), None)
+selected_feedback_df = (
+    unit_feedback_df.loc[unit_feedback_df["unit_id"] == selected_unit.unit_id].copy()
+    if not unit_feedback_df.empty
+    else pd.DataFrame()
+)
 current_weather = weather_bundle.current
 last_updated = max(weather_bundle.loaded_at, alert_bundle.loaded_at, artifacts.public_data_bundle.loaded_at)
 total_acres = float(latest_snapshot["acres"].sum()) if "acres" in latest_snapshot.columns else 0.0
@@ -2446,7 +2611,7 @@ vegetation_source_status = next(
     None,
 )
 
-top_shell_cols = st.columns([1.45, 0.78], gap="medium")
+top_shell_cols = responsive_columns([1.45, 0.78], field_mode=field_mode, gap="medium")
 with top_shell_cols[0]:
     logo_path = get_logo_path(st.session_state.theme_mode)
     render_dashboard_header(
@@ -2459,1204 +2624,1514 @@ with top_shell_cols[0]:
         logo_path=logo_path,
     )
 with top_shell_cols[1]:
-    st.markdown("<div class='rq-control-kicker'>Display</div>", unsafe_allow_html=True)
-    st.markdown("<div class='rq-control-title'>Appearance</div>", unsafe_allow_html=True)
-    st.markdown(
-        "<div class='rq-control-copy'>Switch between a warm daylight field view and a darker low-glare operations mode.</div>",
-        unsafe_allow_html=True,
-    )
-    st.segmented_control(
-        "Color Mode",
-        options=["High Plains Day", "Mesquite Night"],
-        key="theme_mode",
-        label_visibility="collapsed",
-        width="stretch",
-    )
-    if st.button("Refresh Ranch Intelligence", use_container_width=True):
-        st.session_state.data_refresh_nonce += 1
-        st.rerun()
-    st.caption("Map, providers, and model outputs stay cached until you refresh or change scenario inputs.")
-
-with dashboard_tab:
-    if boundary_mode == "default":
-        st.info("The default ranch boundary is the single Caja Caliente management unit drawn from your provided Alpine property corners.")
-    elif boundary_mode == "saved":
-        st.info("RangeIQ loaded your last saved ranch boundary automatically. Upload a new file or save again if you want to replace it.")
-
-    if provider_fallback_active:
-        st.warning("One or more public-data providers failed in this run. RangeIQ automatically fell back to mock data to keep the dashboard operational.")
-
-    selected_condition = selected_unit.condition
-    high_attention_count = int((management_units_df["attention_level"] == "High").sum()) if not management_units_df.empty else 0
-    mean_condition = float(pd.to_numeric(management_units_df["condition_score"], errors="coerce").fillna(0).mean()) if not management_units_df.empty else 0.0
-    top_metrics = st.columns(4)
-    top_metrics[0].metric("Current Temp", format_number(current_weather.temperature_f, " F", 1), f"Feels like {format_number(current_weather.feels_like_f, ' F', 1)}")
-    top_metrics[1].metric(unit_term(ranch_profile, plural=True, title=True), f"{pasture_count}", f"{total_acres:,.1f} acres")
-    top_metrics[2].metric("Attention Queue", f"{high_attention_count}", f"Avg condition {mean_condition:.1f}")
-    top_metrics[3].metric("Fire Risk", f"{fire_assessment.category}", f"Score {fire_assessment.score:.1f}")
-
-    map_col, summary_col = st.columns([1.26, 0.84], gap="medium")
-    with map_col:
-        st.subheader("Ranch Intelligence Map")
-        render_pasture_map(
-            map_snapshot,
-            theme,
-            st.session_state.map_basemap,
-            workspace_id=CURRENT_WORKSPACE_ID,
-            selected_unit_id=selected_unit_id,
+    if field_mode:
+        render_signal_card(
+            title="Field Focus",
+            value=FIELD_SECTION_SHORT_LABELS.get(str(active_field_section or "Dashboard"), "Map & Alerts"),
+            subtitle="Use the Field Navigation control above to jump between the map, units, land health, and settings on a phone.",
+            badges=[highlight_badge("info", "FIELD MODE")],
         )
-        st.caption(
-            "This map centers the ranch boundary and uploaded management-unit polygons first. "
-            "RangeIQ shades each area by current attention level while the popup keeps vegetation, water, and grazing context together. "
-            "Click any polygon to focus that unit directly, or use the quick-focus buttons below for the highest-priority areas."
+    else:
+        st.markdown("<div class='rq-control-kicker'>Display</div>", unsafe_allow_html=True)
+        st.markdown("<div class='rq-control-title'>Appearance</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='rq-control-copy'>Switch between a warm daylight field view and a darker low-glare operations mode.</div>",
+            unsafe_allow_html=True,
         )
-        focus_candidates = management_units_df.sort_values(["attention_score", "condition_score"], ascending=[False, True]).head(6)
-        st.markdown("**Quick Focus Units**")
-        focus_cols = st.columns(max(1, min(3, len(focus_candidates))), gap="small")
-        for idx, row in enumerate(focus_candidates.itertuples(index=False)):
-            with focus_cols[idx % len(focus_cols)]:
-                label = f"{row.name} ({row.attention_level})"
-                if st.button(label, key=f"focus-unit-{row.unit_id}", use_container_width=True):
-                    st.session_state.selected_unit_id = row.unit_id
-                    st.query_params["unit"] = row.unit_id
-                    st.rerun()
+        st.segmented_control(
+            "Color Mode",
+            options=["High Plains Day", "Mesquite Night"],
+            key="theme_mode",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+        st.radio(
+            "Workspace Layout",
+            options=["Desktop Workspace", "Field Mode"],
+            key="view_mode",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        if st.button("Refresh Ranch Intelligence", use_container_width=True):
+            st.session_state.data_refresh_nonce += 1
+            st.rerun()
+        st.caption("Map, providers, and model outputs stay cached until you refresh or change scenario inputs.")
 
-    with summary_col:
-        st.subheader(f"Selected {unit_term(ranch_profile, title=True)}")
-        st.caption(f"{selected_unit.name} | {selected_unit.unit_type} | {selected_unit.acres:,.1f} acres")
-        if selected_condition is not None:
-            render_signal_card(
-                title="Attention Level",
-                value=f"{selected_condition.attention_level} ({selected_condition.attention_score:.1f})",
-                subtitle=selected_condition.recommendation_summary,
-                badges=[attention_badge(selected_condition.attention_level), unit_type_badge(selected_unit.unit_type)],
-            )
-            activity_subtitle = selected_activity_summary.current_window or selected_activity_summary.recent_window or "No use/rest history has been logged yet."
-            if selected_activity_summary.current_group_label:
-                activity_subtitle = f"{selected_activity_summary.current_group_label} | {activity_subtitle}"
-            render_signal_card(
-                title="Operations Snapshot",
-                value=selected_activity_summary.current_activity,
-                subtitle=activity_subtitle,
-                badges=[activity_status_badge(selected_activity_summary.status_label)],
-            )
-            if selected_utilization_summary is not None:
-                utilization_subtitle = (
-                    f"{format_number(selected_utilization_summary.utilization_per_acre_30, '', 2)} AUD/ac over 30d | "
-                    f"Active head {selected_utilization_summary.active_head_count}"
+    if dashboard_shell is not None:
+        with dashboard_shell:
+            if boundary_mode == "default":
+                st.info("The default ranch boundary is the single Caja Caliente management unit drawn from your provided Alpine property corners.")
+            elif boundary_mode == "saved":
+                st.info("RangeIQ loaded your last saved ranch boundary automatically. Upload a new file or save again if you want to replace it.")
+
+            if provider_fallback_active:
+                st.warning("One or more public-data providers failed in this run. RangeIQ automatically fell back to mock data to keep the dashboard operational.")
+
+            selected_condition = selected_unit.condition
+            high_attention_count = int((management_units_df["attention_level"] == "High").sum()) if not management_units_df.empty else 0
+            mean_condition = float(pd.to_numeric(management_units_df["condition_score"], errors="coerce").fillna(0).mean()) if not management_units_df.empty else 0.0
+            top_metrics = responsive_columns(4, field_mode=field_mode, gap="small")
+            top_metrics[0].metric("Current Temp", format_number(current_weather.temperature_f, " F", 1), f"Feels like {format_number(current_weather.feels_like_f, ' F', 1)}")
+            top_metrics[1].metric(unit_term(ranch_profile, plural=True, title=True), f"{pasture_count}", f"{total_acres:,.1f} acres")
+            top_metrics[2].metric("Attention Queue", f"{high_attention_count}", f"Avg condition {mean_condition:.1f}")
+            top_metrics[3].metric("Fire Risk", f"{fire_assessment.category}", f"Score {fire_assessment.score:.1f}")
+
+            map_col, summary_col = responsive_columns([1.26, 0.84], field_mode=field_mode, gap="medium")
+            with map_col:
+                st.subheader("Ranch Intelligence Map")
+                render_pasture_map(
+                    map_snapshot,
+                    theme,
+                    st.session_state.map_basemap,
+                    workspace_id=CURRENT_WORKSPACE_ID,
+                    selected_unit_id=selected_unit_id,
                 )
-                if selected_utilization_summary.rest_days_since_occupancy is not None:
-                    utilization_subtitle += f" | Rest {selected_utilization_summary.rest_days_since_occupancy}d"
-                render_signal_card(
-                    title="Utilization Heuristic",
-                    value=selected_utilization_summary.utilization_label,
-                    subtitle=utilization_subtitle,
-                    badges=[highlight_badge(
-                        "success"
-                        if selected_utilization_summary.utilization_label in {"Resting", "Light"}
-                        else "warning"
-                        if selected_utilization_summary.utilization_label in {"Moderate", "Elevated"}
-                        else "critical",
-                        selected_utilization_summary.utilization_label.upper(),
-                    )],
-                )
-            if selected_planner_suggestion is not None:
-                planner_window = selected_planner_suggestion.start_date
-                if selected_planner_suggestion.end_date and selected_planner_suggestion.end_date != selected_planner_suggestion.start_date:
-                    planner_window = f"{selected_planner_suggestion.start_date} to {selected_planner_suggestion.end_date}"
-                planner_subtitle = selected_planner_suggestion.rationale
-                if selected_planner_suggestion.suggested_group_label:
-                    planner_subtitle = (
-                        f"{selected_planner_suggestion.suggested_group_label} | {planner_window} | "
-                        f"{selected_planner_suggestion.rationale}"
-                    )
-                render_signal_card(
-                    title="Suggested Next Step",
-                    value=str(selected_planner_suggestion.suggested_activity_type).title(),
-                    subtitle=planner_subtitle,
-                    badges=[planner_urgency_badge(selected_planner_suggestion.urgency)],
-                )
-                if st.button(
-                    f"Schedule Suggested Activity for {selected_unit.name}",
-                    key=f"schedule-suggestion-{selected_unit.unit_id}",
-                    use_container_width=True,
-                ):
-                    if save_planner_suggestion_event(selected_planner_suggestion):
-                        st.success("Suggested activity scheduled into the unit timeline. Save Current Setup in Settings if you want it persisted.")
-                    else:
-                        st.info("That suggested activity is already on the calendar for this unit.")
-                    st.rerun()
-            detail_cols = st.columns(2)
-            detail_cols[0].metric("Condition Score", format_number(selected_condition.forage_condition_score, "", 1))
-            detail_cols[1].metric("Vegetation", selected_condition.vegetation_status)
-            detail_cols = st.columns(2)
-            detail_cols[0].metric("Drought", selected_condition.drought_category)
-            detail_cols[1].metric("Water Risk", format_number(selected_condition.water_risk_score, "", 1))
-            st.caption(
-                f"Assigned livestock: {', '.join(selected_unit.assigned_livestock) if selected_unit.assigned_livestock else 'none assigned'}"
-            )
-            if selected_activity_summary.recent_activity != "No activity logged":
                 st.caption(
-                    f"Recent activity: {selected_activity_summary.recent_activity} | "
-                    f"{selected_activity_summary.recent_group_label or 'no group assigned'} | "
-                    f"{selected_activity_summary.recent_window}"
+                    "This map centers the ranch boundary and uploaded management-unit polygons first. "
+                    "RangeIQ shades each area by current attention level while the popup keeps vegetation, water, and grazing context together. "
+                    "Click any polygon to focus that unit directly, or use the quick-focus buttons below for the highest-priority areas."
+                )
+                focus_candidates = management_units_df.sort_values(["attention_score", "condition_score"], ascending=[False, True]).head(6)
+                st.markdown("**Quick Focus Units**")
+                focus_cols = responsive_columns(max(1, min(3, len(focus_candidates))), field_mode=field_mode, gap="small")
+                for idx, row in enumerate(focus_candidates.itertuples(index=False)):
+                    with focus_cols[idx % len(focus_cols)]:
+                        label = f"{row.name} ({row.attention_level})"
+                        if st.button(label, key=f"focus-unit-{row.unit_id}", use_container_width=True):
+                            st.session_state.selected_unit_id = row.unit_id
+                            st.query_params["unit"] = row.unit_id
+                            st.rerun()
+
+            with summary_col:
+                st.subheader(f"Selected {unit_term(ranch_profile, title=True)}")
+                st.caption(f"{selected_unit.name} | {selected_unit.unit_type} | {selected_unit.acres:,.1f} acres")
+                if selected_condition is not None:
+                    render_signal_card(
+                        title="Attention Level",
+                        value=f"{selected_condition.attention_level} ({selected_condition.attention_score:.1f})",
+                        subtitle=selected_condition.recommendation_summary,
+                        badges=[attention_badge(selected_condition.attention_level), unit_type_badge(selected_unit.unit_type)],
+                    )
+                    activity_subtitle = selected_activity_summary.current_window or selected_activity_summary.recent_window or "No use/rest history has been logged yet."
+                    if selected_activity_summary.current_group_label:
+                        activity_subtitle = f"{selected_activity_summary.current_group_label} | {activity_subtitle}"
+                    render_signal_card(
+                        title="Operations Snapshot",
+                        value=selected_activity_summary.current_activity,
+                        subtitle=activity_subtitle,
+                        badges=[activity_status_badge(selected_activity_summary.status_label)],
+                    )
+                    if selected_utilization_summary is not None:
+                        utilization_subtitle = (
+                            f"{format_number(selected_utilization_summary.utilization_per_acre_30, '', 2)} AUD/ac over 30d | "
+                            f"Active head {selected_utilization_summary.active_head_count}"
+                        )
+                        if selected_utilization_summary.rest_days_since_occupancy is not None:
+                            utilization_subtitle += f" | Rest {selected_utilization_summary.rest_days_since_occupancy}d"
+                        render_signal_card(
+                            title="Utilization Heuristic",
+                            value=selected_utilization_summary.utilization_label,
+                            subtitle=utilization_subtitle,
+                            badges=[highlight_badge(
+                                "success"
+                                if selected_utilization_summary.utilization_label in {"Resting", "Light"}
+                                else "warning"
+                                if selected_utilization_summary.utilization_label in {"Moderate", "Elevated"}
+                                else "critical",
+                                selected_utilization_summary.utilization_label.upper(),
+                            )],
+                        )
+                    if selected_planner_suggestion is not None:
+                        planner_window = selected_planner_suggestion.start_date
+                        if selected_planner_suggestion.end_date and selected_planner_suggestion.end_date != selected_planner_suggestion.start_date:
+                            planner_window = f"{selected_planner_suggestion.start_date} to {selected_planner_suggestion.end_date}"
+                        planner_subtitle = selected_planner_suggestion.rationale
+                        if selected_planner_suggestion.suggested_group_label:
+                            planner_subtitle = (
+                                f"{selected_planner_suggestion.suggested_group_label} | {planner_window} | "
+                                f"{selected_planner_suggestion.rationale}"
+                            )
+                        render_signal_card(
+                            title="Suggested Next Step",
+                            value=str(selected_planner_suggestion.suggested_activity_type).title(),
+                            subtitle=planner_subtitle,
+                            badges=[planner_urgency_badge(selected_planner_suggestion.urgency)],
+                        )
+                        if st.button(
+                            f"Schedule Suggested Activity for {selected_unit.name}",
+                            key=f"schedule-suggestion-{selected_unit.unit_id}",
+                            use_container_width=True,
+                        ):
+                            if save_planner_suggestion_event(selected_planner_suggestion):
+                                st.success("Suggested activity scheduled into the unit timeline. Save Current Setup in Settings if you want it persisted.")
+                            else:
+                                st.info("That suggested activity is already on the calendar for this unit.")
+                            st.rerun()
+                    if not selected_feedback_df.empty:
+                        latest_feedback = selected_feedback_df.iloc[0]
+                        render_signal_card(
+                            title="Latest Field Feedback",
+                            value=f"{str(latest_feedback['label_value']).title()}",
+                            subtitle=(
+                                f"{latest_feedback['label_type'].title()} | "
+                                f"{latest_feedback['confidence']} confidence | "
+                                f"{latest_feedback['observed_on'] or 'undated'}"
+                            ),
+                            badges=[highlight_badge("info", "FIELD LABEL")],
+                        )
+                    detail_cols = responsive_columns(2, field_mode=field_mode, gap="small")
+                    detail_cols[0].metric("Condition Score", format_number(selected_condition.forage_condition_score, "", 1))
+                    detail_cols[1].metric("Vegetation", selected_condition.vegetation_status)
+                    detail_cols = responsive_columns(2, field_mode=field_mode, gap="small")
+                    detail_cols[0].metric("Drought", selected_condition.drought_category)
+                    detail_cols[1].metric("Water Risk", format_number(selected_condition.water_risk_score, "", 1))
+                    st.caption(
+                        f"Assigned livestock: {', '.join(selected_unit.assigned_livestock) if selected_unit.assigned_livestock else 'none assigned'}"
+                    )
+                    if selected_activity_summary.recent_activity != "No activity logged":
+                        st.caption(
+                            f"Recent activity: {selected_activity_summary.recent_activity} | "
+                            f"{selected_activity_summary.recent_group_label or 'no group assigned'} | "
+                            f"{selected_activity_summary.recent_window}"
+                        )
+
+            summary_cards = responsive_columns(3, field_mode=field_mode, gap="medium")
+            with summary_cards[0]:
+                render_signal_card(
+                    title="Ranch Profile",
+                    value=ranch_profile.management_style.title(),
+                    subtitle=f"{ranch_profile.ranch_type.title()} | {unit_term(ranch_profile, plural=True)}",
+                    badges=[highlight_badge("info", "PROFILE")],
+                )
+            with summary_cards[1]:
+                focus_goals = ", ".join(ranch_profile.primary_goals[:2]) if ranch_profile.primary_goals else "general land monitoring"
+                render_signal_card(
+                    title="Primary Goals",
+                    value=focus_goals.title(),
+                    subtitle="The dashboard language and recommendations adapt around these goals.",
+                    badges=[highlight_badge("success", "GOALS")],
+                )
+            with summary_cards[2]:
+                render_signal_card(
+                    title="Livestock Focus",
+                    value="No livestock assigned" if primary_group is None else primary_group.species.title(),
+                    subtitle="Rotational grazing is now optional; land monitoring and mixed-use setups are supported too.",
+                    badges=[highlight_badge("info", "OPERATIONS")],
                 )
 
-    summary_cards = st.columns(3, gap="medium")
-    with summary_cards[0]:
-        render_signal_card(
-            title="Ranch Profile",
-            value=ranch_profile.management_style.title(),
-            subtitle=f"{ranch_profile.ranch_type.title()} | {unit_term(ranch_profile, plural=True)}",
-            badges=[highlight_badge("info", "PROFILE")],
-        )
-    with summary_cards[1]:
-        focus_goals = ", ".join(ranch_profile.primary_goals[:2]) if ranch_profile.primary_goals else "general land monitoring"
-        render_signal_card(
-            title="Primary Goals",
-            value=focus_goals.title(),
-            subtitle="The dashboard language and recommendations adapt around these goals.",
-            badges=[highlight_badge("success", "GOALS")],
-        )
-    with summary_cards[2]:
-        render_signal_card(
-            title="Livestock Focus",
-            value="No livestock assigned" if primary_group is None else primary_group.species.title(),
-            subtitle="Rotational grazing is now optional; land monitoring and mixed-use setups are supported too.",
-            badges=[highlight_badge("info", "OPERATIONS")],
-        )
-
-    st.subheader("Operations Planner Queue")
-    st.caption(
-        "These suggested next steps are transparent heuristics based on ranch style, current condition, recent activity, and the 30-day utilization signal."
-    )
-    if planner_df.empty:
-        st.info("No planner suggestions are available yet.")
-    else:
-        render_data_table(prepare_operation_planner_table(planner_df.head(8)))
-
-    weather_col, forecast_col = st.columns([0.95, 1.05], gap="medium")
-    with weather_col:
-        st.subheader("Current Weather")
-        st.caption(f"{current_weather.weather_label} | Source: {current_weather.source}")
-        weather_metrics_a = st.columns(2)
-        weather_metrics_b = st.columns(2)
-        weather_metrics_c = st.columns(2)
-        weather_metrics_a[0].metric("Temperature", format_number(current_weather.temperature_f, " F", 1))
-        weather_metrics_a[1].metric("Feels Like", format_number(current_weather.feels_like_f, " F", 1))
-        weather_metrics_b[0].metric("Humidity", format_number(current_weather.humidity_pct, "%", 0))
-        weather_metrics_b[1].metric("Precip Chance", format_number(current_weather.precip_probability_pct, "%", 0))
-        weather_metrics_c[0].metric("Wind Dir", current_weather.wind_direction or "--")
-        weather_metrics_c[1].metric("Rain Today", format_number(current_weather.rainfall_expected_today_in, " in", 2))
-    with forecast_col:
-        st.subheader("7-Day Forecast")
-        render_data_table(prepare_forecast_table(weather_bundle.forecast))
-
-    risk_col, alert_col = st.columns([0.92, 1.08], gap="medium")
-    with risk_col:
-        st.plotly_chart(plot_fire_risk_gauge(fire_assessment.score, fire_assessment.category, fire_assessment.color, theme), width="stretch")
-        render_fire_risk_panel(fire_assessment)
-    with alert_col:
-        render_alert_panel(alert_bundle.alerts)
-
-    st.subheader("Priority Attention Items")
-    if action_pastures.empty:
-        st.success(f"No {unit_term(ranch_profile, plural=True)} currently require elevated follow-up in this scenario.")
-    else:
-        render_data_table(
-            prepare_management_units_table(
-                action_pastures[
-                    [
-                        "unit_id",
-                        "name",
-                        "unit_type",
-                        "assigned_livestock",
-                        "current_activity",
-                        "current_status",
-                        "utilization_label",
-                        "utilization_per_acre_30",
-                        "condition_score",
-                        "vegetation_status",
-                        "drought_category",
-                        "attention_score",
-                        "attention_level",
-                        "recommendation",
-                    ]
-                ]
+            st.subheader("Operations Planner Queue")
+            st.caption(
+                "These suggested next steps are transparent heuristics based on ranch style, current condition, recent activity, and the 30-day utilization signal."
             )
-        )
+            if planner_df.empty:
+                st.info("No planner suggestions are available yet.")
+            else:
+                render_data_table(prepare_operation_planner_table(planner_df.head(8)))
 
-    st.subheader("Ranch-Wide Attention Queue")
-    attention_queue_df = management_units_df.sort_values(["attention_score", "condition_score"], ascending=[False, True]).head(8)
-    render_data_table(
-        prepare_attention_queue_table(
-            attention_queue_df[
+            weather_col, forecast_col = responsive_columns([0.95, 1.05], field_mode=field_mode, gap="medium")
+            with weather_col:
+                st.subheader("Current Weather")
+                st.caption(f"{current_weather.weather_label} | Source: {current_weather.source}")
+                weather_metrics_a = responsive_columns(2, field_mode=field_mode, gap="small")
+                weather_metrics_b = responsive_columns(2, field_mode=field_mode, gap="small")
+                weather_metrics_c = responsive_columns(2, field_mode=field_mode, gap="small")
+                weather_metrics_a[0].metric("Temperature", format_number(current_weather.temperature_f, " F", 1))
+                weather_metrics_a[1].metric("Feels Like", format_number(current_weather.feels_like_f, " F", 1))
+                weather_metrics_b[0].metric("Humidity", format_number(current_weather.humidity_pct, "%", 0))
+                weather_metrics_b[1].metric("Precip Chance", format_number(current_weather.precip_probability_pct, "%", 0))
+                weather_metrics_c[0].metric("Wind Dir", current_weather.wind_direction or "--")
+                weather_metrics_c[1].metric("Rain Today", format_number(current_weather.rainfall_expected_today_in, " in", 2))
+            with forecast_col:
+                st.subheader("7-Day Forecast")
+                render_data_table(prepare_forecast_table(weather_bundle.forecast))
+
+            risk_col, alert_col = responsive_columns([0.92, 1.08], field_mode=field_mode, gap="medium")
+            with risk_col:
+                st.plotly_chart(plot_fire_risk_gauge(fire_assessment.score, fire_assessment.category, fire_assessment.color, theme), width="stretch")
+                render_fire_risk_panel(fire_assessment)
+            with alert_col:
+                render_alert_panel(alert_bundle.alerts)
+
+            st.subheader("Priority Attention Items")
+            if action_pastures.empty:
+                st.success(f"No {unit_term(ranch_profile, plural=True)} currently require elevated follow-up in this scenario.")
+            else:
+                render_data_table(
+                    prepare_management_units_table(
+                        action_pastures[
+                            [
+                                "unit_id",
+                                "name",
+                                "unit_type",
+                                "assigned_livestock",
+                                "current_activity",
+                                "current_status",
+                                "utilization_label",
+                                "utilization_per_acre_30",
+                                "condition_score",
+                                "vegetation_status",
+                                "drought_category",
+                                "attention_score",
+                                "attention_level",
+                                "recommendation",
+                            ]
+                        ]
+                    )
+                )
+
+            st.subheader("Ranch-Wide Attention Queue")
+            attention_queue_df = management_units_df.sort_values(["attention_score", "condition_score"], ascending=[False, True]).head(8)
+            render_data_table(
+                prepare_attention_queue_table(
+                    attention_queue_df[
+                        [
+                            "unit_id",
+                            "name",
+                            "unit_type",
+                            "assigned_livestock",
+                            "current_activity",
+                            "current_status",
+                            "recent_activity",
+                            "active_head_count",
+                            "utilization_label",
+                            "utilization_per_acre_30",
+                            "attention_score",
+                            "attention_level",
+                            "recommendation",
+                            "notes",
+                        ]
+                    ]
+                )
+            )
+
+    if sensors_shell is not None:
+        with sensors_shell:
+            render_under_development_notice(
+                "Sensors",
+                "We paused live station monitoring while we optimize dashboard performance and finish the next sensor architecture pass.",
+            )
+            render_under_development_notice(
+                "Sensor Network",
+                "Meshtastic and remote-station ingestion are still in progress, so the hosted app is not loading that stack right now.",
+            )
+    if units_shell is not None:
+        with units_shell:
+            unit_options = management_units_df["unit_id"].tolist()
+            selected_option = st.selectbox(
+                f"Select {unit_term(ranch_profile, title=True)}",
+                options=unit_options,
+                index=unit_options.index(st.session_state.selected_unit_id),
+                format_func=lambda value: f"{value} - {management_units_df.loc[management_units_df['unit_id'] == value, 'name'].iloc[0]}",
+            )
+            if selected_option != st.session_state.selected_unit_id:
+                st.session_state.selected_unit_id = selected_option
+                st.query_params["unit"] = selected_option
+                st.rerun()
+
+            current_unit = next((unit for unit in management_units if unit.unit_id == st.session_state.selected_unit_id), selected_unit)
+            current_condition = current_unit.condition
+            current_unit_utilization = utilization_summary_lookup.get(current_unit.unit_id)
+            current_unit_feedback_df = (
+                unit_feedback_df.loc[unit_feedback_df["unit_id"] == current_unit.unit_id].copy()
+                if not unit_feedback_df.empty
+                else pd.DataFrame()
+            )
+            units_metric_cols = responsive_columns(5, field_mode=field_mode, gap="small")
+            units_metric_cols[0].metric("Condition Score", format_number(current_condition.forage_condition_score, "", 1))
+            units_metric_cols[1].metric("Attention", f"{current_condition.attention_level}", f"{current_condition.attention_score:.1f}")
+            units_metric_cols[2].metric("Vegetation", current_condition.vegetation_status)
+            units_metric_cols[3].metric("Drought", current_condition.drought_category)
+            units_metric_cols[4].metric("Guidance", current_condition.recommendation_code)
+            st.caption(current_condition.recommendation_summary)
+            current_unit_activity = activity_summary_lookup.get(current_unit.unit_id, UnitActivitySummary(unit_id=current_unit.unit_id))
+            st.caption(
+                f"Operations status: {current_unit_activity.status_label} | "
+                f"{current_unit_activity.current_activity} | "
+                f"{current_unit_activity.current_group_label or 'no group assigned'} | "
+                f"{current_unit_activity.current_window or current_unit_activity.recent_window or 'no timeline logged'}"
+            )
+            if current_unit_utilization is not None:
+                st.caption(
+                    f"Utilization heuristic: {current_unit_utilization.utilization_label} | "
+                    f"30d AUD/ac {format_number(current_unit_utilization.utilization_per_acre_30, '', 2)} | "
+                    f"Active head {current_unit_utilization.active_head_count} | "
+                    f"Rest days {current_unit_utilization.rest_days_since_occupancy if current_unit_utilization.rest_days_since_occupancy is not None else '--'}"
+                )
+
+            source_unit_row = latest_snapshot.loc[latest_snapshot["pasture_id"] == current_unit.unit_id].iloc[0]
+            existing_override = management_unit_overrides.get(current_unit.unit_id)
+            default_display_name = existing_override.display_name if existing_override and existing_override.display_name else str(source_unit_row["name"])
+            default_unit_type = existing_override.unit_type if existing_override else current_unit.unit_type
+            default_assigned_group_ids = existing_override.assigned_group_ids if existing_override else list(current_unit.assigned_group_ids)
+            default_assigned_livestock = (
+                existing_override.assigned_livestock
+                if existing_override and existing_override.assigned_livestock
+                else list(current_unit.assigned_livestock)
+            )
+            default_notes = existing_override.notes if existing_override is not None else str(source_unit_row.get("notes") or "")
+
+            st.subheader("Edit Management Unit Metadata")
+            st.caption(
+                "Use unit metadata to adapt the same uploaded boundary file for horse turnouts, hay fields, browse zones, exclusion areas, leased land, or other management uses."
+            )
+            with st.form(f"unit_metadata_form_{current_unit.unit_id}"):
+                metadata_cols = responsive_columns(2, field_mode=field_mode, gap="small")
+                unit_display_name = metadata_cols[0].text_input("Display Name", value=default_display_name)
+                unit_type_value = metadata_cols[1].selectbox(
+                    "Unit Type",
+                    options=MANAGEMENT_UNIT_TYPE_OPTIONS,
+                    index=MANAGEMENT_UNIT_TYPE_OPTIONS.index(default_unit_type)
+                    if default_unit_type in MANAGEMENT_UNIT_TYPE_OPTIONS
+                    else 0,
+                )
+                available_group_ids = list(livestock_groups.keys())
+                assigned_group_ids_value = st.multiselect(
+                    "Assigned Livestock Groups",
+                    options=available_group_ids,
+                    default=[group_id for group_id in default_assigned_group_ids if group_id in available_group_ids],
+                    format_func=lambda group_id: (
+                        f"{livestock_groups[group_id].group_name} ({livestock_groups[group_id].species})"
+                        if group_id in livestock_groups
+                        else group_id
+                    ),
+                    help="These named groups are shown in the map, unit summaries, and attention queue.",
+                )
+                assigned_livestock_value = st.multiselect(
+                    "Fallback Assigned Species",
+                    options=LIVESTOCK_SPECIES_OPTIONS,
+                    default=default_assigned_livestock,
+                    help="Used when no named livestock groups are assigned to this management unit.",
+                )
+                unit_notes_value = st.text_area("Unit Notes", value=default_notes, height=110)
+                form_cols = responsive_columns([1, 1, 2], field_mode=field_mode, gap="small")
+                save_metadata = form_cols[0].form_submit_button("Apply Unit Metadata")
+                clear_metadata = form_cols[1].form_submit_button("Clear Override")
+
+            if save_metadata:
+                updated_overrides = get_management_unit_overrides()
+                updated_overrides[current_unit.unit_id] = ManagementUnitOverride(
+                    unit_id=current_unit.unit_id,
+                    display_name=unit_display_name.strip(),
+                    unit_type=unit_type_value,
+                    assigned_group_ids=list(assigned_group_ids_value),
+                    assigned_livestock=list(assigned_livestock_value),
+                    notes=unit_notes_value.strip(),
+                )
+                st.session_state["management_unit_overrides"] = serialize_management_unit_overrides(updated_overrides)
+                st.success(f"Updated metadata for {current_unit.name}. Save Current Setup in Settings if you want this persisted for future sessions.")
+                st.rerun()
+            if clear_metadata:
+                updated_overrides = get_management_unit_overrides()
+                updated_overrides.pop(current_unit.unit_id, None)
+                st.session_state["management_unit_overrides"] = serialize_management_unit_overrides(updated_overrides)
+                st.info(f"Cleared custom metadata for {current_unit.name}.")
+                st.rerun()
+
+            st.subheader("Field Feedback Labels")
+            st.caption(
+                "Use quick field labels to record what you actually observed on this unit. These labels are saved with the workspace and are intended to support future model calibration with real ranch feedback."
+            )
+            if current_unit_feedback_df.empty:
+                st.info(f"No field feedback has been logged for {current_unit.name} yet.")
+            else:
+                render_data_table(
+                    current_unit_feedback_df[["observed_on", "label_type", "label_value", "confidence", "notes"]].rename(
+                        columns={
+                            "observed_on": "Observed On",
+                            "label_type": "Label Type",
+                            "label_value": "Observed Value",
+                            "confidence": "Confidence",
+                            "notes": "Notes",
+                        }
+                    )
+                )
+
+            feedback_choices = ["Create New Label"] + (
+                current_unit_feedback_df["label_id"].astype(str).tolist() if not current_unit_feedback_df.empty else []
+            )
+            selected_feedback_key = st.selectbox(
+                "Field feedback editor",
+                options=feedback_choices,
+                format_func=lambda value: (
+                    "Create New Label"
+                    if value == "Create New Label"
+                    else (
+                        f"{current_unit_feedback_df.loc[current_unit_feedback_df['label_id'] == value, 'label_type'].iloc[0].title()} | "
+                        f"{current_unit_feedback_df.loc[current_unit_feedback_df['label_id'] == value, 'label_value'].iloc[0].title()}"
+                    )
+                ),
+            )
+            editing_feedback = unit_feedback_labels.get(selected_feedback_key) if selected_feedback_key != "Create New Label" else None
+            feedback_type_default = (
+                editing_feedback.label_type if editing_feedback is not None else FEEDBACK_LABEL_TYPE_OPTIONS[0]
+            )
+            feedback_value_choices = FEEDBACK_VALUE_OPTIONS.get(feedback_type_default, FEEDBACK_VALUE_OPTIONS[FEEDBACK_LABEL_TYPE_OPTIONS[0]])
+            feedback_observed_default = (
+                pd.to_datetime(editing_feedback.observed_on).date()
+                if editing_feedback is not None and editing_feedback.observed_on
+                else pd.Timestamp.utcnow().date()
+            )
+            with st.form(f"unit_feedback_form_{current_unit.unit_id}"):
+                feedback_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                feedback_type_value = feedback_cols[0].selectbox(
+                    "Field Label Type",
+                    options=FEEDBACK_LABEL_TYPE_OPTIONS,
+                    index=FEEDBACK_LABEL_TYPE_OPTIONS.index(feedback_type_default) if feedback_type_default in FEEDBACK_LABEL_TYPE_OPTIONS else 0,
+                )
+                feedback_value_options = FEEDBACK_VALUE_OPTIONS.get(feedback_type_value, feedback_value_choices)
+                feedback_value_default = (
+                    editing_feedback.label_value
+                    if editing_feedback is not None and editing_feedback.label_value in feedback_value_options
+                    else feedback_value_options[0]
+                )
+                feedback_value_value = feedback_cols[1].selectbox(
+                    "Observed Value",
+                    options=feedback_value_options,
+                    index=feedback_value_options.index(feedback_value_default),
+                )
+                feedback_confidence_value = feedback_cols[2].selectbox(
+                    "Confidence",
+                    options=FEEDBACK_CONFIDENCE_OPTIONS,
+                    index=FEEDBACK_CONFIDENCE_OPTIONS.index(editing_feedback.confidence)
+                    if editing_feedback is not None and editing_feedback.confidence in FEEDBACK_CONFIDENCE_OPTIONS
+                    else FEEDBACK_CONFIDENCE_OPTIONS.index("medium"),
+                )
+                feedback_cols = responsive_columns(2, field_mode=field_mode, gap="small")
+                feedback_observed_on = feedback_cols[0].date_input("Observed On", value=feedback_observed_default)
+                feedback_notes_value = feedback_cols[1].text_area(
+                    "Feedback Notes",
+                    value="" if editing_feedback is None else editing_feedback.notes,
+                    height=110,
+                    placeholder="Short field observation, animal behavior note, bare-ground context, water issue, or restoration note...",
+                )
+                feedback_form_cols = responsive_columns([1, 1, 2], field_mode=field_mode, gap="small")
+                save_feedback = feedback_form_cols[0].form_submit_button("Save Label")
+                delete_feedback = feedback_form_cols[1].form_submit_button("Delete Label")
+
+            if save_feedback:
+                updated_feedback = get_unit_feedback_labels()
+                label_id = editing_feedback.label_id if editing_feedback is not None else f"feedback-{uuid4().hex[:10]}"
+                updated_feedback[label_id] = UnitFeedbackLabel(
+                    label_id=label_id,
+                    unit_id=current_unit.unit_id,
+                    label_type=feedback_type_value,
+                    label_value=feedback_value_value,
+                    observed_on=feedback_observed_on.isoformat(),
+                    confidence=feedback_confidence_value,
+                    notes=feedback_notes_value.strip(),
+                )
+                st.session_state["unit_feedback_labels"] = serialize_unit_feedback_labels(updated_feedback)
+                st.success("Field feedback saved. Save Current Setup in Settings if you want this persisted for future sessions.")
+                st.rerun()
+            if delete_feedback and editing_feedback is not None:
+                updated_feedback = get_unit_feedback_labels()
+                updated_feedback.pop(editing_feedback.label_id, None)
+                st.session_state["unit_feedback_labels"] = serialize_unit_feedback_labels(updated_feedback)
+                st.info("Field feedback label deleted.")
+                st.rerun()
+
+            render_data_table(
+                prepare_management_units_table(
+                    management_units_df[
+                        [
+                            "unit_id",
+                            "name",
+                            "unit_type",
+                            "acres",
+                            "assigned_livestock",
+                            "current_activity",
+                            "current_status",
+                            "recent_activity",
+                            "active_head_count",
+                            "utilization_label",
+                            "utilization_per_acre_30",
+                            "condition_score",
+                            "vegetation_status",
+                            "drought_category",
+                            "attention_score",
+                            "attention_level",
+                            "recommendation",
+                        ]
+                    ]
+                )
+            )
+
+            unit_chart_a, unit_chart_b = responsive_columns(2, field_mode=field_mode, gap="medium")
+            with unit_chart_a:
+                st.plotly_chart(
+                    apply_chart_theme(plot_condition_scores(latest_snapshot, theme["recommendation_colors"]), theme),
+                    width="stretch",
+                )
+            with unit_chart_b:
+                st.plotly_chart(
+                    apply_chart_theme(plot_water_vs_stocking_risk(latest_snapshot, theme["recommendation_colors"]), theme),
+                    width="stretch",
+                )
+
+    if vegetation_shell is not None:
+        with vegetation_shell:
+            vegetation_options = management_units_df["unit_id"].tolist()
+            vegetation_selected = st.selectbox(
+                f"{unit_term(ranch_profile, title=True)} for land-health detail",
+                options=vegetation_options,
+                index=vegetation_options.index(st.session_state.selected_unit_id),
+                format_func=lambda value: f"{value} - {management_units_df.loc[management_units_df['unit_id'] == value, 'name'].iloc[0]}",
+            )
+            if vegetation_selected != st.session_state.selected_unit_id:
+                st.session_state.selected_unit_id = vegetation_selected
+                st.query_params["unit"] = vegetation_selected
+                st.rerun()
+
+            selected_pasture = st.session_state.selected_unit_id
+            selected_vegetation = (
+                vegetation_summary_df.loc[vegetation_summary_df["pasture_id"] == selected_pasture].iloc[0]
+                if not vegetation_summary_df.empty and selected_pasture in set(vegetation_summary_df["pasture_id"])
+                else None
+            )
+            st.subheader("Vegetation History / Land Health")
+            if selected_vegetation is not None:
+                ndvi_anomaly_percent_value = pd.to_numeric(selected_vegetation.get("ndvi_anomaly_percent"), errors="coerce")
+                ndvi_badge_level = "info" if pd.isna(ndvi_anomaly_percent_value) else ("success" if float(ndvi_anomaly_percent_value) >= 0 else "warning")
+                st.caption(
+                    f"NDVI source: {selected_vegetation.get('ndvi_source_label', 'Earth Search STAC / Sentinel-2')} | "
+                    "RAP source: Rangeland Analysis Platform"
+                )
+                vegetation_card_cols = responsive_columns(4, field_mode=field_mode, gap="medium")
+                with vegetation_card_cols[0]:
+                    render_signal_card(
+                        title="Current Greenness",
+                        value=format_number(selected_vegetation["ndvi_latest"], "", 3),
+                        subtitle=(
+                            f"{friendly_ndvi_status(selected_vegetation['ndvi_status'])} | "
+                            f"Anomaly {format_number(selected_vegetation['ndvi_anomaly_percent'], '%', 1)}"
+                        ),
+                        badges=[highlight_badge(ndvi_badge_level, str(selected_vegetation["ndvi_status"]).upper())],
+                    )
+                with vegetation_card_cols[1]:
+                    render_signal_card(
+                        title="Perennial Grass",
+                        value=friendly_trend_label(selected_vegetation["rap_perennial_grass_trend"]),
+                        subtitle="Long-term rangeland structure",
+                        badges=[highlight_badge("success" if selected_vegetation["rap_perennial_grass_trend"] == "increasing" else "warning" if selected_vegetation["rap_perennial_grass_trend"] == "declining" else "info", str(selected_vegetation["rap_perennial_grass_trend"]).upper())],
+                    )
+                with vegetation_card_cols[2]:
+                    render_signal_card(
+                        title="Bare Ground",
+                        value=friendly_trend_label(selected_vegetation["rap_bare_ground_trend"]),
+                        subtitle="Watch for exposed soil moving higher over time",
+                        badges=[highlight_badge("warning" if selected_vegetation["rap_bare_ground_trend"] == "increasing" else "success" if selected_vegetation["rap_bare_ground_trend"] == "declining" else "info", str(selected_vegetation["rap_bare_ground_trend"]).upper())],
+                    )
+                with vegetation_card_cols[3]:
+                    render_signal_card(
+                        title="RangeIQ Land Score",
+                        value=f"{format_number(selected_vegetation['rangeiq_vegetation_score'], '', 0)} {str(selected_vegetation['rangeiq_vegetation_category']).upper()}",
+                        subtitle=str(selected_vegetation["rangeiq_vegetation_explanation"]),
+                        badges=[highlight_badge("success" if str(selected_vegetation["rangeiq_vegetation_category"]) in {"Excellent", "Good"} else "warning" if str(selected_vegetation["rangeiq_vegetation_category"]) in {"Watch", "Stressed"} else "critical", str(selected_vegetation["rangeiq_vegetation_category"]).upper())],
+                    )
+
+                if str(selected_vegetation.get("rangeiq_vegetation_drivers", "")).strip():
+                    st.caption(f"Main drivers: {selected_vegetation['rangeiq_vegetation_drivers']}")
+                if str(selected_vegetation.get("vegetation_warnings", "")).strip():
+                    st.warning(selected_vegetation["vegetation_warnings"])
+            else:
+                st.info(f"Vegetation history is not available for the selected {unit_term(ranch_profile)} in this run.")
+
+            vegetation_chart_a, vegetation_chart_b = responsive_columns(2, field_mode=field_mode, gap="medium")
+            with vegetation_chart_a:
+                if not vegetation_ndvi_df.empty:
+                    st.plotly_chart(apply_chart_theme(plot_public_ndvi_history(vegetation_ndvi_df, selected_pasture), theme), width="stretch")
+                else:
+                    st.info(f"NDVI history is unavailable for this {unit_term(ranch_profile)}.")
+            with vegetation_chart_b:
+                if not vegetation_cover_df.empty:
+                    st.plotly_chart(apply_chart_theme(plot_rap_cover_history(vegetation_cover_df, selected_pasture), theme), width="stretch")
+                else:
+                    st.info("RAP cover history is unavailable for this area.")
+
+            vegetation_chart_c, vegetation_chart_d = responsive_columns(2, field_mode=field_mode, gap="medium")
+            with vegetation_chart_c:
+                if not vegetation_production_df.empty:
+                    st.plotly_chart(apply_chart_theme(plot_rap_production_history(vegetation_production_df, selected_pasture), theme), width="stretch")
+                else:
+                    st.info("RAP production history is unavailable for this area.")
+            with vegetation_chart_d:
+                st.plotly_chart(apply_chart_theme(plot_rainfall_deficit_history(history_df, selected_pasture), theme), width="stretch")
+
+            vegetation_chart_e, vegetation_chart_f = responsive_columns(2, field_mode=field_mode, gap="medium")
+            with vegetation_chart_e:
+                st.plotly_chart(apply_chart_theme(plot_ndvi_trend(artifacts.scored_data, selected_pasture), theme), width="stretch")
+            with vegetation_chart_f:
+                st.plotly_chart(apply_chart_theme(plot_forage_trend(artifacts.scored_data, selected_pasture), theme), width="stretch")
+
+            vegetation_chart_g, vegetation_chart_h = responsive_columns(2, field_mode=field_mode, gap="medium")
+            with vegetation_chart_g:
+                st.plotly_chart(apply_chart_theme(plot_rainfall_trend(artifacts.scored_data, selected_pasture), theme), width="stretch")
+            with vegetation_chart_h:
+                st.plotly_chart(
+                    apply_chart_theme(plot_recommendation_mix(latest_snapshot, theme["recommendation_colors"]), theme),
+                    width="stretch",
+                )
+
+    if livestock_shell is not None:
+        with livestock_shell:
+            ranch_profile_cols = responsive_columns(3, field_mode=field_mode, gap="medium")
+            with ranch_profile_cols[0]:
+                render_signal_card(
+                    title="Management Style",
+                    value=ranch_profile.management_style.title(),
+                    subtitle=ranch_profile.ranch_type.title(),
+                    badges=[highlight_badge("info", "STYLE")],
+                )
+            with ranch_profile_cols[1]:
+                render_signal_card(
+                    title="Livestock",
+                    value="No livestock" if primary_group is None else primary_group.species.title(),
+                    subtitle=f"Rotates animals: {'Yes' if ranch_profile.rotates_animals else 'No'}",
+                    badges=[highlight_badge("success", "PROFILE")],
+                )
+            with ranch_profile_cols[2]:
+                goals_value = ", ".join(ranch_profile.primary_goals[:2]).title() if ranch_profile.primary_goals else "General Land Monitoring"
+                render_signal_card(
+                    title="Primary Goals",
+                    value=goals_value,
+                    subtitle=f"Preferred terminology: {unit_term(ranch_profile)}",
+                    badges=[highlight_badge("info", "GOALS")],
+                )
+            if ranch_profile.notes.strip():
+                st.caption(ranch_profile.notes)
+
+            st.subheader("Operations Summary")
+            st.markdown(
+                f"RangeIQ is now treating **{unit_term(ranch_profile, plural=True)}** as the core management object for this workspace. "
+                f"Recommendations adapt around **{ranch_profile.management_style}**, the assigned livestock profile, and the goals you save in Settings."
+            )
+
+            st.subheader("Livestock Groups")
+            groups_df = livestock_groups_frame(livestock_groups, management_units)
+            if groups_df.empty:
+                st.info("No named livestock groups are saved yet. Add groups here if you want cattle classes, horse strings, goat bands, or sheep mobs tied to specific management units.")
+            else:
+                render_data_table(
+                    groups_df.rename(
+                        columns={
+                            "group_id": "Group ID",
+                            "group_name": "Group Name",
+                            "species": "Species",
+                            "animal_count": "Head",
+                            "class_type": "Class / Type",
+                            "average_weight": "Avg Weight",
+                            "assigned_unit": "Assigned Unit",
+                            "notes": "Notes",
+                        }
+                    )
+                )
+
+            st.subheader("Group Occupancy / Load Summary")
+            st.caption(
+                "This 30-day summary is a transparent operational heuristic based on your logged activity windows, animal counts, and simple animal-unit assumptions."
+            )
+            if group_load_df.empty:
+                st.info("No livestock-group occupancy summary is available yet because no groups or use events have been logged.")
+            else:
+                render_data_table(prepare_group_load_table(group_load_df))
+
+            group_choices = ["Create New Group"] + sorted(livestock_groups.keys())
+            selected_group_key = st.selectbox(
+                "Livestock group editor",
+                options=group_choices,
+                format_func=lambda value: (
+                    "Create New Group"
+                    if value == "Create New Group"
+                    else f"{livestock_groups[value].group_name} ({livestock_groups[value].species})"
+                ),
+            )
+            editing_group = livestock_groups.get(selected_group_key) if selected_group_key != "Create New Group" else None
+            assigned_unit_options = [""] + management_units_df["unit_id"].tolist()
+            with st.form("livestock_group_form"):
+                group_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                group_name_value = group_cols[0].text_input(
+                    "Group Name",
+                    value="" if editing_group is None else editing_group.group_name,
+                )
+                species_value = group_cols[1].selectbox(
+                    "Species",
+                    options=LIVESTOCK_SPECIES_OPTIONS,
+                    index=LIVESTOCK_SPECIES_OPTIONS.index(editing_group.species)
+                    if editing_group is not None and editing_group.species in LIVESTOCK_SPECIES_OPTIONS
+                    else 0,
+                )
+                assigned_unit_value = group_cols[2].selectbox(
+                    "Assigned Management Unit",
+                    options=assigned_unit_options,
+                    index=assigned_unit_options.index(editing_group.assigned_unit_id)
+                    if editing_group is not None and editing_group.assigned_unit_id in assigned_unit_options
+                    else 0,
+                    format_func=lambda value: (
+                        "Unassigned"
+                        if value == ""
+                        else f"{value} - {management_units_df.loc[management_units_df['unit_id'] == value, 'name'].iloc[0]}"
+                    ),
+                )
+                group_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                animal_count_value = group_cols[0].number_input(
+                    "Animal Count",
+                    min_value=0,
+                    step=1,
+                    value=0 if editing_group is None or editing_group.animal_count is None else int(editing_group.animal_count),
+                )
+                class_type_value = group_cols[1].text_input(
+                    "Class / Type",
+                    value="" if editing_group is None else editing_group.class_type,
+                    placeholder="Cow-calf pairs, yearlings, broodmares, nannies...",
+                )
+                average_weight_value = group_cols[2].number_input(
+                    "Average Weight",
+                    min_value=0.0,
+                    step=25.0,
+                    value=0.0 if editing_group is None or editing_group.average_weight is None else float(editing_group.average_weight),
+                )
+                group_notes_value = st.text_area(
+                    "Group Notes",
+                    value="" if editing_group is None else editing_group.notes,
+                    height=100,
+                )
+                form_cols = responsive_columns([1, 1, 2], field_mode=field_mode, gap="small")
+                save_group = form_cols[0].form_submit_button("Save Group")
+                delete_group = form_cols[1].form_submit_button("Delete Group")
+
+            if save_group:
+                updated_groups = get_livestock_groups()
+                updated_overrides = get_management_unit_overrides()
+                group_id = editing_group.group_id if editing_group is not None else f"group-{pd.Timestamp.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+                updated_groups[group_id] = LivestockGroup(
+                    group_id=group_id,
+                    group_name=group_name_value.strip() or ("Unnamed Group" if editing_group is None else editing_group.group_name),
+                    species=species_value,
+                    animal_count=(None if int(animal_count_value) == 0 else int(animal_count_value)),
+                    class_type=class_type_value.strip(),
+                    average_weight=(None if float(average_weight_value) == 0 else float(average_weight_value)),
+                    assigned_unit_id=(assigned_unit_value or None),
+                    notes=group_notes_value.strip(),
+                )
+                for override in updated_overrides.values():
+                    if group_id in override.assigned_group_ids and override.unit_id != assigned_unit_value:
+                        override.assigned_group_ids = [value for value in override.assigned_group_ids if value != group_id]
+                if assigned_unit_value:
+                    target_override = updated_overrides.get(assigned_unit_value, ManagementUnitOverride(unit_id=assigned_unit_value))
+                    if group_id not in target_override.assigned_group_ids:
+                        target_override.assigned_group_ids.append(group_id)
+                    updated_overrides[assigned_unit_value] = target_override
+                st.session_state["livestock_groups"] = serialize_livestock_groups(updated_groups)
+                st.session_state["management_unit_overrides"] = serialize_management_unit_overrides(updated_overrides)
+                st.success("Livestock group saved. Save Current Setup in Settings if you want this persisted for future sessions.")
+                st.rerun()
+
+            if delete_group and editing_group is not None:
+                updated_groups = get_livestock_groups()
+                updated_overrides = get_management_unit_overrides()
+                updated_events = get_unit_activity_events()
+                updated_groups.pop(editing_group.group_id, None)
+                for override in updated_overrides.values():
+                    override.assigned_group_ids = [value for value in override.assigned_group_ids if value != editing_group.group_id]
+                for event in updated_events.values():
+                    if event.livestock_group_id == editing_group.group_id:
+                        event.livestock_group_id = None
+                st.session_state["livestock_groups"] = serialize_livestock_groups(updated_groups)
+                st.session_state["management_unit_overrides"] = serialize_management_unit_overrides(updated_overrides)
+                st.session_state["unit_activity_events"] = serialize_unit_activity_events(updated_events)
+                st.info("Livestock group deleted.")
+                st.rerun()
+
+            st.subheader("Unit Activity Timeline")
+            st.caption(
+                "Log grazing, rest, turnout, haying, monitoring, or restoration events here so RangeIQ can describe how each management unit is actually being used."
+            )
+            if activity_log_df.empty:
+                st.info("No unit activity has been logged yet. Add an event to track current use, rest windows, or upcoming moves.")
+            else:
+                render_data_table(prepare_unit_activity_table(activity_log_df))
+                month_choices = [pd.Timestamp.today().normalize().replace(day=1) + pd.DateOffset(months=offset) for offset in range(-1, 3)]
+                month_labels = {month_start.strftime("%Y-%m"): month_start.strftime("%B %Y") for month_start in month_choices}
+                selected_month_key = st.selectbox(
+                    "Calendar Month",
+                    options=list(month_labels.keys()),
+                    index=1,
+                    format_func=lambda value: month_labels[value],
+                )
+                render_activity_calendar(
+                    unit_activity_events,
+                    livestock_groups,
+                    management_units,
+                    month_choices[list(month_labels.keys()).index(selected_month_key)],
+                    theme,
+                )
+
+            activity_choices = ["Create New Activity"] + sorted(unit_activity_events.keys())
+            selected_activity_key = st.selectbox(
+                "Activity editor",
+                options=activity_choices,
+                format_func=lambda value: (
+                    "Create New Activity"
+                    if value == "Create New Activity"
+                    else (
+                        f"{unit_activity_events[value].activity_type.title()} | "
+                        f"{management_units_df.loc[management_units_df['unit_id'] == unit_activity_events[value].unit_id, 'name'].iloc[0]}"
+                    )
+                ),
+            )
+            editing_activity = unit_activity_events.get(selected_activity_key) if selected_activity_key != "Create New Activity" else None
+            today_value = pd.Timestamp.utcnow().date()
+            editing_start_value = pd.to_datetime(editing_activity.start_date).date() if editing_activity and editing_activity.start_date else today_value
+            editing_end_value = pd.to_datetime(editing_activity.end_date).date() if editing_activity and editing_activity.end_date else editing_start_value
+            event_group_options = [""] + sorted(livestock_groups.keys())
+            with st.form("unit_activity_form"):
+                activity_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                activity_unit_value = activity_cols[0].selectbox(
+                    "Management Unit",
+                    options=management_units_df["unit_id"].tolist(),
+                    index=management_units_df["unit_id"].tolist().index(editing_activity.unit_id)
+                    if editing_activity is not None and editing_activity.unit_id in set(management_units_df["unit_id"])
+                    else 0,
+                    format_func=lambda value: f"{value} - {management_units_df.loc[management_units_df['unit_id'] == value, 'name'].iloc[0]}",
+                )
+                activity_type_value = activity_cols[1].selectbox(
+                    "Activity Type",
+                    options=UNIT_ACTIVITY_TYPE_OPTIONS,
+                    index=UNIT_ACTIVITY_TYPE_OPTIONS.index(editing_activity.activity_type)
+                    if editing_activity is not None and editing_activity.activity_type in UNIT_ACTIVITY_TYPE_OPTIONS
+                    else 0,
+                )
+                activity_group_value = activity_cols[2].selectbox(
+                    "Livestock Group",
+                    options=event_group_options,
+                    index=event_group_options.index(editing_activity.livestock_group_id or "")
+                    if editing_activity is not None and (editing_activity.livestock_group_id or "") in event_group_options
+                    else 0,
+                    format_func=lambda value: (
+                        "No named group"
+                        if value == ""
+                        else f"{livestock_groups[value].group_name} ({livestock_groups[value].species})"
+                    ),
+                )
+                activity_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                activity_start_date = activity_cols[0].date_input("Start Date", value=editing_start_value)
+                use_end_date = activity_cols[1].checkbox(
+                    "Specific End Date",
+                    value=editing_activity is not None and bool(editing_activity.end_date),
+                )
+                activity_end_date = activity_cols[2].date_input(
+                    "End Date",
+                    value=editing_end_value,
+                    disabled=not use_end_date,
+                )
+                activity_notes_value = st.text_area(
+                    "Activity Notes",
+                    value="" if editing_activity is None else editing_activity.notes,
+                    height=100,
+                    placeholder="Rotation window, turnout limits, targeted browse objective, hay cut notes, restoration work, or monitoring context...",
+                )
+                form_cols = responsive_columns([1, 1, 2], field_mode=field_mode, gap="small")
+                save_activity = form_cols[0].form_submit_button("Save Activity")
+                delete_activity = form_cols[1].form_submit_button("Delete Activity")
+
+            if save_activity:
+                if use_end_date and activity_end_date < activity_start_date:
+                    st.error("End date cannot be earlier than the start date.")
+                else:
+                    updated_events = get_unit_activity_events()
+                    event_id = editing_activity.event_id if editing_activity is not None else f"activity-{uuid4().hex[:10]}"
+                    updated_events[event_id] = UnitActivityEvent(
+                        event_id=event_id,
+                        unit_id=activity_unit_value,
+                        activity_type=activity_type_value,
+                        livestock_group_id=(activity_group_value or None),
+                        start_date=activity_start_date.isoformat(),
+                        end_date=(activity_end_date.isoformat() if use_end_date else None),
+                        notes=activity_notes_value.strip(),
+                    )
+                    st.session_state["unit_activity_events"] = serialize_unit_activity_events(updated_events)
+                    st.success("Unit activity saved. Save Current Setup in Settings if you want this persisted for future sessions.")
+                    st.rerun()
+
+            if delete_activity and editing_activity is not None:
+                updated_events = get_unit_activity_events()
+                updated_events.pop(editing_activity.event_id, None)
+                st.session_state["unit_activity_events"] = serialize_unit_activity_events(updated_events)
+                st.info("Unit activity deleted.")
+                st.rerun()
+
+            st.subheader("Unit Assignment Overview")
+            assignment_df = management_units_df[
                 [
                     "unit_id",
                     "name",
                     "unit_type",
+                    "assigned_groups",
                     "assigned_livestock",
                     "current_activity",
                     "current_status",
                     "recent_activity",
-                    "active_head_count",
-                    "utilization_label",
-                    "utilization_per_acre_30",
-                    "attention_score",
                     "attention_level",
                     "recommendation",
                     "notes",
                 ]
+            ].copy()
+            render_data_table(
+                prepare_attention_queue_table(
+                    assignment_df.rename(columns={"assigned_groups": "Assigned Groups"})
+                )
+            )
+
+            st.subheader("Unit Utilization / Recovery Outlook")
+            st.caption(
+                "RangeIQ estimates recent use pressure with a simple 30-day animal-unit-days-per-acre heuristic. Treat this as a planning signal, not a forage inventory substitute."
+            )
+            if unit_utilization_df.empty:
+                st.info("No unit utilization summary is available yet.")
+            else:
+                render_data_table(prepare_unit_utilization_table(unit_utilization_df))
+
+    if data_shell is not None:
+        with data_shell:
+            source_card_cols = responsive_columns(4, field_mode=field_mode, gap="medium")
+            with source_card_cols[0]:
+                render_signal_card(
+                    title="Weather Source",
+                    value=weather_bundle.provider_name.upper(),
+                    subtitle=weather_bundle.source_message,
+                    badges=[status_badge(weather_bundle.mode)],
+                )
+            with source_card_cols[1]:
+                render_signal_card(
+                    title="Alert Source",
+                    value=alert_bundle.provider_name.upper(),
+                    subtitle=alert_bundle.source_message,
+                    badges=[status_badge(alert_bundle.mode)],
+                )
+            with source_card_cols[2]:
+                vegetation_value = runtime_settings.public_data.vegetation.provider.upper()
+                vegetation_subtitle = (
+                    "Vegetation history combines Earth Search STAC NDVI with RAP."
+                    if vegetation_source_status is None
+                    else vegetation_source_status.status
+                )
+                vegetation_badge = status_badge("mock" if vegetation_source_status is None else vegetation_source_status.mode)
+                render_signal_card(
+                    title="Vegetation Source",
+                    value=vegetation_value if vegetation_source_status is None else vegetation_source_status.active_provider.upper(),
+                    subtitle=vegetation_subtitle,
+                    badges=[vegetation_badge],
+                )
+            with source_card_cols[3]:
+                boundary_value = "DEFAULT CORNERS"
+                boundary_badge = highlight_badge("info", "DEFAULT")
+                boundary_subtitle = "Default ranch geometry comes from your provided Alpine property corners."
+                if boundary_mode == "uploaded":
+                    boundary_value = "UPLOADED"
+                    boundary_badge = highlight_badge("success", "UPLOADED")
+                    boundary_subtitle = "This run is using the boundary file you uploaded in the current session."
+                elif boundary_mode == "saved":
+                    boundary_value = "SAVED"
+                    boundary_badge = highlight_badge("success", "SAVED")
+                    boundary_subtitle = "This run is using the last boundary file you saved for future launches."
+                render_signal_card(
+                    title="Boundary Mode",
+                    value=boundary_value,
+                    subtitle=boundary_subtitle,
+                    badges=[boundary_badge],
+                )
+
+            st.subheader("Public Data Source Status")
+            provider_rows = [
+                {
+                    "Component": "Weather",
+                    "Configured provider": runtime_settings.weather.provider,
+                    "Active provider": weather_bundle.provider_name,
+                    "Mode": weather_bundle.mode,
+                    "Status": weather_bundle.source_message,
+                    "Last updated": format_timestamp(weather_bundle.loaded_at),
+                    "Citation": "https://www.weather.gov/documentation/services-web-api",
+                },
+                {
+                    "Component": "Alerts",
+                    "Configured provider": runtime_settings.alerts.provider,
+                    "Active provider": alert_bundle.provider_name,
+                    "Mode": alert_bundle.mode,
+                    "Status": alert_bundle.source_message,
+                    "Last updated": format_timestamp(alert_bundle.loaded_at),
+                    "Citation": "https://www.weather.gov/documentation/services-web-api",
+                },
+                {
+                    "Component": "Sensors",
+                    "Configured provider": "under_development",
+                    "Active provider": "under_development",
+                    "Mode": "paused",
+                    "Status": "Sensor monitoring is temporarily disabled in the hosted dashboard while performance work continues.",
+                    "Last updated": format_timestamp(last_updated),
+                    "Citation": "under development",
+                },
+                {
+                    "Component": "Sensor Network",
+                    "Configured provider": "under_development",
+                    "Active provider": "under_development",
+                    "Mode": "paused",
+                    "Status": "Meshtastic / LoRa network pages are paused in the hosted app while the rest of RangeIQ is optimized.",
+                    "Last updated": format_timestamp(last_updated),
+                    "Citation": "under development",
+                },
             ]
-        )
-    )
-
-with sensors_tab:
-    render_under_development_notice(
-        "Sensors",
-        "We paused live station monitoring while we optimize dashboard performance and finish the next sensor architecture pass.",
-    )
-    render_under_development_notice(
-        "Sensor Network",
-        "Meshtastic and remote-station ingestion are still in progress, so the hosted app is not loading that stack right now.",
-    )
-with units_tab:
-    unit_options = management_units_df["unit_id"].tolist()
-    selected_option = st.selectbox(
-        f"Select {unit_term(ranch_profile, title=True)}",
-        options=unit_options,
-        index=unit_options.index(st.session_state.selected_unit_id),
-        format_func=lambda value: f"{value} - {management_units_df.loc[management_units_df['unit_id'] == value, 'name'].iloc[0]}",
-    )
-    if selected_option != st.session_state.selected_unit_id:
-        st.session_state.selected_unit_id = selected_option
-        st.query_params["unit"] = selected_option
-        st.rerun()
-
-    current_unit = next((unit for unit in management_units if unit.unit_id == st.session_state.selected_unit_id), selected_unit)
-    current_condition = current_unit.condition
-    current_unit_utilization = utilization_summary_lookup.get(current_unit.unit_id)
-    units_metric_cols = st.columns(5)
-    units_metric_cols[0].metric("Condition Score", format_number(current_condition.forage_condition_score, "", 1))
-    units_metric_cols[1].metric("Attention", f"{current_condition.attention_level}", f"{current_condition.attention_score:.1f}")
-    units_metric_cols[2].metric("Vegetation", current_condition.vegetation_status)
-    units_metric_cols[3].metric("Drought", current_condition.drought_category)
-    units_metric_cols[4].metric("Guidance", current_condition.recommendation_code)
-    st.caption(current_condition.recommendation_summary)
-    current_unit_activity = activity_summary_lookup.get(current_unit.unit_id, UnitActivitySummary(unit_id=current_unit.unit_id))
-    st.caption(
-        f"Operations status: {current_unit_activity.status_label} | "
-        f"{current_unit_activity.current_activity} | "
-        f"{current_unit_activity.current_group_label or 'no group assigned'} | "
-        f"{current_unit_activity.current_window or current_unit_activity.recent_window or 'no timeline logged'}"
-    )
-    if current_unit_utilization is not None:
-        st.caption(
-            f"Utilization heuristic: {current_unit_utilization.utilization_label} | "
-            f"30d AUD/ac {format_number(current_unit_utilization.utilization_per_acre_30, '', 2)} | "
-            f"Active head {current_unit_utilization.active_head_count} | "
-            f"Rest days {current_unit_utilization.rest_days_since_occupancy if current_unit_utilization.rest_days_since_occupancy is not None else '--'}"
-        )
-
-    source_unit_row = latest_snapshot.loc[latest_snapshot["pasture_id"] == current_unit.unit_id].iloc[0]
-    existing_override = management_unit_overrides.get(current_unit.unit_id)
-    default_display_name = existing_override.display_name if existing_override and existing_override.display_name else str(source_unit_row["name"])
-    default_unit_type = existing_override.unit_type if existing_override else current_unit.unit_type
-    default_assigned_group_ids = existing_override.assigned_group_ids if existing_override else list(current_unit.assigned_group_ids)
-    default_assigned_livestock = (
-        existing_override.assigned_livestock
-        if existing_override and existing_override.assigned_livestock
-        else list(current_unit.assigned_livestock)
-    )
-    default_notes = existing_override.notes if existing_override is not None else str(source_unit_row.get("notes") or "")
-
-    st.subheader("Edit Management Unit Metadata")
-    st.caption(
-        "Use unit metadata to adapt the same uploaded boundary file for horse turnouts, hay fields, browse zones, exclusion areas, leased land, or other management uses."
-    )
-    with st.form(f"unit_metadata_form_{current_unit.unit_id}"):
-        metadata_cols = st.columns(2)
-        unit_display_name = metadata_cols[0].text_input("Display Name", value=default_display_name)
-        unit_type_value = metadata_cols[1].selectbox(
-            "Unit Type",
-            options=MANAGEMENT_UNIT_TYPE_OPTIONS,
-            index=MANAGEMENT_UNIT_TYPE_OPTIONS.index(default_unit_type)
-            if default_unit_type in MANAGEMENT_UNIT_TYPE_OPTIONS
-            else 0,
-        )
-        available_group_ids = list(livestock_groups.keys())
-        assigned_group_ids_value = st.multiselect(
-            "Assigned Livestock Groups",
-            options=available_group_ids,
-            default=[group_id for group_id in default_assigned_group_ids if group_id in available_group_ids],
-            format_func=lambda group_id: (
-                f"{livestock_groups[group_id].group_name} ({livestock_groups[group_id].species})"
-                if group_id in livestock_groups
-                else group_id
-            ),
-            help="These named groups are shown in the map, unit summaries, and attention queue.",
-        )
-        assigned_livestock_value = st.multiselect(
-            "Fallback Assigned Species",
-            options=LIVESTOCK_SPECIES_OPTIONS,
-            default=default_assigned_livestock,
-            help="Used when no named livestock groups are assigned to this management unit.",
-        )
-        unit_notes_value = st.text_area("Unit Notes", value=default_notes, height=110)
-        form_cols = st.columns([1, 1, 2])
-        save_metadata = form_cols[0].form_submit_button("Apply Unit Metadata")
-        clear_metadata = form_cols[1].form_submit_button("Clear Override")
-
-    if save_metadata:
-        updated_overrides = get_management_unit_overrides()
-        updated_overrides[current_unit.unit_id] = ManagementUnitOverride(
-            unit_id=current_unit.unit_id,
-            display_name=unit_display_name.strip(),
-            unit_type=unit_type_value,
-            assigned_group_ids=list(assigned_group_ids_value),
-            assigned_livestock=list(assigned_livestock_value),
-            notes=unit_notes_value.strip(),
-        )
-        st.session_state["management_unit_overrides"] = serialize_management_unit_overrides(updated_overrides)
-        st.success(f"Updated metadata for {current_unit.name}. Save Current Setup in Settings if you want this persisted for future sessions.")
-        st.rerun()
-    if clear_metadata:
-        updated_overrides = get_management_unit_overrides()
-        updated_overrides.pop(current_unit.unit_id, None)
-        st.session_state["management_unit_overrides"] = serialize_management_unit_overrides(updated_overrides)
-        st.info(f"Cleared custom metadata for {current_unit.name}.")
-        st.rerun()
-
-    render_data_table(
-        prepare_management_units_table(
-            management_units_df[
+            provider_rows.extend(
                 [
-                    "unit_id",
-                    "name",
-                    "unit_type",
-                    "acres",
-                    "assigned_livestock",
-                    "current_activity",
-                    "current_status",
-                    "recent_activity",
-                    "active_head_count",
-                    "utilization_label",
-                    "utilization_per_acre_30",
-                    "condition_score",
-                    "vegetation_status",
-                    "drought_category",
-                    "attention_score",
-                    "attention_level",
-                    "recommendation",
+                    {
+                        "Component": status.component,
+                        "Configured provider": status.configured_provider,
+                        "Active provider": status.active_provider,
+                        "Mode": status.mode,
+                        "Status": status.status,
+                        "Last updated": format_timestamp(status.loaded_at),
+                        "Citation": status.citation_url,
+                    }
+                    for status in artifacts.public_data_bundle.source_status
                 ]
-            ]
-        )
-    )
-
-    unit_chart_a, unit_chart_b = st.columns(2, gap="medium")
-    with unit_chart_a:
-        st.plotly_chart(
-            apply_chart_theme(plot_condition_scores(latest_snapshot, theme["recommendation_colors"]), theme),
-            width="stretch",
-        )
-    with unit_chart_b:
-        st.plotly_chart(
-            apply_chart_theme(plot_water_vs_stocking_risk(latest_snapshot, theme["recommendation_colors"]), theme),
-            width="stretch",
-        )
-
-with vegetation_tab:
-    vegetation_options = management_units_df["unit_id"].tolist()
-    vegetation_selected = st.selectbox(
-        f"{unit_term(ranch_profile, title=True)} for land-health detail",
-        options=vegetation_options,
-        index=vegetation_options.index(st.session_state.selected_unit_id),
-        format_func=lambda value: f"{value} - {management_units_df.loc[management_units_df['unit_id'] == value, 'name'].iloc[0]}",
-    )
-    if vegetation_selected != st.session_state.selected_unit_id:
-        st.session_state.selected_unit_id = vegetation_selected
-        st.query_params["unit"] = vegetation_selected
-        st.rerun()
-
-    selected_pasture = st.session_state.selected_unit_id
-    selected_vegetation = (
-        vegetation_summary_df.loc[vegetation_summary_df["pasture_id"] == selected_pasture].iloc[0]
-        if not vegetation_summary_df.empty and selected_pasture in set(vegetation_summary_df["pasture_id"])
-        else None
-    )
-    st.subheader("Vegetation History / Land Health")
-    if selected_vegetation is not None:
-        ndvi_anomaly_percent_value = pd.to_numeric(selected_vegetation.get("ndvi_anomaly_percent"), errors="coerce")
-        ndvi_badge_level = "info" if pd.isna(ndvi_anomaly_percent_value) else ("success" if float(ndvi_anomaly_percent_value) >= 0 else "warning")
-        st.caption(
-            f"NDVI source: {selected_vegetation.get('ndvi_source_label', 'Earth Search STAC / Sentinel-2')} | "
-            "RAP source: Rangeland Analysis Platform"
-        )
-        vegetation_card_cols = st.columns(4, gap="medium")
-        with vegetation_card_cols[0]:
-            render_signal_card(
-                title="Current Greenness",
-                value=format_number(selected_vegetation["ndvi_latest"], "", 3),
-                subtitle=(
-                    f"{friendly_ndvi_status(selected_vegetation['ndvi_status'])} | "
-                    f"Anomaly {format_number(selected_vegetation['ndvi_anomaly_percent'], '%', 1)}"
-                ),
-                badges=[highlight_badge(ndvi_badge_level, str(selected_vegetation["ndvi_status"]).upper())],
             )
-        with vegetation_card_cols[1]:
-            render_signal_card(
-                title="Perennial Grass",
-                value=friendly_trend_label(selected_vegetation["rap_perennial_grass_trend"]),
-                subtitle="Long-term rangeland structure",
-                badges=[highlight_badge("success" if selected_vegetation["rap_perennial_grass_trend"] == "increasing" else "warning" if selected_vegetation["rap_perennial_grass_trend"] == "declining" else "info", str(selected_vegetation["rap_perennial_grass_trend"]).upper())],
+            provider_rows.extend(
+                [
+                    {
+                        "Component": "Unit Intelligence",
+                        "Configured provider": "synthetic",
+                        "Active provider": "synthetic",
+                        "Mode": "synthetic",
+                        "Status": "The current scoring engine still starts from pasture-week features underneath the broader ranch-intelligence interface.",
+                        "Last updated": format_timestamp(last_updated),
+                        "Citation": "synthetic MVP pipeline",
+                    },
+                    {
+                        "Component": "ML Training Dataset",
+                        "Configured provider": "hybrid",
+                        "Active provider": f"{artifacts.training_dataset_summary['public_feature_count']} public features",
+                        "Mode": "hybrid",
+                        "Status": (
+                            f"{artifacts.training_dataset_summary['rows']} rows across "
+                            f"{artifacts.training_dataset_summary['pastures']} mapped unit(s) and "
+                            f"{artifacts.training_dataset_summary['weeks']} week(s)."
+                        ),
+                        "Last updated": format_timestamp(last_updated),
+                        "Citation": "RangeIQ hybrid training dataset",
+                    },
+                ]
             )
-        with vegetation_card_cols[2]:
-            render_signal_card(
-                title="Bare Ground",
-                value=friendly_trend_label(selected_vegetation["rap_bare_ground_trend"]),
-                subtitle="Watch for exposed soil moving higher over time",
-                badges=[highlight_badge("warning" if selected_vegetation["rap_bare_ground_trend"] == "increasing" else "success" if selected_vegetation["rap_bare_ground_trend"] == "declining" else "info", str(selected_vegetation["rap_bare_ground_trend"]).upper())],
+            provider_rows = pd.DataFrame(provider_rows)
+            render_data_table(provider_rows)
+
+            sensor_path = Path(runtime_settings.sensors.csv_path)
+            file_rows = pd.DataFrame(
+                [
+                    {"Path": str(runtime_settings.default_weekly_output_path), "Exists": Path(runtime_settings.default_weekly_output_path).exists()},
+                    {"Path": str(runtime_settings.default_scored_output_path), "Exists": Path(runtime_settings.default_scored_output_path).exists()},
+                    {"Path": str(runtime_settings.default_history_output_path), "Exists": Path(runtime_settings.default_history_output_path).exists()},
+                    {"Path": str(runtime_settings.default_monthly_report_csv_path), "Exists": Path(runtime_settings.default_monthly_report_csv_path).exists()},
+                    {"Path": str(runtime_settings.default_monthly_report_md_path), "Exists": Path(runtime_settings.default_monthly_report_md_path).exists()},
+                ]
             )
-        with vegetation_card_cols[3]:
-            render_signal_card(
-                title="RangeIQ Land Score",
-                value=f"{format_number(selected_vegetation['rangeiq_vegetation_score'], '', 0)} {str(selected_vegetation['rangeiq_vegetation_category']).upper()}",
-                subtitle=str(selected_vegetation["rangeiq_vegetation_explanation"]),
-                badges=[highlight_badge("success" if str(selected_vegetation["rangeiq_vegetation_category"]) in {"Excellent", "Good"} else "warning" if str(selected_vegetation["rangeiq_vegetation_category"]) in {"Watch", "Stressed"} else "critical", str(selected_vegetation["rangeiq_vegetation_category"]).upper())],
-            )
+            st.subheader("File Status")
+            render_data_table(file_rows)
 
-        if str(selected_vegetation.get("rangeiq_vegetation_drivers", "")).strip():
-            st.caption(f"Main drivers: {selected_vegetation['rangeiq_vegetation_drivers']}")
-        if str(selected_vegetation.get("vegetation_warnings", "")).strip():
-            st.warning(selected_vegetation["vegetation_warnings"])
-    else:
-        st.info(f"Vegetation history is not available for the selected {unit_term(ranch_profile)} in this run.")
-
-    vegetation_chart_a, vegetation_chart_b = st.columns(2, gap="medium")
-    with vegetation_chart_a:
-        if not vegetation_ndvi_df.empty:
-            st.plotly_chart(apply_chart_theme(plot_public_ndvi_history(vegetation_ndvi_df, selected_pasture), theme), width="stretch")
-        else:
-            st.info(f"NDVI history is unavailable for this {unit_term(ranch_profile)}.")
-    with vegetation_chart_b:
-        if not vegetation_cover_df.empty:
-            st.plotly_chart(apply_chart_theme(plot_rap_cover_history(vegetation_cover_df, selected_pasture), theme), width="stretch")
-        else:
-            st.info("RAP cover history is unavailable for this area.")
-
-    vegetation_chart_c, vegetation_chart_d = st.columns(2, gap="medium")
-    with vegetation_chart_c:
-        if not vegetation_production_df.empty:
-            st.plotly_chart(apply_chart_theme(plot_rap_production_history(vegetation_production_df, selected_pasture), theme), width="stretch")
-        else:
-            st.info("RAP production history is unavailable for this area.")
-    with vegetation_chart_d:
-        st.plotly_chart(apply_chart_theme(plot_rainfall_deficit_history(history_df, selected_pasture), theme), width="stretch")
-
-    vegetation_chart_e, vegetation_chart_f = st.columns(2, gap="medium")
-    with vegetation_chart_e:
-        st.plotly_chart(apply_chart_theme(plot_ndvi_trend(artifacts.scored_data, selected_pasture), theme), width="stretch")
-    with vegetation_chart_f:
-        st.plotly_chart(apply_chart_theme(plot_forage_trend(artifacts.scored_data, selected_pasture), theme), width="stretch")
-
-    vegetation_chart_g, vegetation_chart_h = st.columns(2, gap="medium")
-    with vegetation_chart_g:
-        st.plotly_chart(apply_chart_theme(plot_rainfall_trend(artifacts.scored_data, selected_pasture), theme), width="stretch")
-    with vegetation_chart_h:
-        st.plotly_chart(
-            apply_chart_theme(plot_recommendation_mix(latest_snapshot, theme["recommendation_colors"]), theme),
-            width="stretch",
-        )
-
-with livestock_tab:
-    ranch_profile_cols = st.columns(3, gap="medium")
-    with ranch_profile_cols[0]:
-        render_signal_card(
-            title="Management Style",
-            value=ranch_profile.management_style.title(),
-            subtitle=ranch_profile.ranch_type.title(),
-            badges=[highlight_badge("info", "STYLE")],
-        )
-    with ranch_profile_cols[1]:
-        render_signal_card(
-            title="Livestock",
-            value="No livestock" if primary_group is None else primary_group.species.title(),
-            subtitle=f"Rotates animals: {'Yes' if ranch_profile.rotates_animals else 'No'}",
-            badges=[highlight_badge("success", "PROFILE")],
-        )
-    with ranch_profile_cols[2]:
-        goals_value = ", ".join(ranch_profile.primary_goals[:2]).title() if ranch_profile.primary_goals else "General Land Monitoring"
-        render_signal_card(
-            title="Primary Goals",
-            value=goals_value,
-            subtitle=f"Preferred terminology: {unit_term(ranch_profile)}",
-            badges=[highlight_badge("info", "GOALS")],
-        )
-    if ranch_profile.notes.strip():
-        st.caption(ranch_profile.notes)
-
-    st.subheader("Operations Summary")
-    st.markdown(
-        f"RangeIQ is now treating **{unit_term(ranch_profile, plural=True)}** as the core management object for this workspace. "
-        f"Recommendations adapt around **{ranch_profile.management_style}**, the assigned livestock profile, and the goals you save in Settings."
-    )
-
-    st.subheader("Livestock Groups")
-    groups_df = livestock_groups_frame(livestock_groups, management_units)
-    if groups_df.empty:
-        st.info("No named livestock groups are saved yet. Add groups here if you want cattle classes, horse strings, goat bands, or sheep mobs tied to specific management units.")
-    else:
-        render_data_table(
-            groups_df.rename(
-                columns={
-                    "group_id": "Group ID",
-                    "group_name": "Group Name",
-                    "species": "Species",
-                    "animal_count": "Head",
-                    "class_type": "Class / Type",
-                    "average_weight": "Avg Weight",
-                    "assigned_unit": "Assigned Unit",
-                    "notes": "Notes",
+            st.subheader("Mock / Real Mode Indicator")
+            st.json(
+                {
+                    "workspace_id": CURRENT_WORKSPACE_ID,
+                    "account_email": CURRENT_USER.email,
+                    "weather_mode": weather_bundle.mode,
+                    "alerts_mode": alert_bundle.mode,
+                    "sensors_mode": "under_development",
+                    "sensor_network_mode": "under_development",
+                    "public_data_modes": {status.component: status.mode for status in artifacts.public_data_bundle.source_status},
+                    "boundary_mode": boundary_mode if boundary_mode != "default" else runtime_settings.boundary_status,
+                    "units": runtime_settings.ranch.units,
+                    "ranch_profile": runtime_settings.ranch_profile.__dict__,
+                    "field_feedback_count": len(unit_feedback_labels),
+                    "unit_activity_event_count": len(unit_activity_events),
+                    "shadow_review_rows": int(feedback_shadow_review_summary["rows"]),
                 }
             )
-        )
 
-    st.subheader("Group Occupancy / Load Summary")
-    st.caption(
-        "This 30-day summary is a transparent operational heuristic based on your logged activity windows, animal counts, and simple animal-unit assumptions."
-    )
-    if group_load_df.empty:
-        st.info("No livestock-group occupancy summary is available yet because no groups or use events have been logged.")
-    else:
-        render_data_table(prepare_group_load_table(group_load_df))
+            st.subheader("Hybrid Training Dataset Summary")
+            st.json(artifacts.training_dataset_summary)
 
-    group_choices = ["Create New Group"] + sorted(livestock_groups.keys())
-    selected_group_key = st.selectbox(
-        "Livestock group editor",
-        options=group_choices,
-        format_func=lambda value: (
-            "Create New Group"
-            if value == "Create New Group"
-            else f"{livestock_groups[value].group_name} ({livestock_groups[value].species})"
-        ),
-    )
-    editing_group = livestock_groups.get(selected_group_key) if selected_group_key != "Create New Group" else None
-    assigned_unit_options = [""] + management_units_df["unit_id"].tolist()
-    with st.form("livestock_group_form"):
-        group_cols = st.columns(3)
-        group_name_value = group_cols[0].text_input(
-            "Group Name",
-            value="" if editing_group is None else editing_group.group_name,
-        )
-        species_value = group_cols[1].selectbox(
-            "Species",
-            options=LIVESTOCK_SPECIES_OPTIONS,
-            index=LIVESTOCK_SPECIES_OPTIONS.index(editing_group.species)
-            if editing_group is not None and editing_group.species in LIVESTOCK_SPECIES_OPTIONS
-            else 0,
-        )
-        assigned_unit_value = group_cols[2].selectbox(
-            "Assigned Management Unit",
-            options=assigned_unit_options,
-            index=assigned_unit_options.index(editing_group.assigned_unit_id)
-            if editing_group is not None and editing_group.assigned_unit_id in assigned_unit_options
-            else 0,
-            format_func=lambda value: (
-                "Unassigned"
-                if value == ""
-                else f"{value} - {management_units_df.loc[management_units_df['unit_id'] == value, 'name'].iloc[0]}"
-            ),
-        )
-        group_cols = st.columns(3)
-        animal_count_value = group_cols[0].number_input(
-            "Animal Count",
-            min_value=0,
-            step=1,
-            value=0 if editing_group is None or editing_group.animal_count is None else int(editing_group.animal_count),
-        )
-        class_type_value = group_cols[1].text_input(
-            "Class / Type",
-            value="" if editing_group is None else editing_group.class_type,
-            placeholder="Cow-calf pairs, yearlings, broodmares, nannies...",
-        )
-        average_weight_value = group_cols[2].number_input(
-            "Average Weight",
-            min_value=0.0,
-            step=25.0,
-            value=0.0 if editing_group is None or editing_group.average_weight is None else float(editing_group.average_weight),
-        )
-        group_notes_value = st.text_area(
-            "Group Notes",
-            value="" if editing_group is None else editing_group.notes,
-            height=100,
-        )
-        form_cols = st.columns([1, 1, 2])
-        save_group = form_cols[0].form_submit_button("Save Group")
-        delete_group = form_cols[1].form_submit_button("Delete Group")
-
-    if save_group:
-        updated_groups = get_livestock_groups()
-        updated_overrides = get_management_unit_overrides()
-        group_id = editing_group.group_id if editing_group is not None else f"group-{pd.Timestamp.utcnow().strftime('%Y%m%d%H%M%S%f')}"
-        updated_groups[group_id] = LivestockGroup(
-            group_id=group_id,
-            group_name=group_name_value.strip() or ("Unnamed Group" if editing_group is None else editing_group.group_name),
-            species=species_value,
-            animal_count=(None if int(animal_count_value) == 0 else int(animal_count_value)),
-            class_type=class_type_value.strip(),
-            average_weight=(None if float(average_weight_value) == 0 else float(average_weight_value)),
-            assigned_unit_id=(assigned_unit_value or None),
-            notes=group_notes_value.strip(),
-        )
-        for override in updated_overrides.values():
-            if group_id in override.assigned_group_ids and override.unit_id != assigned_unit_value:
-                override.assigned_group_ids = [value for value in override.assigned_group_ids if value != group_id]
-        if assigned_unit_value:
-            target_override = updated_overrides.get(assigned_unit_value, ManagementUnitOverride(unit_id=assigned_unit_value))
-            if group_id not in target_override.assigned_group_ids:
-                target_override.assigned_group_ids.append(group_id)
-            updated_overrides[assigned_unit_value] = target_override
-        st.session_state["livestock_groups"] = serialize_livestock_groups(updated_groups)
-        st.session_state["management_unit_overrides"] = serialize_management_unit_overrides(updated_overrides)
-        st.success("Livestock group saved. Save Current Setup in Settings if you want this persisted for future sessions.")
-        st.rerun()
-
-    if delete_group and editing_group is not None:
-        updated_groups = get_livestock_groups()
-        updated_overrides = get_management_unit_overrides()
-        updated_events = get_unit_activity_events()
-        updated_groups.pop(editing_group.group_id, None)
-        for override in updated_overrides.values():
-            override.assigned_group_ids = [value for value in override.assigned_group_ids if value != editing_group.group_id]
-        for event in updated_events.values():
-            if event.livestock_group_id == editing_group.group_id:
-                event.livestock_group_id = None
-        st.session_state["livestock_groups"] = serialize_livestock_groups(updated_groups)
-        st.session_state["management_unit_overrides"] = serialize_management_unit_overrides(updated_overrides)
-        st.session_state["unit_activity_events"] = serialize_unit_activity_events(updated_events)
-        st.info("Livestock group deleted.")
-        st.rerun()
-
-    st.subheader("Unit Activity Timeline")
-    st.caption(
-        "Log grazing, rest, turnout, haying, monitoring, or restoration events here so RangeIQ can describe how each management unit is actually being used."
-    )
-    if activity_log_df.empty:
-        st.info("No unit activity has been logged yet. Add an event to track current use, rest windows, or upcoming moves.")
-    else:
-        render_data_table(prepare_unit_activity_table(activity_log_df))
-        month_choices = [pd.Timestamp.today().normalize().replace(day=1) + pd.DateOffset(months=offset) for offset in range(-1, 3)]
-        month_labels = {month_start.strftime("%Y-%m"): month_start.strftime("%B %Y") for month_start in month_choices}
-        selected_month_key = st.selectbox(
-            "Calendar Month",
-            options=list(month_labels.keys()),
-            index=1,
-            format_func=lambda value: month_labels[value],
-        )
-        render_activity_calendar(
-            unit_activity_events,
-            livestock_groups,
-            management_units,
-            month_choices[list(month_labels.keys()).index(selected_month_key)],
-            theme,
-        )
-
-    activity_choices = ["Create New Activity"] + sorted(unit_activity_events.keys())
-    selected_activity_key = st.selectbox(
-        "Activity editor",
-        options=activity_choices,
-        format_func=lambda value: (
-            "Create New Activity"
-            if value == "Create New Activity"
-            else (
-                f"{unit_activity_events[value].activity_type.title()} | "
-                f"{management_units_df.loc[management_units_df['unit_id'] == unit_activity_events[value].unit_id, 'name'].iloc[0]}"
+            st.subheader("Field Feedback Dataset Summary")
+            st.caption(
+                "These saved field labels are not yet merged into the current production model training loop, but they are now structured for future model review and calibration work."
             )
-        ),
-    )
-    editing_activity = unit_activity_events.get(selected_activity_key) if selected_activity_key != "Create New Activity" else None
-    today_value = pd.Timestamp.utcnow().date()
-    editing_start_value = pd.to_datetime(editing_activity.start_date).date() if editing_activity and editing_activity.start_date else today_value
-    editing_end_value = pd.to_datetime(editing_activity.end_date).date() if editing_activity and editing_activity.end_date else editing_start_value
-    event_group_options = [""] + sorted(livestock_groups.keys())
-    with st.form("unit_activity_form"):
-        activity_cols = st.columns(3)
-        activity_unit_value = activity_cols[0].selectbox(
-            "Management Unit",
-            options=management_units_df["unit_id"].tolist(),
-            index=management_units_df["unit_id"].tolist().index(editing_activity.unit_id)
-            if editing_activity is not None and editing_activity.unit_id in set(management_units_df["unit_id"])
-            else 0,
-            format_func=lambda value: f"{value} - {management_units_df.loc[management_units_df['unit_id'] == value, 'name'].iloc[0]}",
-        )
-        activity_type_value = activity_cols[1].selectbox(
-            "Activity Type",
-            options=UNIT_ACTIVITY_TYPE_OPTIONS,
-            index=UNIT_ACTIVITY_TYPE_OPTIONS.index(editing_activity.activity_type)
-            if editing_activity is not None and editing_activity.activity_type in UNIT_ACTIVITY_TYPE_OPTIONS
-            else 0,
-        )
-        activity_group_value = activity_cols[2].selectbox(
-            "Livestock Group",
-            options=event_group_options,
-            index=event_group_options.index(editing_activity.livestock_group_id or "")
-            if editing_activity is not None and (editing_activity.livestock_group_id or "") in event_group_options
-            else 0,
-            format_func=lambda value: (
-                "No named group"
-                if value == ""
-                else f"{livestock_groups[value].group_name} ({livestock_groups[value].species})"
-            ),
-        )
-        activity_cols = st.columns(3)
-        activity_start_date = activity_cols[0].date_input("Start Date", value=editing_start_value)
-        use_end_date = activity_cols[1].checkbox(
-            "Specific End Date",
-            value=editing_activity is not None and bool(editing_activity.end_date),
-        )
-        activity_end_date = activity_cols[2].date_input(
-            "End Date",
-            value=editing_end_value,
-            disabled=not use_end_date,
-        )
-        activity_notes_value = st.text_area(
-            "Activity Notes",
-            value="" if editing_activity is None else editing_activity.notes,
-            height=100,
-            placeholder="Rotation window, turnout limits, targeted browse objective, hay cut notes, restoration work, or monitoring context...",
-        )
-        form_cols = st.columns([1, 1, 2])
-        save_activity = form_cols[0].form_submit_button("Save Activity")
-        delete_activity = form_cols[1].form_submit_button("Delete Activity")
+            st.json(feedback_dataset_summary)
+            if feedback_dataset_df.empty:
+                st.info("No field feedback labels have been logged yet.")
+            else:
+                render_data_table(
+                    feedback_dataset_df.rename(
+                        columns={
+                            "observed_on": "Observed On",
+                            "unit_name": "Unit",
+                            "unit_type": "Unit Type",
+                            "unit_acres": "Acres",
+                            "label_type": "Label Type",
+                            "label_value": "Observed Value",
+                            "confidence": "Confidence",
+                            "assigned_group_names": "Assigned Groups",
+                            "assigned_livestock": "Assigned Livestock",
+                            "management_style": "Management Style",
+                        }
+                    )[
+                        [
+                            "Observed On",
+                            "Unit",
+                            "Unit Type",
+                            "Acres",
+                            "Label Type",
+                            "Observed Value",
+                            "Confidence",
+                            "Assigned Groups",
+                            "Assigned Livestock",
+                            "Management Style",
+                            "notes",
+                        ]
+                    ].rename(columns={"notes": "Notes"})
+                )
+                st.download_button(
+                    "Download Field Feedback CSV",
+                    data=feedback_dataset_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"{CURRENT_WORKSPACE_ID}_field_feedback.csv",
+                    mime="text/csv",
+                )
 
-    if save_activity:
-        if use_end_date and activity_end_date < activity_start_date:
-            st.error("End date cannot be earlier than the start date.")
-        else:
-            updated_events = get_unit_activity_events()
-            event_id = editing_activity.event_id if editing_activity is not None else f"activity-{uuid4().hex[:10]}"
-            updated_events[event_id] = UnitActivityEvent(
-                event_id=event_id,
-                unit_id=activity_unit_value,
-                activity_type=activity_type_value,
-                livestock_group_id=(activity_group_value or None),
-                start_date=activity_start_date.isoformat(),
-                end_date=(activity_end_date.isoformat() if use_end_date else None),
-                notes=activity_notes_value.strip(),
+            st.subheader("Feedback Calibration Dataset")
+            st.caption(
+                "RangeIQ now maps field labels into candidate numeric or classification targets for shadow-model review. These are suggestions for future calibration work, not live production targets yet."
             )
-            st.session_state["unit_activity_events"] = serialize_unit_activity_events(updated_events)
-            st.success("Unit activity saved. Save Current Setup in Settings if you want this persisted for future sessions.")
-            st.rerun()
+            st.json(feedback_calibration_summary)
+            if feedback_calibration_df.empty:
+                st.info("No calibration-ready feedback targets are available yet.")
+            else:
+                render_data_table(
+                    feedback_calibration_df.rename(
+                        columns={
+                            "observed_on": "Observed On",
+                            "unit_name": "Unit",
+                            "label_type": "Label Type",
+                            "label_value": "Observed Value",
+                            "target_family": "Target Family",
+                            "target_type": "Target Type",
+                            "candidate_numeric_target": "Numeric Target",
+                            "candidate_class_target": "Class Target",
+                            "confidence": "Confidence",
+                            "confidence_weight": "Weight",
+                            "management_style": "Management Style",
+                            "ranch_type": "Ranch Type",
+                            "notes": "Notes",
+                        }
+                    )[
+                        [
+                            "Observed On",
+                            "Unit",
+                            "Label Type",
+                            "Observed Value",
+                            "Target Family",
+                            "Target Type",
+                            "Numeric Target",
+                            "Class Target",
+                            "Confidence",
+                            "Weight",
+                            "Management Style",
+                            "Ranch Type",
+                            "Notes",
+                        ]
+                    ]
+                )
+                st.download_button(
+                    "Download Calibration CSV",
+                    data=feedback_calibration_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"{CURRENT_WORKSPACE_ID}_feedback_calibration.csv",
+                    mime="text/csv",
+                )
 
-    if delete_activity and editing_activity is not None:
-        updated_events = get_unit_activity_events()
-        updated_events.pop(editing_activity.event_id, None)
-        st.session_state["unit_activity_events"] = serialize_unit_activity_events(updated_events)
-        st.info("Unit activity deleted.")
-        st.rerun()
-
-    st.subheader("Unit Assignment Overview")
-    assignment_df = management_units_df[
-        [
-            "unit_id",
-            "name",
-            "unit_type",
-            "assigned_groups",
-            "assigned_livestock",
-            "current_activity",
-            "current_status",
-            "recent_activity",
-            "attention_level",
-            "recommendation",
-            "notes",
-        ]
-    ].copy()
-    render_data_table(
-        prepare_attention_queue_table(
-            assignment_df.rename(columns={"assigned_groups": "Assigned Groups"})
-        )
-    )
-
-    st.subheader("Unit Utilization / Recovery Outlook")
-    st.caption(
-        "RangeIQ estimates recent use pressure with a simple 30-day animal-unit-days-per-acre heuristic. Treat this as a planning signal, not a forage inventory substitute."
-    )
-    if unit_utilization_df.empty:
-        st.info("No unit utilization summary is available yet.")
-    else:
-        render_data_table(prepare_unit_utilization_table(unit_utilization_df))
-
-with data_tab:
-    source_card_cols = st.columns(4)
-    with source_card_cols[0]:
-        render_signal_card(
-            title="Weather Source",
-            value=weather_bundle.provider_name.upper(),
-            subtitle=weather_bundle.source_message,
-            badges=[status_badge(weather_bundle.mode)],
-        )
-    with source_card_cols[1]:
-        render_signal_card(
-            title="Alert Source",
-            value=alert_bundle.provider_name.upper(),
-            subtitle=alert_bundle.source_message,
-            badges=[status_badge(alert_bundle.mode)],
-        )
-    with source_card_cols[2]:
-        vegetation_value = runtime_settings.public_data.vegetation.provider.upper()
-        vegetation_subtitle = (
-            "Vegetation history combines Earth Search STAC NDVI with RAP."
-            if vegetation_source_status is None
-            else vegetation_source_status.status
-        )
-        vegetation_badge = status_badge("mock" if vegetation_source_status is None else vegetation_source_status.mode)
-        render_signal_card(
-            title="Vegetation Source",
-            value=vegetation_value if vegetation_source_status is None else vegetation_source_status.active_provider.upper(),
-            subtitle=vegetation_subtitle,
-            badges=[vegetation_badge],
-        )
-    with source_card_cols[3]:
-        boundary_value = "DEFAULT CORNERS"
-        boundary_badge = highlight_badge("info", "DEFAULT")
-        boundary_subtitle = "Default ranch geometry comes from your provided Alpine property corners."
-        if boundary_mode == "uploaded":
-            boundary_value = "UPLOADED"
-            boundary_badge = highlight_badge("success", "UPLOADED")
-            boundary_subtitle = "This run is using the boundary file you uploaded in the current session."
-        elif boundary_mode == "saved":
-            boundary_value = "SAVED"
-            boundary_badge = highlight_badge("success", "SAVED")
-            boundary_subtitle = "This run is using the last boundary file you saved for future launches."
-        render_signal_card(
-            title="Boundary Mode",
-            value=boundary_value,
-            subtitle=boundary_subtitle,
-            badges=[boundary_badge],
-        )
-
-    st.subheader("Public Data Source Status")
-    provider_rows = [
-        {
-            "Component": "Weather",
-            "Configured provider": runtime_settings.weather.provider,
-            "Active provider": weather_bundle.provider_name,
-            "Mode": weather_bundle.mode,
-            "Status": weather_bundle.source_message,
-            "Last updated": format_timestamp(weather_bundle.loaded_at),
-            "Citation": "https://www.weather.gov/documentation/services-web-api",
-        },
-        {
-            "Component": "Alerts",
-            "Configured provider": runtime_settings.alerts.provider,
-            "Active provider": alert_bundle.provider_name,
-            "Mode": alert_bundle.mode,
-            "Status": alert_bundle.source_message,
-            "Last updated": format_timestamp(alert_bundle.loaded_at),
-            "Citation": "https://www.weather.gov/documentation/services-web-api",
-        },
-        {
-            "Component": "Sensors",
-            "Configured provider": "under_development",
-            "Active provider": "under_development",
-            "Mode": "paused",
-            "Status": "Sensor monitoring is temporarily disabled in the hosted dashboard while performance work continues.",
-            "Last updated": format_timestamp(last_updated),
-            "Citation": "under development",
-        },
-        {
-            "Component": "Sensor Network",
-            "Configured provider": "under_development",
-            "Active provider": "under_development",
-            "Mode": "paused",
-            "Status": "Meshtastic / LoRa network pages are paused in the hosted app while the rest of RangeIQ is optimized.",
-            "Last updated": format_timestamp(last_updated),
-            "Citation": "under development",
-        },
-    ]
-    provider_rows.extend(
-        [
-            {
-                "Component": status.component,
-                "Configured provider": status.configured_provider,
-                "Active provider": status.active_provider,
-                "Mode": status.mode,
-                "Status": status.status,
-                "Last updated": format_timestamp(status.loaded_at),
-                "Citation": status.citation_url,
-            }
-            for status in artifacts.public_data_bundle.source_status
-        ]
-    )
-    provider_rows.extend(
-        [
-            {
-                "Component": "Unit Intelligence",
-                "Configured provider": "synthetic",
-                "Active provider": "synthetic",
-                "Mode": "synthetic",
-                "Status": "The current scoring engine still starts from pasture-week features underneath the broader ranch-intelligence interface.",
-                "Last updated": format_timestamp(last_updated),
-                "Citation": "synthetic MVP pipeline",
-            },
-            {
-                "Component": "ML Training Dataset",
-                "Configured provider": "hybrid",
-                "Active provider": f"{artifacts.training_dataset_summary['public_feature_count']} public features",
-                "Mode": "hybrid",
-                "Status": (
-                    f"{artifacts.training_dataset_summary['rows']} rows across "
-                    f"{artifacts.training_dataset_summary['pastures']} mapped unit(s) and "
-                    f"{artifacts.training_dataset_summary['weeks']} week(s)."
-                ),
-                "Last updated": format_timestamp(last_updated),
-                "Citation": "RangeIQ hybrid training dataset",
-            },
-        ]
-    )
-    provider_rows = pd.DataFrame(provider_rows)
-    render_data_table(provider_rows)
-
-    sensor_path = Path(runtime_settings.sensors.csv_path)
-    file_rows = pd.DataFrame(
-        [
-            {"Path": str(runtime_settings.default_weekly_output_path), "Exists": Path(runtime_settings.default_weekly_output_path).exists()},
-            {"Path": str(runtime_settings.default_scored_output_path), "Exists": Path(runtime_settings.default_scored_output_path).exists()},
-            {"Path": str(runtime_settings.default_history_output_path), "Exists": Path(runtime_settings.default_history_output_path).exists()},
-            {"Path": str(runtime_settings.default_monthly_report_csv_path), "Exists": Path(runtime_settings.default_monthly_report_csv_path).exists()},
-            {"Path": str(runtime_settings.default_monthly_report_md_path), "Exists": Path(runtime_settings.default_monthly_report_md_path).exists()},
-        ]
-    )
-    st.subheader("File Status")
-    render_data_table(file_rows)
-
-    st.subheader("Mock / Real Mode Indicator")
-    st.json(
-        {
-            "workspace_id": CURRENT_WORKSPACE_ID,
-            "account_email": CURRENT_USER.email,
-            "weather_mode": weather_bundle.mode,
-            "alerts_mode": alert_bundle.mode,
-            "sensors_mode": "under_development",
-            "sensor_network_mode": "under_development",
-            "public_data_modes": {status.component: status.mode for status in artifacts.public_data_bundle.source_status},
-            "boundary_mode": boundary_mode if boundary_mode != "default" else runtime_settings.boundary_status,
-            "units": runtime_settings.ranch.units,
-            "ranch_profile": runtime_settings.ranch_profile.__dict__,
-        }
-    )
-
-    st.subheader("Hybrid Training Dataset Summary")
-    st.json(artifacts.training_dataset_summary)
-
-    st.subheader("Monthly Ranch Report")
-    st.markdown(artifacts.monthly_report_markdown)
-    st.download_button(
-        "Download CSV report",
-        data=artifacts.monthly_report_table.to_csv(index=False).encode("utf-8"),
-        file_name="rangeiq_monthly_report.csv",
-        mime="text/csv",
-    )
-    st.download_button(
-        "Download Markdown report",
-        data=artifacts.monthly_report_markdown.encode("utf-8"),
-        file_name="rangeiq_monthly_report.md",
-        mime="text/markdown",
-    )
-
-with settings_tab:
-    st.markdown(
-        "<div class='rq-section-intro'>Use this control center to tune the ranch profile, public-data mix, alert thresholds, and saved workspace behavior.</div>",
-        unsafe_allow_html=True,
-    )
-    workspace_settings_tab, provider_settings_tab, safety_settings_tab, diagnostics_settings_tab = st.tabs(
-        ["Ranch Profile", "Providers", "Operations & Save", "Diagnostics"]
-    )
-
-    with workspace_settings_tab:
-        boundary_save_mode = "current upload" if boundary_mode == "uploaded" else "saved boundary" if boundary_mode == "saved" else "default corners"
-        account_cols = st.columns([1, 1, 0.8], gap="medium")
-        with account_cols[0]:
-            render_signal_card(
-                title="Account",
-                value=CURRENT_USER.full_name,
-                subtitle=CURRENT_USER.email,
-                badges=[highlight_badge("info", "SIGNED IN")],
+            st.subheader("Shadow Review Against Current Model")
+            st.caption(
+                "This compares saved calibration labels against the current live RangeIQ outputs for each unit. It is a review layer only and does not modify the production model."
             )
-        with account_cols[1]:
-            render_signal_card(
-                title="Workspace",
-                value="Private",
-                subtitle=f"{CURRENT_WORKSPACE_ID} | Reopens with {boundary_save_mode}.",
-                badges=[highlight_badge("success", "PERSISTED")],
+            st.json(feedback_shadow_review_summary)
+            if feedback_shadow_review_df.empty:
+                st.info("No shadow-review comparisons are available yet.")
+            else:
+                render_data_table(
+                    feedback_shadow_review_df.rename(
+                        columns={
+                            "observed_on": "Observed On",
+                            "unit_name": "Unit",
+                            "target_family": "Target Family",
+                            "target_type": "Target Type",
+                            "candidate_numeric_target": "Candidate Numeric Target",
+                            "candidate_class_target": "Candidate Class Target",
+                            "live_signal_source": "Live Signal Source",
+                            "live_numeric_signal": "Live Numeric Signal",
+                            "live_class_signal": "Live Class Signal",
+                            "delta": "Delta",
+                            "absolute_error": "Absolute Error",
+                            "class_match": "Class Match",
+                            "confidence": "Confidence",
+                            "confidence_weight": "Weight",
+                            "management_style": "Management Style",
+                            "ranch_type": "Ranch Type",
+                            "notes": "Notes",
+                        }
+                    )[
+                        [
+                            "Observed On",
+                            "Unit",
+                            "Target Family",
+                            "Target Type",
+                            "Candidate Numeric Target",
+                            "Candidate Class Target",
+                            "Live Signal Source",
+                            "Live Numeric Signal",
+                            "Live Class Signal",
+                            "Delta",
+                            "Absolute Error",
+                            "Class Match",
+                            "Confidence",
+                            "Weight",
+                            "Management Style",
+                            "Ranch Type",
+                            "Notes",
+                        ]
+                    ]
+                )
+                st.download_button(
+                    "Download Shadow Review CSV",
+                    data=feedback_shadow_review_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"{CURRENT_WORKSPACE_ID}_feedback_shadow_review.csv",
+                    mime="text/csv",
+                )
+
+            st.subheader("Monthly Ranch Report")
+            st.markdown(artifacts.monthly_report_markdown)
+            st.download_button(
+                "Download CSV report",
+                data=artifacts.monthly_report_table.to_csv(index=False).encode("utf-8"),
+                file_name="rangeiq_monthly_report.csv",
+                mime="text/csv",
             )
-        with account_cols[2]:
-            st.markdown("<div class='rq-control-kicker'>Session</div>", unsafe_allow_html=True)
-            st.markdown("<div class='rq-control-title'>Access</div>", unsafe_allow_html=True)
+            st.download_button(
+                "Download Markdown report",
+                data=artifacts.monthly_report_markdown.encode("utf-8"),
+                file_name="rangeiq_monthly_report.md",
+                mime="text/markdown",
+            )
+
+    if settings_shell is not None:
+        with settings_shell:
             st.markdown(
-                "<div class='rq-control-copy'>Sign out here if you want to switch ranch accounts on this device.</div>",
+                "<div class='rq-section-intro'>Use this control center to tune the ranch profile, public-data mix, alert thresholds, and saved workspace behavior.</div>",
                 unsafe_allow_html=True,
             )
-            if st.button("Log Out"):
-                sign_out_user()
-                st.rerun()
+            workspace_settings_tab, provider_settings_tab, safety_settings_tab, diagnostics_settings_tab = st.tabs(
+                ["Ranch Profile", "Providers", "Operations & Save", "Diagnostics"]
+            )
 
-        st.subheader("Ranch Identity")
-        ranch_cols = st.columns(2)
-        ranch_cols[0].text_input("Ranch Name", key="ranch_name")
-        ranch_cols[1].text_input("Ranch Address", key="ranch_address")
-        ranch_cols = st.columns(3)
-        ranch_cols[0].number_input("Latitude", format="%.6f", key="ranch_lat")
-        ranch_cols[1].number_input("Longitude", format="%.6f", key="ranch_lon")
-        ranch_cols[2].text_input("Timezone", key="ranch_timezone")
-        st.selectbox("Units", options=["imperial"], key="ranch_units")
-        st.selectbox(
-            "Map Basemap",
-            options=list(MAP_BASEMAP_LABELS.keys()),
-            key="map_basemap",
-            format_func=lambda value: MAP_BASEMAP_LABELS[value],
-        )
-        st.caption(
-            "USGS NAIP aerial imagery is the best free ranch-view option for small Texas properties. "
-            "Plain keeps the ranch polygon visible even when you are offline."
-        )
-
-        st.subheader("Operating Profile")
-        profile_cols = st.columns(3)
-        profile_cols[0].selectbox("Ranch Type", options=RANCH_TYPE_OPTIONS, key="ranch_type")
-        profile_cols[1].selectbox("Management Style", options=MANAGEMENT_STYLE_OPTIONS, key="management_style")
-        profile_cols[2].selectbox("Preferred Unit Terminology", options=["management unit", "pasture", "paddock", "field", "turnout", "block"], key="preferred_unit_term")
-        profile_cols = st.columns(2)
-        profile_cols[0].selectbox("Default Management Unit Type", options=MANAGEMENT_UNIT_TYPE_OPTIONS, key="default_unit_type")
-        profile_cols[1].toggle("This ranch rotates animals", key="rotates_animals")
-        st.multiselect(
-            "Primary Livestock Species",
-            options=LIVESTOCK_SPECIES_OPTIONS,
-            key="livestock_species",
-            help="Use wildlife/no livestock if this workspace is strictly for land monitoring.",
-        )
-        st.multiselect(
-            "Primary Goals",
-            options=RANCH_GOAL_OPTIONS,
-            key="primary_goals",
-            help="These goals help RangeIQ choose better language and emphasis across the dashboard.",
-        )
-        st.text_area(
-            "Ranch Notes",
-            key="ranch_profile_notes",
-            height=110,
-            help="Optional context for this workspace, such as operating constraints, lease notes, or restoration objectives.",
-        )
-        st.caption(
-            "This profile is saved with the workspace so the dashboard can speak in the right language for rotational grazing, continuous grazing, horses, goats, sheep, hay, restoration, or land-only monitoring."
-        )
-
-    with provider_settings_tab:
-        st.subheader("Operational Providers")
-        provider_cols = st.columns(2)
-        provider_cols[0].selectbox("Weather Provider", options=["mock", "nws", "openmeteo"], key="weather_provider")
-        provider_cols[1].selectbox("Alert Provider", options=["mock", "nws"], key="alerts_provider")
-
-        st.subheader("Public Data Providers")
-        public_provider_cols = st.columns(3)
-        public_provider_cols[0].selectbox("Historical Weather", options=["mock", "nasa_power"], key="historical_weather_provider")
-        public_provider_cols[1].selectbox("Soils", options=["mock", "usda_sda"], key="soils_provider")
-        public_provider_cols[2].selectbox("Drought", options=["mock", "usdm"], key="drought_provider")
-        cache_cols = st.columns(5)
-        cache_cols[0].toggle("Enable Public Cache", key="public_cache_enabled")
-        cache_cols[1].number_input("Weather Refresh (h)", min_value=1, step=12, key="historical_weather_refresh_hours")
-        cache_cols[2].number_input("Soils Refresh (h)", min_value=1, step=24, key="soils_refresh_hours")
-        cache_cols[3].number_input("Drought Refresh (h)", min_value=1, step=12, key="drought_refresh_hours")
-        cache_cols[4].number_input("Vegetation Refresh (h)", min_value=1, step=24, key="vegetation_refresh_hours")
-        st.selectbox("Vegetation", options=["mock", "earth_search_stac", "climate_engine"], key="vegetation_provider")
-        st.caption(
-            "Public historical sources are cached on disk so RangeIQ can reuse them offline and avoid unnecessary refreshes. "
-            "Vegetation history now combines Earth Search STAC NDVI with RAP. Earth Search STAC is the default live NDVI source, "
-            "and Climate Engine remains optional. If live vegetation providers fail, RangeIQ falls back to mock history."
-        )
-
-        st.subheader("Sensor Stack")
-        st.info(
-            "Sensor monitoring and sensor-network controls are currently under development. "
-            "They are paused in the hosted dashboard while we improve performance and finish the next implementation pass."
-        )
-
-    with safety_settings_tab:
-        st.subheader("Fire Risk Thresholds")
-        fire_cols = st.columns(3)
-        fire_cols[0].number_input("High Wind (mph)", min_value=5, step=1, key="high_wind_mph")
-        fire_cols[1].number_input("High Gust (mph)", min_value=10, step=1, key="high_gust_mph")
-        fire_cols[2].number_input("Low Humidity (%)", min_value=5, max_value=60, step=1, key="low_humidity_pct")
-        fire_cols = st.columns(3)
-        fire_cols[0].number_input("High Temperature (F)", min_value=60, max_value=120, step=1, key="high_temperature_f")
-        fire_cols[1].number_input("Low Rainfall 7d (in)", min_value=0.0, max_value=2.0, step=0.01, format="%.2f", key="low_rainfall_7d_in")
-        fire_cols[2].number_input("Low Soil Moisture (%)", min_value=1, max_value=50, step=1, key="low_soil_moisture_pct")
-
-        st.subheader("Save This Setup")
-        st.caption(
-            "Save writes your current ranch profile, management-unit metadata, provider selections, and uploaded boundary reference to the workspace config/state "
-            "so RangeIQ can reopen with the same setup next time. Livestock groups and unit activity timelines are included too."
-        )
-        save_cols = st.columns([1, 2], gap="medium")
-        with save_cols[0]:
-            if st.button("Save Current Setup"):
-                current_runtime_settings = build_runtime_settings()
-                target_workspace_id = CURRENT_WORKSPACE_ID
-                st.query_params["workspace"] = target_workspace_id
-                dashboard_state_payload = build_dashboard_state_payload(
-                    current_runtime_settings,
-                    workspace_id=target_workspace_id,
-                    boundary_filename=effective_boundary_name,
-                    boundary_bytes=effective_boundary_bytes,
-                    existing_state=PERSISTED_DASHBOARD_STATE,
-                )
-                saved_state_path = save_dashboard_state(
-                    dashboard_state_payload,
-                    path=current_runtime_settings.workspace_state_path_for(target_workspace_id),
-                )
-                updated_user = AUTH_SERVICE.update_user_profile(
-                    CURRENT_USER.user_id,
-                    ranch_name=current_runtime_settings.ranch.name,
-                    ranch_address=current_runtime_settings.ranch.address,
-                    ranch_latitude=current_runtime_settings.ranch.latitude,
-                    ranch_longitude=current_runtime_settings.ranch.longitude,
-                )
-                sign_in_user(updated_user)
-                saved_boundary_notice = "No custom boundary was saved; RangeIQ will reopen on the default corners."
-                if dashboard_state_payload.get("saved_boundary", {}).get("path"):
-                    saved_boundary_notice = (
-                        f"Saved boundary file: {dashboard_state_payload['saved_boundary']['filename']}"
+            with workspace_settings_tab:
+                boundary_save_mode = "current upload" if boundary_mode == "uploaded" else "saved boundary" if boundary_mode == "saved" else "default corners"
+                account_cols = responsive_columns([1, 1, 0.8], field_mode=field_mode, gap="medium")
+                with account_cols[0]:
+                    render_signal_card(
+                        title="Account",
+                        value=CURRENT_USER.full_name,
+                        subtitle=CURRENT_USER.email,
+                        badges=[highlight_badge("info", "SIGNED IN")],
                     )
-                st.success(
-                    f"Account settings saved to {saved_state_path}. {saved_boundary_notice} "
-                    "Log back into this account later to reopen the same ranch setup."
+                with account_cols[1]:
+                    render_signal_card(
+                        title="Workspace",
+                        value="Private",
+                        subtitle=f"{CURRENT_WORKSPACE_ID} | Reopens with {boundary_save_mode}.",
+                        badges=[highlight_badge("success", "PERSISTED")],
+                    )
+                with account_cols[2]:
+                    st.markdown("<div class='rq-control-kicker'>Session</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='rq-control-title'>Access</div>", unsafe_allow_html=True)
+                    st.markdown(
+                        "<div class='rq-control-copy'>Sign out here if you want to switch ranch accounts on this device.</div>",
+                        unsafe_allow_html=True,
+                    )
+                    if st.button("Log Out"):
+                        sign_out_user()
+                        st.rerun()
+
+                st.subheader("Ranch Identity")
+                ranch_cols = responsive_columns(2, field_mode=field_mode, gap="small")
+                ranch_cols[0].text_input("Ranch Name", key="ranch_name")
+                ranch_cols[1].text_input("Ranch Address", key="ranch_address")
+                ranch_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                ranch_cols[0].number_input("Latitude", format="%.6f", key="ranch_lat")
+                ranch_cols[1].number_input("Longitude", format="%.6f", key="ranch_lon")
+                ranch_cols[2].text_input("Timezone", key="ranch_timezone")
+                st.selectbox("Units", options=["imperial"], key="ranch_units")
+                st.selectbox(
+                    "Map Basemap",
+                    options=list(MAP_BASEMAP_LABELS.keys()),
+                    key="map_basemap",
+                    format_func=lambda value: MAP_BASEMAP_LABELS[value],
                 )
-        with save_cols[1]:
-                st.markdown(
-                    f"Current workspace: **{CURRENT_WORKSPACE_ID}**. "
-                    f"Reopen state: **{boundary_save_mode}**. "
-                    "Providers, ranch identity, ranch profile, map settings, time horizon, and thresholds are saved to this account."
-                    " Custom management-unit names, types, livestock assignments, activity timelines, and notes are saved too."
+                st.caption(
+                    "USGS NAIP aerial imagery is the best free ranch-view option for small Texas properties. "
+                    "Plain keeps the ranch polygon visible even when you are offline."
                 )
 
-    with diagnostics_settings_tab:
-        st.subheader("Current Effective Config")
-        preview_settings = build_runtime_settings()
-        st.json(preview_settings.to_display_dict())
+                st.subheader("Operating Profile")
+                profile_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                profile_cols[0].selectbox("Ranch Type", options=RANCH_TYPE_OPTIONS, key="ranch_type")
+                profile_cols[1].selectbox("Management Style", options=MANAGEMENT_STYLE_OPTIONS, key="management_style")
+                profile_cols[2].selectbox("Preferred Unit Terminology", options=["management unit", "pasture", "paddock", "field", "turnout", "block"], key="preferred_unit_term")
+                profile_cols = responsive_columns(2, field_mode=field_mode, gap="small")
+                profile_cols[0].selectbox("Default Management Unit Type", options=MANAGEMENT_UNIT_TYPE_OPTIONS, key="default_unit_type")
+                profile_cols[1].toggle("This ranch rotates animals", key="rotates_animals")
+                st.multiselect(
+                    "Primary Livestock Species",
+                    options=LIVESTOCK_SPECIES_OPTIONS,
+                    key="livestock_species",
+                    help="Use wildlife/no livestock if this workspace is strictly for land monitoring.",
+                )
+                st.multiselect(
+                    "Primary Goals",
+                    options=RANCH_GOAL_OPTIONS,
+                    key="primary_goals",
+                    help="These goals help RangeIQ choose better language and emphasis across the dashboard.",
+                )
+                st.text_area(
+                    "Ranch Notes",
+                    key="ranch_profile_notes",
+                    height=110,
+                    help="Optional context for this workspace, such as operating constraints, lease notes, or restoration objectives.",
+                )
+                st.caption(
+                    "This profile is saved with the workspace so the dashboard can speak in the right language for rotational grazing, continuous grazing, horses, goats, sheep, hay, restoration, or land-only monitoring."
+                )
 
-        st.subheader("Saved Management Unit Overrides")
-        st.json(st.session_state.get("management_unit_overrides", {}))
+            with provider_settings_tab:
+                st.subheader("Operational Providers")
+                provider_cols = responsive_columns(2, field_mode=field_mode, gap="small")
+                provider_cols[0].selectbox("Weather Provider", options=["mock", "nws", "openmeteo"], key="weather_provider")
+                provider_cols[1].selectbox("Alert Provider", options=["mock", "nws"], key="alerts_provider")
 
-        st.subheader("Saved Livestock Groups")
-        st.json(st.session_state.get("livestock_groups", {}))
+                st.subheader("Public Data Providers")
+                public_provider_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                public_provider_cols[0].selectbox("Historical Weather", options=["mock", "nasa_power"], key="historical_weather_provider")
+                public_provider_cols[1].selectbox("Soils", options=["mock", "usda_sda"], key="soils_provider")
+                public_provider_cols[2].selectbox("Drought", options=["mock", "usdm"], key="drought_provider")
+                cache_cols = responsive_columns(5, field_mode=field_mode, gap="small")
+                cache_cols[0].toggle("Enable Public Cache", key="public_cache_enabled")
+                cache_cols[1].number_input("Weather Refresh (h)", min_value=1, step=12, key="historical_weather_refresh_hours")
+                cache_cols[2].number_input("Soils Refresh (h)", min_value=1, step=24, key="soils_refresh_hours")
+                cache_cols[3].number_input("Drought Refresh (h)", min_value=1, step=12, key="drought_refresh_hours")
+                cache_cols[4].number_input("Vegetation Refresh (h)", min_value=1, step=24, key="vegetation_refresh_hours")
+                st.selectbox("Vegetation", options=["mock", "earth_search_stac", "climate_engine"], key="vegetation_provider")
+                st.caption(
+                    "Public historical sources are cached on disk so RangeIQ can reuse them offline and avoid unnecessary refreshes. "
+                    "Vegetation history now combines Earth Search STAC NDVI with RAP. Earth Search STAC is the default live NDVI source, "
+                    "and Climate Engine remains optional. If live vegetation providers fail, RangeIQ falls back to mock history."
+                )
 
-        st.subheader("Saved Unit Activity Events")
-        st.json(st.session_state.get("unit_activity_events", {}))
+                st.subheader("Sensor Stack")
+                st.info(
+                    "Sensor monitoring and sensor-network controls are currently under development. "
+                    "They are paused in the hosted dashboard while we improve performance and finish the next implementation pass."
+                )
 
-        st.subheader("Saved Model Status")
-        st.json(artifacts.model_storage_summary)
+            with safety_settings_tab:
+                st.subheader("Fire Risk Thresholds")
+                fire_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                fire_cols[0].number_input("High Wind (mph)", min_value=5, step=1, key="high_wind_mph")
+                fire_cols[1].number_input("High Gust (mph)", min_value=10, step=1, key="high_gust_mph")
+                fire_cols[2].number_input("Low Humidity (%)", min_value=5, max_value=60, step=1, key="low_humidity_pct")
+                fire_cols = responsive_columns(3, field_mode=field_mode, gap="small")
+                fire_cols[0].number_input("High Temperature (F)", min_value=60, max_value=120, step=1, key="high_temperature_f")
+                fire_cols[1].number_input("Low Rainfall 7d (in)", min_value=0.0, max_value=2.0, step=0.01, format="%.2f", key="low_rainfall_7d_in")
+                fire_cols[2].number_input("Low Soil Moisture (%)", min_value=1, max_value=50, step=1, key="low_soil_moisture_pct")
 
-        with st.expander("AI Model Window"):
-            st.write(f"Selected forage regressor: `{artifacts.selected_forage_model}`")
-            st.json(artifacts.model_metrics["forage_model"])
-            st.text(artifacts.model_metrics["stress_model"]["report"])
+                st.subheader("Save This Setup")
+                st.caption(
+                    "Save writes your current ranch profile, management-unit metadata, provider selections, uploaded boundary reference, and field feedback labels to the workspace config/state "
+                    "so RangeIQ can reopen with the same setup next time. Livestock groups and unit activity timelines are included too."
+                )
+                save_cols = responsive_columns([1, 2], field_mode=field_mode, gap="medium")
+                with save_cols[0]:
+                    if st.button("Save Current Setup"):
+                        current_runtime_settings = build_runtime_settings()
+                        target_workspace_id = CURRENT_WORKSPACE_ID
+                        st.query_params["workspace"] = target_workspace_id
+                        dashboard_state_payload = build_dashboard_state_payload(
+                            current_runtime_settings,
+                            workspace_id=target_workspace_id,
+                            boundary_filename=effective_boundary_name,
+                            boundary_bytes=effective_boundary_bytes,
+                            existing_state=PERSISTED_DASHBOARD_STATE,
+                        )
+                        saved_state_path = save_dashboard_state(
+                            dashboard_state_payload,
+                            path=current_runtime_settings.workspace_state_path_for(target_workspace_id),
+                        )
+                        updated_user = AUTH_SERVICE.update_user_profile(
+                            CURRENT_USER.user_id,
+                            ranch_name=current_runtime_settings.ranch.name,
+                            ranch_address=current_runtime_settings.ranch.address,
+                            ranch_latitude=current_runtime_settings.ranch.latitude,
+                            ranch_longitude=current_runtime_settings.ranch.longitude,
+                        )
+                        sign_in_user(updated_user)
+                        saved_boundary_notice = "No custom boundary was saved; RangeIQ will reopen on the default corners."
+                        if dashboard_state_payload.get("saved_boundary", {}).get("path"):
+                            saved_boundary_notice = (
+                                f"Saved boundary file: {dashboard_state_payload['saved_boundary']['filename']}"
+                            )
+                        st.success(
+                            f"Account settings saved to {saved_state_path}. {saved_boundary_notice} "
+                            "Log back into this account later to reopen the same ranch setup."
+                        )
+                with save_cols[1]:
+                        st.markdown(
+                            f"Current workspace: **{CURRENT_WORKSPACE_ID}**. "
+                            f"Reopen state: **{boundary_save_mode}**. "
+                            "Providers, ranch identity, ranch profile, map settings, time horizon, and thresholds are saved to this account."
+                            " Custom management-unit names, types, livestock assignments, activity timelines, field feedback labels, and notes are saved too."
+                        )
+
+            with diagnostics_settings_tab:
+                st.subheader("Current Effective Config")
+                preview_settings = build_runtime_settings()
+                st.json(preview_settings.to_display_dict())
+
+                st.subheader("Saved Management Unit Overrides")
+                st.json(st.session_state.get("management_unit_overrides", {}))
+
+                st.subheader("Saved Livestock Groups")
+                st.json(st.session_state.get("livestock_groups", {}))
+
+                st.subheader("Saved Unit Activity Events")
+                st.json(st.session_state.get("unit_activity_events", {}))
+
+                st.subheader("Saved Field Feedback Labels")
+                st.json(st.session_state.get("unit_feedback_labels", {}))
+
+                st.subheader("Field Feedback Model-Prep Summary")
+                st.json(feedback_dataset_summary)
+
+                st.subheader("Calibration Target Summary")
+                st.json(feedback_calibration_summary)
+
+                st.subheader("Shadow Review Summary")
+                st.json(feedback_shadow_review_summary)
+
+                st.subheader("Saved Model Status")
+                st.json(artifacts.model_storage_summary)
+
+                with st.expander("AI Model Window"):
+                    st.write(f"Selected forage regressor: `{artifacts.selected_forage_model}`")
+                    st.json(artifacts.model_metrics["forage_model"])
+                    st.text(artifacts.model_metrics["stress_model"]["report"])

@@ -93,6 +93,16 @@ class UnitActivityType(str, Enum):
     OTHER = "other"
 
 
+class FeedbackLabelType(str, Enum):
+    FORAGE_CONDITION = "forage / vegetation condition"
+    GRAZING_PRESSURE = "grazing / browsing pressure"
+    MOVE_READINESS = "move / turnout readiness"
+    GROUND_IMPACT = "ground impact / bare ground"
+    WATER_ACCESS = "water access"
+    RESTORATION_PROGRESS = "restoration progress"
+    GENERAL_OBSERVATION = "general observation"
+
+
 UNIT_TERM_OPTIONS = [
     "management unit",
     "pasture",
@@ -108,6 +118,17 @@ RANCH_GOAL_OPTIONS = [item.value for item in RanchGoal]
 LIVESTOCK_SPECIES_OPTIONS = [item.value for item in LivestockSpecies]
 MANAGEMENT_UNIT_TYPE_OPTIONS = [item.value for item in ManagementUnitType]
 UNIT_ACTIVITY_TYPE_OPTIONS = [item.value for item in UnitActivityType]
+FEEDBACK_LABEL_TYPE_OPTIONS = [item.value for item in FeedbackLabelType]
+FEEDBACK_CONFIDENCE_OPTIONS = ["low", "medium", "high"]
+FEEDBACK_VALUE_OPTIONS: dict[str, list[str]] = {
+    FeedbackLabelType.FORAGE_CONDITION.value: ["strong", "stable", "watch", "stressed", "poor"],
+    FeedbackLabelType.GRAZING_PRESSURE.value: ["light", "moderate", "heavy", "recovering"],
+    FeedbackLabelType.MOVE_READINESS.value: ["ready now", "hold", "rest longer", "monitor closely"],
+    FeedbackLabelType.GROUND_IMPACT.value: ["acceptable", "watch", "high impact", "recovering"],
+    FeedbackLabelType.WATER_ACCESS.value: ["adequate", "watch", "problem"],
+    FeedbackLabelType.RESTORATION_PROGRESS.value: ["improving", "stable", "slipping"],
+    FeedbackLabelType.GENERAL_OBSERVATION.value: ["positive", "mixed", "negative"],
+}
 
 
 @dataclass
@@ -142,6 +163,17 @@ class UnitActivityEvent:
     livestock_group_id: str | None = None
     start_date: str = ""
     end_date: str | None = None
+    notes: str = ""
+
+
+@dataclass
+class UnitFeedbackLabel:
+    label_id: str
+    unit_id: str
+    label_type: str
+    label_value: str
+    observed_on: str = ""
+    confidence: str = "medium"
     notes: str = ""
 
 
@@ -699,6 +731,67 @@ def serialize_unit_activity_events(events: dict[str, UnitActivityEvent]) -> dict
             "notes": event.notes,
         }
     return payload
+
+
+def coerce_unit_feedback_labels(raw_value: Any) -> dict[str, UnitFeedbackLabel]:
+    if not isinstance(raw_value, (dict, list)):
+        return {}
+    labels: dict[str, UnitFeedbackLabel] = {}
+    items = raw_value.items() if isinstance(raw_value, dict) else enumerate(raw_value)
+    for key, payload in items:
+        if not isinstance(payload, dict):
+            continue
+        label_id = str(payload.get("label_id") or key or "").strip()
+        unit_id = str(payload.get("unit_id") or "").strip()
+        if not label_id or not unit_id:
+            continue
+        labels[label_id] = UnitFeedbackLabel(
+            label_id=label_id,
+            unit_id=unit_id,
+            label_type=str(payload.get("label_type", FeedbackLabelType.GENERAL_OBSERVATION.value) or FeedbackLabelType.GENERAL_OBSERVATION.value),
+            label_value=str(payload.get("label_value", "") or "").strip(),
+            observed_on=_normalize_date_string(payload.get("observed_on")),
+            confidence=str(payload.get("confidence", "medium") or "medium").strip().lower() or "medium",
+            notes=str(payload.get("notes", "") or ""),
+        )
+    return labels
+
+
+def serialize_unit_feedback_labels(labels: dict[str, UnitFeedbackLabel]) -> dict[str, dict[str, Any]]:
+    payload: dict[str, dict[str, Any]] = {}
+    for label_id, label in labels.items():
+        payload[str(label_id)] = {
+            "label_id": label.label_id,
+            "unit_id": label.unit_id,
+            "label_type": label.label_type,
+            "label_value": label.label_value,
+            "observed_on": label.observed_on,
+            "confidence": label.confidence,
+            "notes": label.notes,
+        }
+    return payload
+
+
+def unit_feedback_frame(labels: dict[str, UnitFeedbackLabel], units: list[ManagementUnit]) -> pd.DataFrame:
+    unit_lookup = {unit.unit_id: unit.name for unit in units}
+    rows: list[dict[str, Any]] = []
+    for label in labels.values():
+        rows.append(
+            {
+                "label_id": label.label_id,
+                "unit_id": label.unit_id,
+                "unit_name": unit_lookup.get(label.unit_id, label.unit_id),
+                "label_type": label.label_type,
+                "label_value": label.label_value,
+                "observed_on": label.observed_on,
+                "confidence": label.confidence.title(),
+                "notes": label.notes,
+            }
+        )
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    return frame.sort_values(["observed_on", "unit_name", "label_type"], ascending=[False, True, True]).reset_index(drop=True)
 
 
 def _activity_type_label(activity_type: str) -> str:
