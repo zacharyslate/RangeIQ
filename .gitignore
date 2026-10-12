@@ -23,3 +23,7 @@ data/processed/*
 !data/processed/.gitkeep
 data/sensors/sensor_readings.csv
 data/user/
+
+# Local tooling
+ZACH-venv/
+*.egg-info/

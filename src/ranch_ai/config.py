@@ -323,6 +323,34 @@ class PublicDataConfig:
 
 
 @dataclass
+class TerrainConfig:
+    """USGS 3DEP lidar-derived terrain settings for the 3D Terrain tab.
+
+    The default provider pulls the 3DEP bare-earth DEM (built from USGS lidar
+    where lidar exists, 1 m posting for QL2 projects) from the public 3DEP
+    ImageServer. ``mock`` builds deterministic synthetic terrain for offline
+    use and tests.
+    """
+
+    provider: str = os.getenv("TERRAIN_PROVIDER", "usgs_3dep")
+    image_server_url: str = os.getenv(
+        "TERRAIN_3DEP_IMAGESERVER_URL",
+        "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer",
+    )
+    resolution_m: float = 1.0
+    buffer_m: float = 120.0
+    # The 3DEP ImageServer caps exports at 8000 x 8000; stay well below that so
+    # large ranches coarsen gracefully instead of failing.
+    max_pixels_per_side: int = 3000
+    timeout_seconds: int = 60
+    cache_ttl_days: int = 180
+    # Slope for grazing-capacity classes is computed on a coarsened surface so
+    # 1 m micro-relief (rocks, rills, fence berms) does not inflate slope.
+    grazing_slope_window_m: float = 10.0
+    user_agent: str = os.getenv("RANGEIQ_NWS_USER_AGENT", "RangeIQ/0.1 (contact@example.com)")
+
+
+@dataclass
 class TrainingConfig:
     use_public_data: bool = True
     use_sensor_data: bool = False
@@ -342,6 +370,7 @@ class Settings:
     public_data_cache_dir: Path = PROJECT_ROOT / "data" / "cache" / "public_data"
     data_sources_cache_dir: Path = PROJECT_ROOT / "data" / "cache" / "data_sources"
     vegetation_cache_dir: Path = PROJECT_ROOT / "data" / "cache" / "vegetation"
+    terrain_cache_dir: Path = PROJECT_ROOT / "data" / "cache" / "terrain"
     user_data_dir: Path = PROJECT_ROOT / "data" / "user"
     config_dir: Path = PROJECT_ROOT / "config"
     auth_db_path: Path = PROJECT_ROOT / "data" / "processed" / "rangeiq_auth.sqlite"
@@ -380,6 +409,7 @@ class Settings:
     fire_risk: FireRiskConfig = field(default_factory=FireRiskConfig)
     public_data: PublicDataConfig = field(default_factory=PublicDataConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    terrain: TerrainConfig = field(default_factory=TerrainConfig)
 
     @property
     def default_ranch_name(self) -> str:
@@ -477,6 +507,7 @@ def settings_to_config_payload(app_settings: Settings) -> dict[str, Any]:
         "fire_risk": _serialize(app_settings.fire_risk),
         "public_data": _serialize(app_settings.public_data),
         "training": _serialize(app_settings.training),
+        "terrain": _serialize(app_settings.terrain),
     }
     payload["sensors"]["csv_path"] = _relative_to_project_or_string(app_settings.sensors.csv_path, app_settings.project_root)
     payload["sensor_network"]["sqlite_path"] = _relative_to_project_or_string(app_settings.sensor_network.sqlite_path, app_settings.project_root)

@@ -378,7 +378,10 @@ def management_recommendation_summary(
     recommendation_code = str(row.get("recommendation") or "WATCH").upper()
     condition_score = float(pd.to_numeric(row.get("pasture_condition_score"), errors="coerce") or 0.0)
     drought_category = str(row.get("drought_category") or "Unknown")
-    base_clause = f"{unit_label.title()} condition is {friendly_condition_label(condition_score).lower()} with {vegetation_status.lower()} vegetation and drought status {drought_category}."
+    base_clause = (
+        f"{unit_label.title()} condition: {friendly_condition_label(condition_score).lower()}. "
+        f"Vegetation {vegetation_status.lower()}; drought status {drought_category}."
+    )
     style = str(profile.management_style or ManagementStyle.NOT_SURE.value)
     species_values = {value.lower() for value in profile.livestock_species}
 

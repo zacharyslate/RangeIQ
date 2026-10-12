@@ -82,6 +82,8 @@ from ranch_ai.models.ranch_domain import (
 )
 from ranch_ai.pipeline import MvpArtifacts, run_mvp_pipeline
 from ranch_ai.services import AlertService, AuthError, AuthService, AuthUser, WeatherService, assess_fire_risk
+from ranch_ai.terrain import TerrainService, compute_derivatives, grid_to_geotiff_bytes, pasture_terrain_stats
+from ranch_ai.visualization.terrain_plots import TERRAIN_LAYERS, build_terrain_figure
 from ranch_ai.visualization.plots import (
     plot_condition_scores,
     plot_forage_trend,
@@ -231,6 +233,7 @@ FIELD_SECTION_OPTIONS = [
     "Dashboard",
     "Management Units",
     "Vegetation & Land Health",
+    "3D Terrain",
     "Livestock & Management",
     "Data & Providers",
     "Settings",
@@ -241,6 +244,7 @@ FIELD_SECTION_SHORT_LABELS = {
     "Dashboard": "Map & Alerts",
     "Management Units": "Units",
     "Vegetation & Land Health": "Land Health",
+    "3D Terrain": "Terrain",
     "Livestock & Management": "Livestock",
     "Data & Providers": "Data",
     "Settings": "Settings",
@@ -774,6 +778,175 @@ def load_alert_bundle_cached(
     return alert_service.load_alert_bundle(lat=lat, lon=lon, provider=provider)
 
 
+@st.cache_data(show_spinner="Loading USGS 3DEP lidar terrain...", hash_funcs={Settings: _hash_settings}, max_entries=6)
+def load_terrain_cached(
+    runtime_settings: Settings,
+    boundary_records_json: str,
+    provider: str,
+    buffer_m: float,
+    seed: int,
+    refresh_nonce: int = 0,
+) -> dict[str, Any]:
+    del refresh_nonce
+    pastures = pd.DataFrame(json.loads(boundary_records_json))
+    result = TerrainService(runtime_settings).load(pastures, provider=provider, buffer_m=buffer_m, seed=seed)
+    grid = result.grid
+    derivatives = compute_derivatives(grid)
+    stats = pasture_terrain_stats(
+        grid,
+        pastures,
+        grazing_slope_window_m=runtime_settings.terrain.grazing_slope_window_m,
+        derivatives=derivatives,
+    )
+    return {"grid": grid, "derivatives": derivatives, "stats": stats, "status": result.status, "pastures": pastures}
+
+
+TERRAIN_PROVIDER_LABELS = {
+    "usgs_3dep": "USGS 3DEP lidar DEM (live)",
+    "mock": "Synthetic terrain (offline)",
+}
+
+
+def render_terrain_tab(pastures: pd.DataFrame, runtime_settings: Settings, theme: dict[str, object], *, field_mode: bool) -> None:
+    st.markdown(
+        "<div class='rq-section-intro'>Bare-earth terrain for the saved ranch boundary from the USGS 3D Elevation Program. "
+        "Where USGS lidar exists, 3DEP serves the 1 m lidar-derived DEM; elsewhere it falls back to coarser 3DEP layers.</div>",
+        unsafe_allow_html=True,
+    )
+    if "terrain_provider" not in st.session_state:
+        st.session_state.terrain_provider = runtime_settings.terrain.provider if runtime_settings.terrain.provider in TERRAIN_PROVIDER_LABELS else "usgs_3dep"
+    control_cols = responsive_columns([1.3, 1.3, 1, 1], field_mode=field_mode, gap="medium")
+    control_cols[0].selectbox(
+        "Terrain source",
+        options=list(TERRAIN_PROVIDER_LABELS),
+        format_func=lambda value: TERRAIN_PROVIDER_LABELS[value],
+        key="terrain_provider",
+    )
+    layer = control_cols[1].selectbox("Color by", options=TERRAIN_LAYERS, key="terrain_layer")
+    exaggeration = control_cols[2].slider("Vertical exaggeration", 1.0, 6.0, 2.0, 0.5, key="terrain_exaggeration")
+    buffer_m = control_cols[3].slider("Context buffer (m)", 0, 500, int(runtime_settings.terrain.buffer_m), 20, key="terrain_buffer_m")
+
+    boundary_records = pastures[["pasture_id", "name", "acres", "geometry"]].copy()
+    boundary_records["geometry"] = boundary_records["geometry"].apply(lambda ring: json.loads(ring) if isinstance(ring, str) else ring)
+    try:
+        bundle = load_terrain_cached(
+            runtime_settings=runtime_settings,
+            boundary_records_json=boundary_records.to_json(orient="records"),
+            provider=str(st.session_state.terrain_provider),
+            buffer_m=float(buffer_m),
+            seed=int(st.session_state.get("seed", 42)),
+            refresh_nonce=int(st.session_state.get("data_refresh_nonce", 0)),
+        )
+    except Exception as exc:  # noqa: BLE001 - keep the rest of the dashboard alive
+        st.error(f"Terrain could not be built for this boundary: {exc}")
+        return
+
+    grid = bundle["grid"]
+    status = bundle["status"]
+    stats_df: pd.DataFrame = bundle["stats"]
+    mode = str(status.get("mode", "mock"))
+
+    if mode == "fallback-mock":
+        st.warning(
+            "USGS elevation data couldn't be reached right now, so this is **example terrain, not your land**. "
+            "Use Refresh Ranch Intelligence to try again; technical details are under *Terrain request details* below."
+        )
+    elif mode == "mock":
+        st.info("Showing synthetic terrain. Switch the source to USGS 3DEP to load real lidar-derived elevation.")
+
+    card_cols = responsive_columns(4, field_mode=field_mode, gap="medium")
+    with card_cols[0]:
+        render_signal_card(
+            "Terrain Source",
+            "USGS 3DEP" if grid.source == "usgs_3dep" else "Synthetic",
+            "Bare-earth DEM, NAVD88" if grid.source == "usgs_3dep" else "Offline placeholder, not real elevation",
+            badges=[status_badge(mode)],
+        )
+    with card_cols[1]:
+        rows, cols = grid.shape
+        render_signal_card(
+            "Grid",
+            f"{grid.resolution_m:.1f} m",
+            f"{cols} x {rows} cells | EPSG:{grid.crs_epsg} | {grid.valid_fraction():.0%} valid",
+        )
+    with card_cols[2]:
+        relief = stats_df["relief_ft"].max() if "relief_ft" in stats_df else float("nan")
+        render_signal_card("Max Relief In Boundary", format_number(relief, " ft", 0), "Highest minus lowest bare-earth point")
+    with card_cols[3]:
+        if "slope_adjusted_acres" in stats_df and stats_df["acres"].sum() > 0:
+            adjusted = stats_df["slope_adjusted_acres"].sum()
+            share = adjusted / stats_df["acres"].sum()
+            render_signal_card(
+                "Slope-Adjusted Acres",
+                format_number(adjusted, " ac", 1),
+                f"{share:.0%} of mapped acres after Holechek slope reductions",
+            )
+        else:
+            render_signal_card("Slope-Adjusted Acres", "--", "No valid DEM cells inside the boundary")
+
+    figure = build_terrain_figure(
+        grid,
+        bundle["derivatives"],
+        bundle["pastures"],
+        layer=layer,
+        exaggeration=float(exaggeration),
+        grazing_slope_window_m=runtime_settings.terrain.grazing_slope_window_m,
+        text_color=str(theme["text"]),
+        background=str(theme["card"]),
+        boundary_color="#ffffff" if theme.get("color_scheme") == "dark" else "#1d1d1d",
+        height=460 if field_mode else 640,
+    )
+    st.plotly_chart(figure, width="stretch", config={"displaylogo": False})
+    st.caption(
+        "Drag to orbit, scroll to zoom. The boundary line is draped on the DEM. Vertical exaggeration only changes the view, not the statistics."
+    )
+
+    st.subheader("Terrain by management unit")
+    display_columns = {
+        "pasture_id": "Unit",
+        "name": "Name",
+        "acres": "Acres",
+        "elev_min_ft": "Min elev (ft)",
+        "elev_max_ft": "Max elev (ft)",
+        "relief_ft": "Relief (ft)",
+        "slope_mean_pct_grazing": f"Mean slope % ({runtime_settings.terrain.grazing_slope_window_m:.0f} m)",
+        "slope_p90_pct_1m": "P90 slope % (1 m)",
+        "dominant_aspect": "Dominant aspect",
+        "share_slope_0-10%": "0-10% slope (%)",
+        "share_slope_11-30%": "11-30% (%)",
+        "share_slope_31-60%": "31-60% (%)",
+        "share_slope_>60%": ">60% (%)",
+        "slope_adjusted_acres": "Slope-adjusted acres",
+        "dem_coverage_pct": "DEM coverage (%)",
+    }
+    available = [column for column in display_columns if column in stats_df.columns]
+    render_data_table(stats_df[available].rename(columns=display_columns))
+    st.caption(
+        "Slope classes and capacity reductions (0-10% none, 11-30% -30%, 31-60% -60%, >60% ungrazable) follow Holechek (1988) "
+        "as tabulated in NMSU Extension Guide B-829. They were not defined for 1 m lidar, so RangeIQ classifies slope on a "
+        f"{runtime_settings.terrain.grazing_slope_window_m:.0f} m block-averaged surface. Treat slope-adjusted acres as a starting "
+        "point to check against observed cattle use, not a calibrated carrying capacity."
+    )
+
+    download_cols = responsive_columns(2, field_mode=field_mode, gap="medium")
+    download_cols[0].download_button(
+        "Download DEM (GeoTIFF)",
+        data=grid_to_geotiff_bytes(grid),
+        file_name=f"rangeiq_dem_{grid.source}_{grid.resolution_m:.0f}m.tif",
+        mime="image/tiff",
+        use_container_width=True,
+    )
+    download_cols[1].download_button(
+        "Download terrain stats (CSV)",
+        data=stats_df.to_csv(index=False).encode("utf-8"),
+        file_name="rangeiq_terrain_by_unit.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+    with st.expander("Terrain request details"):
+        st.json({**status, "detail": grid.detail})
+
+
 def apply_app_theme(theme: dict[str, object]) -> None:
     st.markdown(
         f"""
@@ -1006,10 +1179,17 @@ def apply_app_theme(theme: dict[str, object]) -> None:
         .stButton > button,
         .stDownloadButton > button {{
             background: linear-gradient(90deg, var(--rq-accent) 0%, var(--rq-accent-2) 100%);
-            color: white;
+            color: #ffffff !important;
             border: none;
             border-radius: 999px;
             padding: 0.55rem 1rem;
+        }}
+        .stButton > button p,
+        .stButton > button span,
+        .stDownloadButton > button p,
+        .stDownloadButton > button span {{
+            color: #ffffff !important;
+            font-weight: 600;
         }}
         div[data-testid="stAlert"] {{
             background: var(--rq-info);
@@ -2428,10 +2608,15 @@ if field_mode:
         st.rerun()
     st.caption("Phone mode keeps the map, selected unit, and current operational context close at hand. Data and model outputs stay cached until you refresh.")
 
+# Reserve the header slot before the tabs exist; Streamlit renders elements in
+# creation order, so without this the ranch header lands below every tab.
+header_slot = st.container()
+
 if field_mode:
     dashboard_shell = st.container() if active_field_section == "Dashboard" else None
     units_shell = st.container() if active_field_section == "Management Units" else None
     vegetation_shell = st.container() if active_field_section == "Vegetation & Land Health" else None
+    terrain_shell = st.container() if active_field_section == "3D Terrain" else None
     livestock_shell = st.container() if active_field_section == "Livestock & Management" else None
     data_shell = st.container() if active_field_section == "Data & Providers" else None
     settings_shell = st.container() if active_field_section == "Settings" else None
@@ -2441,6 +2626,7 @@ else:
         dashboard_shell,
         units_shell,
         vegetation_shell,
+        terrain_shell,
         livestock_shell,
         data_shell,
         settings_shell,
@@ -2588,7 +2774,8 @@ vegetation_source_status = next(
     None,
 )
 
-top_shell_cols = responsive_columns([1.45, 0.78], field_mode=field_mode, gap="medium")
+with header_slot:
+    top_shell_cols = responsive_columns([1.45, 0.78], field_mode=field_mode, gap="medium")
 with top_shell_cols[0]:
     logo_path = get_logo_path(st.session_state.theme_mode)
     render_dashboard_header(
@@ -2645,13 +2832,13 @@ with top_shell_cols[1]:
                 st.warning("One or more public-data providers failed in this run. RangeIQ automatically fell back to mock data to keep the dashboard operational.")
 
             selected_condition = selected_unit.condition
-            high_attention_count = int((management_units_df["attention_level"] == "High").sum()) if not management_units_df.empty else 0
+            high_attention_count = int(management_units_df["attention_level"].isin(["High", "Elevated"]).sum()) if not management_units_df.empty else 0
             mean_condition = float(pd.to_numeric(management_units_df["condition_score"], errors="coerce").fillna(0).mean()) if not management_units_df.empty else 0.0
             top_metrics = responsive_columns(4, field_mode=field_mode, gap="small")
-            top_metrics[0].metric("Current Temp", format_number(current_weather.temperature_f, " F", 1), f"Feels like {format_number(current_weather.feels_like_f, ' F', 1)}")
-            top_metrics[1].metric(unit_term(ranch_profile, plural=True, title=True), f"{pasture_count}", f"{total_acres:,.1f} acres")
-            top_metrics[2].metric("Attention Queue", f"{high_attention_count}", f"Avg condition {mean_condition:.1f}")
-            top_metrics[3].metric("Fire Risk", f"{fire_assessment.category}", f"Score {fire_assessment.score:.1f}")
+            top_metrics[0].metric("Current Temp", format_number(current_weather.temperature_f, " F", 1), f"Feels like {format_number(current_weather.feels_like_f, ' F', 1)}", delta_color="off")
+            top_metrics[1].metric(unit_term(ranch_profile, plural=True, title=True), f"{pasture_count}", f"{total_acres:,.1f} acres", delta_color="off")
+            top_metrics[2].metric("Needs Attention", f"{high_attention_count}", f"Avg condition {mean_condition:.1f}", delta_color="off")
+            top_metrics[3].metric("Fire Risk", f"{fire_assessment.category}", f"Score {fire_assessment.score:.1f}", delta_color="off")
 
             map_col, summary_col = responsive_columns([1.26, 0.84], field_mode=field_mode, gap="medium")
             with map_col:
@@ -3252,6 +3439,10 @@ with top_shell_cols[1]:
                     apply_chart_theme(plot_recommendation_mix(latest_snapshot, theme["recommendation_colors"]), theme),
                     width="stretch",
                 )
+
+    if terrain_shell is not None:
+        with terrain_shell:
+            render_terrain_tab(artifacts.pastures, runtime_settings, theme, field_mode=field_mode)
 
     if livestock_shell is not None:
         with livestock_shell:
