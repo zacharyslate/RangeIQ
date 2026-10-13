@@ -155,6 +155,24 @@ cd /opt/rangeiq
 bash deploy/ubuntu/update_rangeiq.sh
 ```
 
+## Phone app (install from the website)
+
+RangeIQ has a phone app that installs straight from the website, the same way as the Marfa Lights app: no app store.
+
+- Open `https://YOUR-DOMAIN/app/` on your phone and sign in with your RangeIQ account.
+- **iPhone:** Safari → Share → **Add to Home Screen**. **Android:** tap **Install** at the top.
+- Screens: **Today** (pasture status, alerts, weather, rain vs. normal, fire danger) · **Pastures** (map and per-pasture detail with lidar terrain) · **Log** (moved cattle, rain gauge, notes) · **More**.
+- Works with weak or no signal: the app and the last ranch update are saved on the phone, and log entries are kept on the phone and sent when there's signal.
+
+How it works:
+
+- `src/ranch_ai/rancher/worker.py` runs hourly (systemd timer). It pulls weather, NWS alerts, rain history, drought, satellite greenness, RAP and terrain, and stores a small snapshot per ranch.
+- Pasture status (Good / Watch / Act) uses **observed data only** (`rancher/status.py`). A source that is down is shown as "not available", never filled with made-up numbers.
+- `src/ranch_ai/rancher/api.py` (FastAPI, about 50 MB of memory) serves the app and the stored snapshot, and saves log entries. It never calls an outside data source while you wait.
+- Front end: `web/app/`, plain HTML/CSS/JS with no build step. After editing it, run `python scripts/build_sw.py` so phones pick up the change.
+
+Server setup (one time): `cd /opt/rangeiq && sudo bash deploy/ubuntu/enable_phone_app.sh`, then add the `/app` and `/api` routes from `deploy/caddy/Caddyfile.example`.
+
 ## 3D Terrain (USGS 3DEP lidar)
 
 The `3D Terrain` tab builds an orbitable 3D surface of the saved ranch boundary from the USGS 3D Elevation Program bare-earth DEM. Where USGS lidar exists, this is the 1 m lidar-derived DEM; the default Caja Caliente parcel is covered by the QL2 project `TX_WestTexas_B7_2018`.
