@@ -14,6 +14,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="app.css">
+<script type="importmap">{"imports":{"three":"./vendor/three/three.module.min.js"}}</script>
 </head>
 <body>
 <header class="top">
@@ -65,6 +66,7 @@
   <!-- ============================== PASTURES -->
   <section class="view" id="v-pastures" hidden aria-labelledby="p-h">
     <div class="hero"><h1 id="p-h">Pastures</h1><p class="dim">Tap a pasture on the map or in the list.</p></div>
+    <button type="button" class="secondary" data-go="terrain"><span aria-hidden="true">⛰</span> See the ranch in 3D</button>
     <div id="map" class="map" role="region" aria-label="Map of pastures"></div>
     <ul class="plist" id="p-list"></ul>
   </section>
@@ -81,6 +83,19 @@
       <button type="button" class="big" data-log="rain" data-here="1"><span class="ic" aria-hidden="true">☂</span>Rain gauge</button>
       <button type="button" class="big" data-log="note" data-here="1"><span class="ic" aria-hidden="true">✎</span>Note</button>
     </div>
+  </section>
+
+  <!-- ============================== 3D TERRAIN -->
+  <section class="view" id="v-terrain" hidden aria-labelledby="td-h">
+    <button type="button" class="back" id="terrainBack">‹ Back</button>
+    <div class="hero"><h1 id="td-h">3D terrain</h1><p class="dim">Drag to turn, pinch or scroll to zoom, two fingers to move.</p></div>
+    <div id="terrain3d" class="terrain3d" role="img" aria-label="3D view of the ranch: lidar elevation with the aerial photo on top and pasture outlines"></div>
+    <div class="row" role="group" aria-label="Height exaggeration">
+      <span class="dim" style="align-self:center">Height ×</span>
+      <button type="button" class="pill" data-exag="1">1</button><button type="button" class="pill" data-exag="2">2</button>
+      <button type="button" class="pill" data-exag="4">4</button><button type="button" class="pill" id="terrainReset">Reset view</button>
+    </div>
+    <p class="src" id="td-src"></p>
   </section>
 
   <!-- ============================== LOG -->

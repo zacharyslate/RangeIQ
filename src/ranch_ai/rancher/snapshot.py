@@ -141,6 +141,7 @@ def build_snapshot(
     history_years: int = 10,
     demo: bool = False,
     include_terrain: bool = True,
+    terrain_result: Any = None,
     today: pd.Timestamp | None = None,
 ) -> dict[str, Any]:
     from ranch_ai.rancher.store import herd_days_by_pasture
@@ -158,7 +159,18 @@ def build_snapshot(
         return is_live(mode) or demo
 
     # Weather and alerts (operational) ------------------------------------------------
-    weather_bundle = WeatherService(app_settings).load_weather_bundle(lat, lon)
+    weather_service = WeatherService(app_settings)
+    weather_bundle = weather_service.load_weather_bundle(lat, lon)
+    if not is_live(weather_bundle.mode):
+        # Try the other live forecast service before giving up on weather.
+        configured = str(app_settings.weather.provider).lower()
+        for alternative in ("nws", "openmeteo"):
+            if alternative == configured:
+                continue
+            second = weather_service.load_weather_bundle(lat, lon, provider=alternative)
+            if is_live(second.mode):
+                weather_bundle = second
+                break
     sources.append(_source_entry("Weather forecast", weather_bundle.mode, weather_bundle.provider_name,
                                  _date(weather_bundle.loaded_at), demo))
     weather: dict[str, Any] | None = None
@@ -260,7 +272,7 @@ def build_snapshot(
         try:
             from ranch_ai.terrain import TerrainService, compute_derivatives, pasture_terrain_stats
 
-            result = TerrainService(app_settings).load(pastures)
+            result = terrain_result if terrain_result is not None else TerrainService(app_settings).load(pastures)
             terrain_mode = str(result.status.get("mode"))
             sources.append(_source_entry("USGS 3DEP lidar elevation", terrain_mode, "usgs_3dep", None, demo))
             if usable(terrain_mode):

@@ -92,6 +92,23 @@ def create_app(store: AppStore | None = None, auth: AuthService | None = None, w
             return JSONResponse({"pending": True, "message": "Your ranch is being set up. Check back after the next nightly update."})
         return JSONResponse(data, headers={"Cache-Control": "private, no-cache"})
 
+    @app.get("/api/terrain/meta")
+    def terrain_meta(sess: dict[str, str] = Depends(session)) -> JSONResponse:
+        meta = app.state.store.terrain_meta(sess["workspace_id"])
+        if meta is None:
+            raise HTTPException(status_code=404, detail="3D terrain isn't ready yet. It's built with the next update.")
+        return JSONResponse(meta, headers={"Cache-Control": "private, no-cache"})
+
+    @app.get("/api/terrain/{part}")
+    def terrain_part(part: str, sess: dict[str, str] = Depends(session)) -> Response:
+        if part not in {"height", "texture"}:
+            raise HTTPException(status_code=404)
+        found = app.state.store.terrain_blob(sess["workspace_id"], part)
+        if found is None:
+            raise HTTPException(status_code=404, detail="3D terrain isn't ready yet.")
+        blob, mime = found
+        return Response(blob, media_type=mime, headers={"Cache-Control": "private, max-age=3600"})
+
     @app.get("/api/logs")
     def list_logs(sess: dict[str, str] = Depends(session)) -> list[dict[str, Any]]:
         return app.state.store.list_logs(sess["workspace_id"])

@@ -61,6 +61,14 @@ class AppStore:
                     deleted INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS ix_logs_ws ON logs(workspace_id, logged_at);
+                CREATE TABLE IF NOT EXISTS terrain (
+                    workspace_id TEXT PRIMARY KEY,
+                    meta TEXT NOT NULL,
+                    height BLOB NOT NULL,
+                    texture BLOB NOT NULL,
+                    texture_mime TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -96,6 +104,29 @@ class AppStore:
                 "SELECT payload FROM snapshots WHERE workspace_id = ? ORDER BY id DESC LIMIT 1", (workspace_id,)
             ).fetchone()
         return json.loads(row["payload"]) if row else None
+
+    # -- 3D terrain ---------------------------------------------------------------
+    def save_terrain(self, workspace_id: str, meta: dict[str, Any], height: bytes, texture: bytes, texture_mime: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO terrain(workspace_id, meta, height, texture, texture_mime, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (workspace_id, json.dumps(meta), sqlite3.Binary(height), sqlite3.Binary(texture), texture_mime, _iso(utc_now())),
+            )
+
+    def terrain_meta(self, workspace_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT meta, updated_at FROM terrain WHERE workspace_id = ?", (workspace_id,)).fetchone()
+        if row is None:
+            return None
+        return {**json.loads(row["meta"]), "updated_at": row["updated_at"]}
+
+    def terrain_blob(self, workspace_id: str, part: str) -> tuple[bytes, str] | None:
+        column = {"height": "height", "texture": "texture"}[part]
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT {column} AS blob, texture_mime FROM terrain WHERE workspace_id = ?", (workspace_id,)).fetchone()
+        if row is None:
+            return None
+        return bytes(row["blob"]), ("application/octet-stream" if part == "height" else row["texture_mime"])
 
     # -- logs ------------------------------------------------------------------
     def add_log(self, workspace_id: str, entry: dict[str, Any], user_id: str | None = None) -> tuple[dict[str, Any], bool]:

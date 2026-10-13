@@ -91,6 +91,8 @@ main{max-width:680px;margin:0 auto;padding:14px 14px 20px}
 .primary{background:var(--accent);color:var(--accent-ink);border:0;border-radius:12px;min-height:54px;font-weight:700;font-size:1.05rem;cursor:pointer;padding:0 18px}
 .secondary{background:var(--surface-2);color:var(--ink);border:1px solid var(--rule);border-radius:12px;min-height:54px;font-weight:600;cursor:pointer;padding:0 18px}
 
+.terrain3d{height:62vh;min-height:320px;border-radius:var(--r);border:1px solid var(--rule);background:#cfe3f2;overflow:hidden;touch-action:none;display:grid;place-items:center}
+.terrain3d canvas{display:block}
 .map{height:46vh;min-height:280px;border-radius:var(--r);border:1px solid var(--rule);background:var(--surface-2);overflow:hidden}
 .leaflet-container{font:inherit}
 .maplabel{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:2px 6px;font-weight:700;font-size:.8rem;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.2)}

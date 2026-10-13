@@ -19,6 +19,7 @@
   let snapFetchedAt = store.get("snapshotAt", null);
   let currentPasture = null;
   let map = null, mapLayers = [];
+  let terrainView = null, terrainFocus = null, terrainReturn = "pastures", terrainExag = 2;
 
   // ---------------------------------------------------------------- helpers
   function uid() { return (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).slice(0, 36); }
@@ -48,17 +49,24 @@
     let tab = view;
     if (view.startsWith("log-")) { tab = "log"; setTimeout(() => openLog(view.slice(4)), 50); }
     if (view.startsWith("pasture-")) { currentPasture = decodeURIComponent(view.slice(8)); tab = "pasture"; }
-    if (!["login", "pasture", ...TABS].includes(tab)) tab = "today";
+    if (view === "terrain" || view.startsWith("terrain-")) {
+      terrainFocus = view.startsWith("terrain-") ? decodeURIComponent(view.slice(8)) : null;
+      terrainReturn = terrainFocus ? "pasture-" + encodeURIComponent(terrainFocus) : "pastures"; tab = "terrain";
+    }
+    if (tab !== "terrain" && terrainView) { terrainView.dispose(); terrainView = null; }
+    if (!["login", "pasture", "terrain", ...TABS].includes(tab)) tab = "today";
     document.querySelectorAll(".view").forEach(v => { v.hidden = v.id !== "v-" + tab; });
-    document.querySelectorAll(".tabs [data-tab]").forEach(b => b.toggleAttribute("aria-current", b.dataset.tab === (tab === "pasture" ? "pastures" : tab)));
+    document.querySelectorAll(".tabs [data-tab]").forEach(b => b.toggleAttribute("aria-current", b.dataset.tab === (["pasture", "terrain"].includes(tab) ? "pastures" : tab)));
     document.querySelectorAll(".tabs [data-tab]").forEach(b => { if (b.hasAttribute("aria-current")) b.setAttribute("aria-current", "page"); });
     document.querySelector(".tabs").hidden = tab === "login";
-    const hash = tab === "pasture" ? "pasture-" + encodeURIComponent(currentPasture) : tab;
+    const hash = tab === "pasture" ? "pasture-" + encodeURIComponent(currentPasture)
+      : tab === "terrain" ? (terrainFocus ? "terrain-" + encodeURIComponent(terrainFocus) : "terrain") : tab;
     if (location.hash !== "#" + hash && !view.startsWith("log-")) history.replaceState(null, "", "#" + hash);
     if (tab === "pastures") renderPastures();
     if (tab === "pasture") renderPasture();
     if (tab === "log") renderLog();
     if (tab === "more") renderMore();
+    if (tab === "terrain") renderTerrain();
     window.scrollTo(0, 0);
   }
   document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => show(b.dataset.tab));
@@ -180,7 +188,7 @@
       const latlngs = p.outline.map(([lon, lat]) => [lat, lon]); all.push(...latlngs);
       const poly = L.polygon(latlngs, {color: "#fff", weight: 2, fillColor: COLOR[p.status] || "#777", fillOpacity: .45})
         .on("click", () => show("pasture-" + encodeURIComponent(p.id)));
-      poly.bindTooltip(`${esc(p.name)} · ${STATUS[p.status] ? STATUS[p.status].word : ""}`, {permanent: snap.pastures.length <= 12, direction: "center", className: "maplabel"});
+      poly.bindTooltip(esc(p.name), {permanent: snap.pastures.length <= 8, direction: "center", className: "maplabel"});
       poly.addTo(map); mapLayers.push(poly);
     });
     map.invalidateSize(); map.fitBounds(all, {padding: [20, 20]});
@@ -213,11 +221,49 @@
       <div class="tile"><span>Average slope</span><b>${t.mean_slope_pct}%</b><span>${t.steep_share_pct ? t.steep_share_pct + "% steeper than 30%" : "no steep ground"}</span></div>
       <div class="tile"><span>Mostly faces</span><b>${esc(t.faces || "–")}</b><span>direction of slope</span></div>
       <div class="tile"><span>Easy grazing</span><b>${t.slope_adjusted_acres ?? "–"} ac</b><span>after slope (Holechek)</span></div></div>
-      <p class="src">From USGS lidar (3DEP). Slope adjustment is a rule of thumb; check it against where cattle actually graze.</p>`
+      <p class="src">From USGS lidar (3DEP). Slope adjustment is a rule of thumb; check it against where cattle actually graze.</p>
+      <button type="button" class="secondary" data-go="terrain-${encodeURIComponent(p.id)}"><span aria-hidden="true">⛰</span> See this pasture in 3D</button>`
       : "<p class='dim'>Terrain not available right now.</p>");
     const logs = allLogs().filter(l => l.pasture_id === p.id || l.from_pasture_id === p.id).slice(0, 8);
     $("d-logs").innerHTML = "<h2>Recent log</h2>" + (logs.length ? `<ul class="loglist">${logs.map(logLine).join("")}</ul>` : "<p class='dim'>Nothing logged here yet.</p>");
   }
+
+  // ---------------------------------------------------------------- 3D TERRAIN (three.js loads only here)
+  async function getBytes(path) {
+    const res = await fetch(API + path, {credentials: "same-origin"});
+    if (res.status === 401) { const e = new Error("signin"); e.signin = true; throw e; }
+    if (!res.ok) throw new Error(res.status === 404 ? "notready" : "HTTP " + res.status);
+    return {bytes: await res.arrayBuffer(), mime: res.headers.get("Content-Type") || ""};
+  }
+  async function renderTerrain() {
+    const box = $("terrain3d");
+    if (terrainView) { terrainView.dispose(); terrainView = null; }
+    box.innerHTML = "<p class='dim'>Loading the lidar terrain…</p>";
+    document.querySelectorAll("[data-exag]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.exag) === terrainExag)));
+    try {
+      const [meta, height, texture, mod] = await Promise.all([api("terrain/meta"), getBytes("terrain/height"), getBytes("terrain/texture"), import("./terrain3d.js")]);
+      if ($("v-terrain").hidden) return;  // user left while loading
+      const statusById = {}, namesById = {};
+      (snap && snap.pastures || []).forEach(p => { statusById[p.id] = p.status; namesById[p.id] = p.name; });
+      terrainView = mod.mount(box, {meta, height: height.bytes, texture, statusById, namesById, focusId: terrainFocus, exaggeration: terrainExag});
+      const photo = meta.texture_source === "naip" ? "USDA NAIP aerial photo" : "shaded relief (aerial photo unavailable)";
+      const ground = meta.dem_source === "usgs_3dep" ? `USGS 3DEP lidar, ${meta.dem_resolution_m} m grid (shown at ${meta.cell_m.toFixed(1)} m)`
+        : "EXAMPLE terrain, not your land (USGS lidar couldn't be reached)";
+      $("td-src").textContent = `Ground shape: ${ground}. Surface: ${photo}. ` +
+        `Elevation ${Math.round(meta.z_min_m * 3.28084)}–${Math.round(meta.z_max_m * 3.28084)} ft. Outline colors match pasture status. Updated ${when(meta.updated_at)}.`;
+    } catch (e) {
+      if (e.signin) { show("login"); return; }
+      box.innerHTML = `<p class="dim" style="padding:16px">${e.message === "notready" ? "The 3D terrain isn't ready yet. It's built with the next ranch update." :
+        navigator.onLine ? "The 3D terrain couldn't load. Try again in a moment." : "The 3D terrain needs signal the first time you open it."}</p>`;
+    }
+  }
+  $("terrainBack").onclick = () => show(terrainReturn);
+  $("terrainReset").onclick = () => { if (terrainView) terrainView.reset(); };
+  document.querySelectorAll("[data-exag]").forEach(b => b.onclick = () => {
+    terrainExag = Number(b.dataset.exag);
+    document.querySelectorAll("[data-exag]").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    if (terrainView) terrainView.setExaggeration(terrainExag);
+  });
 
   // ---------------------------------------------------------------- LOG (offline-first queue)
   function pastureOptions(selected, blank) {

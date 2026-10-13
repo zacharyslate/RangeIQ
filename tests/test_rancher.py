@@ -179,7 +179,6 @@ def test_api_process_stays_light():
 
 def test_service_worker_is_up_to_date():
     """sw.js must be regenerated (python scripts/build_sw.py) whenever web/app changes, or phones keep old files."""
-    import hashlib
     import importlib.util
     import pathlib
     import re
@@ -188,9 +187,92 @@ def test_service_worker_is_up_to_date():
     spec = importlib.util.spec_from_file_location("build_sw", root / "scripts" / "build_sw.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)  # type: ignore[union-attr]
-    digest = hashlib.sha256()
-    for rel in module.files():
-        digest.update(rel.encode())
-        digest.update((module.APP / rel).read_bytes())
     current = re.search(r'VERSION = "rangeiq-([0-9a-f]+)"', (module.APP / "sw.js").read_text()).group(1)
-    assert current == digest.hexdigest()[:10], "Run: python scripts/build_sw.py"
+    assert current == module.version_hash(), "Run: python scripts/build_sw.py"
+    assert "vendor/three/three.module.min.js" not in module.files()  # 3D library is on-demand, not precached
+
+
+# --- 3D terrain assets, worker guard, admin ------------------------------------------
+def _demo_grid_and_pastures(tmp_path):
+    from ranch_ai.config import Settings
+    from ranch_ai.terrain import TerrainService
+    from ranch_ai.utils.io import load_pastures
+
+    pastures = load_pastures()
+    grid = TerrainService(Settings(), cache_dir=tmp_path / "tc").load(pastures, provider="mock").grid
+    return grid, pastures
+
+
+def test_height_quantization_round_trip(tmp_path):
+    from ranch_ai.rancher.terrain3d import dequantize, height_grid, quantize
+
+    grid, _ = _demo_grid_and_pastures(tmp_path)
+    z, cell = height_grid(grid, max_side=128)
+    assert max(z.shape) <= 128 and cell >= grid.resolution_m
+    payload, z0, zscale = quantize(z)
+    back = dequantize(payload, z0, zscale, z.shape[1], z.shape[0])
+    assert np.abs(back - z).max() <= zscale  # sub-millimetre for a ranch-scale relief
+
+
+def test_terrain_assets_relief_fallback_and_outlines_inside_mesh(tmp_path):
+    from ranch_ai.rancher.terrain3d import build_terrain_assets
+
+    grid, pastures = _demo_grid_and_pastures(tmp_path)
+    assets = build_terrain_assets(grid, pastures, fetch_imagery=False)
+    meta = assets["meta"]
+    assert assets["texture"][:8] == b"\x89PNG\r\n\x1a\n" and meta["texture_source"] == "relief"
+    assert len(assets["height"]) == meta["nx"] * meta["ny"] * 2
+    ring = meta["outlines"][0]["ring"]
+    xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+    # The default parcel sits inside the 120 m buffer, so it must fall well inside the mesh.
+    assert 0 < min(xs) and max(xs) < meta["width_m"] and 0 < min(ys) and max(ys) < meta["height_m"]
+    assert 100 < min(xs) < 140 and 100 < min(ys) < 140
+
+
+def test_account_without_boundary_never_gets_sample_ranch(tmp_path):
+    from ranch_ai.rancher.worker import build_workspace, workspace_inputs
+
+    _, pastures, label = workspace_inputs("user-nobody-0000000000")
+    assert pastures is None and label is None
+    store = AppStore(tmp_path / "app.sqlite")
+    report = build_workspace("user-nobody-0000000000", store=store, include_terrain=False)
+    assert report["status"] == "no boundary uploaded"
+    assert store.latest_snapshot("user-nobody-0000000000")["setup_needed"] is True
+
+
+def test_force_live_switches_only_mock_providers():
+    from ranch_ai.config import Settings
+    from ranch_ai.rancher.worker import force_live_providers
+
+    s = Settings()
+    s.weather.provider = "mock"
+    s.public_data.drought.provider = "mock"
+    s.alerts.provider = "nws"
+    changed = force_live_providers(s)
+    assert s.weather.provider == "nws" and s.public_data.drought.provider == "usdm"
+    assert "alerts" not in changed and {"weather", "drought"} <= set(changed)
+
+
+def test_api_serves_terrain_to_signed_in_user_only(client):
+    assert client.get("/api/terrain/meta").status_code == 401
+    client.post("/api/login", json={"email": "zach@example.com", "password": "CorrectHorse9"})
+    assert client.get("/api/terrain/meta").status_code == 404
+    client.store.save_terrain(client.user.workspace_id, {"nx": 2, "ny": 2}, b"\x00\x00" * 4, b"\xff\xd8jpeg", "image/jpeg")
+    assert client.get("/api/terrain/meta").json()["nx"] == 2
+    height = client.get("/api/terrain/height")
+    assert height.content == b"\x00\x00" * 4 and height.headers["content-type"] == "application/octet-stream"
+    assert client.get("/api/terrain/texture").headers["content-type"] == "image/jpeg"
+    assert client.get("/api/terrain/secrets").status_code == 404
+
+
+def test_admin_finds_account_by_email(tmp_path, capsys):
+    from ranch_ai.rancher import admin
+
+    auth = AuthService(tmp_path / "auth.sqlite")
+    auth.create_user(email="rancher@example.com", password="CorrectHorse9", full_name="Pat Rancher",
+                     ranch_name="Mesa Ranch", ranch_address="Marfa, TX")
+    user = admin.find_account("Rancher@Example.com", auth_db=tmp_path / "auth.sqlite")
+    info = admin.describe(user)
+    assert info["ranch"] == "Mesa Ranch" and info["boundary_file"] is None and "pastures" not in info
+    with pytest.raises(SystemExit):
+        admin.find_account("nobody@example.com", auth_db=tmp_path / "auth.sqlite")

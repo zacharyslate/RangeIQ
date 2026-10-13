@@ -173,6 +173,18 @@ How it works:
 
 Server setup (one time): `cd /opt/rangeiq && sudo bash deploy/ubuntu/enable_phone_app.sh`, then add the `/app` and `/api` routes from `deploy/caddy/Caddyfile.example`.
 
+**3D terrain in the phone app.** On the Pastures screen, tap "See the ranch in 3D", or "See this pasture in 3D" on a pasture. The ground shape is the USGS 3DEP lidar elevation model, with the USDA NAIP aerial photo draped over it and pasture outlines colored by status. It's built by the worker and loads three.js only when opened.
+
+**Run one account's ranch now** (admin, on the server):
+
+```bash
+cd /opt/rangeiq
+sudo -u rangeiq .venv/bin/python -m ranch_ai.rancher.admin find  someone@example.com      # ranch, boundary, providers
+sudo -u rangeiq .venv/bin/python -m ranch_ai.rancher.admin build someone@example.com --force-live --export /tmp/ranch
+```
+
+`build` pulls live weather, NWS alerts, rain history, drought, satellite greenness, RAP, USGS lidar and the NAIP aerial photo. It prints which sources came back live, and `--export` also writes the lidar DEM GeoTIFF, per-pasture terrain CSV and aerial photo. Accounts with no uploaded boundary are skipped, never shown the sample ranch.
+
 ## 3D Terrain (USGS 3DEP lidar)
 
 The `3D Terrain` tab builds an orbitable 3D surface of the saved ranch boundary from the USGS 3D Elevation Program bare-earth DEM. Where USGS lidar exists, this is the 1 m lidar-derived DEM; the default Caja Caliente parcel is covered by the QL2 project `TX_WestTexas_B7_2018`.
