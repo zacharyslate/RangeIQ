@@ -4,12 +4,12 @@ Prepared 2026-10-13. This builds on `UX_REVIEW.md` (what users see) and `DATA_UP
 
 ## Recommendation in one paragraph
 
-**Keep the engine, rebuild the shell, and change when the work happens.** The domain package (`src/ranch_ai`: about 14,000 lines with 101 tests, data clients, RAP/NDVI, soils, drought, terrain) is the valuable part and mostly sound. The problems are in the app around it. A 4,309-line Streamlit script recomputes everything while the rancher waits, has no UI tests, and puts developer tooling in front of users. Rebuild in two phases:
+**Keep the engine and rebuild RangeIQ as a phone-first installable web app (PWA).** The domain package (`src/ranch_ai`: about 14,000 lines with 101 tests, data clients, RAP/NDVI, soils, drought, terrain) is the valuable part and mostly sound, so it stays in Python. What changes is everything around it:
+- A **nightly worker** computes each pasture's status ahead of time.
+- A **small read-only API** serves the results.
+- A **phone web app** opens from your URL, installs to the Home Screen, and keeps working with weak or no signal.
 
-1. **Make it robust.** A scheduled job computes each ranch's results ahead of time. The app only reads and displays them, on 4 simple screens.
-2. **Make it rancher-native.** Add a phone-first view that tolerates bad signal, plus a weekly text or email brief that pushes the answers to the rancher. Only start this after 3–5 real ranchers have tried Phase 1.
-
-No big-bang rewrite.
+The current Streamlit app is kept as a **desktop admin console** for you, not for ranchers. No big-bang rewrite: each phase ships on its own.
 
 ## Who we're designing for
 
@@ -17,7 +17,7 @@ No big-bang rewrite.
 |---|---|---|
 | Average U.S. producer age is **58.1** (2022 Census of Agriculture) | [Seed World / USDA NASS](https://www.seedworld.com/us/2024/02/15/usda-releases-2022-census-of-agriculture-data/) | Large text, high contrast, few choices per screen, no jargon |
 | **82 %** of farms have a smartphone; 69 % a desktop or laptop | [USDA 2023 Technology Use, via Benton](https://www.benton.org/headlines/2023-technology-use-farm-computer-usage-and-ownership-report) | Design for the phone first |
-| **75 %** of internet-connected farms use a cellular data plan; **15 %** of farms have no internet at all | same | Pages must be light and work on weak signal; push key info by text or email |
+| **75 %** of internet-connected farms use a cellular data plan; **15 %** of farms have no internet at all | same | Pages must be light and work on weak or no signal |
 
 **Design rules that follow:**
 - Each screen answers one rancher question:
@@ -41,57 +41,74 @@ No big-bang rewrite.
 | One huge UI file, no UI tests | `app/dashboard.py`: 4,309 lines, ~640 lines of inline CSS, 115 `session_state` references; 0 dashboard tests | Every change risks breaking something unseen (e.g., the header rendered below every tab). |
 | No backups | DigitalOcean shows "long running Droplets without Automated Backups enabled". User accounts live in SQLite on that droplet. | One disk problem loses every account and log. **Turn on backups today.** |
 
+## Why an installable web app (PWA), not an app-store app
+
+| | Installable web app (chosen) | Native app-store app |
+|---|---|---|
+| Install | Open the URL, then "Add to Home Screen" | App Store / Google Play |
+| Cost and gatekeeping | None | Apple Developer Program **$99/yr** ([Apple](https://developer.apple.com/programs/)) plus review for each update |
+| Codebase | One, for iPhone and Android | One with React Native/Expo, plus store builds |
+| Offline | App shell and last results cached; logs queued on the phone and synced when the app is next opened with signal | Stronger background sync |
+| Push notifications (later) | iPhone supports web push for Home Screen web apps since iOS 16.4 ([WebKit](https://webkit.org/?p=13878)) | Full support |
+| iPhone storage | Safari's 7-day storage cap does not apply to apps added to the Home Screen. This is WebKit's stated intent, not a formal guarantee ([analysis](https://searchengineland.com/what-safaris-7-day-cap-on-script-writeable-storage-means-for-pwa-developers-332519)). | Persistent |
+
+**Mitigation for the storage caveat:** the server is the source of truth, and every queued log is pushed the moment there's signal. The phone only ever holds unsynced entries and a cache.
+
+The app can be wrapped for the stores later (e.g., with Capacitor) if ranchers ask, reusing the same code.
+
 ## Target architecture
 
 ```
-          nightly / hourly                       on request
-┌──────────────────────────────┐        ┌──────────────────────────┐
-│ Worker (cron/systemd timer)  │        │ App (reads only)         │
-│  • pull weather/alerts/      │        │  • Today  • Pastures     │
-│    drought/NDVI/RAP/terrain  │ writes │  • Log    • Settings     │
-│  • compute pasture status    │──────▶ │                          │
-│  • record source + date      │  DB    │ Weekly brief (email/SMS) │
-│  • send alerts / brief       │ SQLite │  reads the same results  │
-└──────────────────────────────┘        └──────────────────────────┘
-        reuses src/ranch_ai (unchanged engine + tests)
+ nightly (systemd timer)            always-on, light               the rancher's phone
+┌───────────────────────────┐   ┌──────────────────────────┐   ┌──────────────────────────────┐
+│ Worker (Python, ranch_ai) │   │ API (FastAPI, read +     │   │ PWA (installable web app)    │
+│ • weather, alerts, rain,  │   │   log endpoints only)    │   │ • Today • Pastures • Log     │
+│   drought, NDVI, RAP,     │──▶│ • no heavy imports       │◀─▶│ • Settings                   │
+│   terrain                 │DB │ • JSON, gzip, cache hdrs │   │ • service worker: offline     │
+│ • pasture status + reason │   │ • terrain tiles (later)  │   │   shell + last results       │
+│ • source + date per input │   └──────────────────────────┘   │ • IndexedDB: queued logs      │
+└───────────────────────────┘                                  └──────────────────────────────┘
+          SQLite (+ DigitalOcean backups)     Streamlit admin console (you only): diagnostics, models
 ```
 
-- **One results table per pasture per day**: status (Good / Watch / Act), reason in plain words, inputs used, the source and date of each input, and confidence.
-- **The worker owns failure.** If a source is down, it keeps yesterday's value and marks it stale. The app never calls an external API while the rancher waits.
-- **Storage:** SQLite is enough at this scale if backups are on, with rasters (DEM, NDVI) cached as files. Move to Postgres/PostGIS only when several ranches share a server and need concurrent writes.
+- **Heavy work only in the worker.** The API never imports scikit-learn, rasterio or Streamlit, so it stays small on the 1 GB droplet and answers fast. It never calls an outside data source while a rancher waits.
+- **Results table:** one row per pasture per day with status (Good / Watch / Act), a plain-words reason, the input values, the **source and date** of each input, and a "stale" flag when a source failed.
+- **Offline logging:** moves, rain-gauge readings, notes and photos are written to the phone first (IndexedDB) and synced to the API with a client-generated ID, so double-sends can't create duplicates.
+- **Map:** MapLibre GL with the USGS NAIP imagery the app already uses, plus pasture outlines. Later, 3D terrain in the same map from the cached lidar DEM (served as terrain tiles), replacing the heavy Plotly 3D view on phones.
+- **Front end:** a small Svelte + TypeScript app built with Vite; this is swappable. The aim is the smallest, most readable code that gives offline support and a fast first load on cellular. Caddy, which you already use, serves it.
+- **Login:** keep the existing account system; sessions last for weeks so you aren't logging in at the gate.
 
-## The rancher-facing app (4 screens instead of 8 tabs)
+## The phone app (4 screens)
 
-1. **Today:** one row per pasture (🟢 Good / 🟡 Watch / 🔴 Act, with a one-line reason), rain in the last 7 and 30 days vs. normal, active NWS alerts, and fire danger.
+1. **Today:** one big row per pasture (🟢 Good / 🟡 Watch / 🔴 Act, with a one-line reason), rain in the last 7 and 30 days vs. normal, active NWS alerts, fire danger, and an "Updated 5:10 am" timestamp.
 2. **Pastures:** map plus a list. Tapping a pasture shows its card: grass trend in words with a small chart, rain, slope and terrain summary, last move, and days rested.
-3. **Log:** Move herd · Rain gauge · Note/photo, each in 2 taps. It works offline in Phase 2.
-4. **Settings:** ranch name, boundary (upload, or draw on the map), herds, and how to get alerts. Everything else goes under **Advanced**, admin only.
+3. **Log:** big buttons for **Moved cattle · Rain gauge · Note/photo**. Each takes 2 taps and works with no signal; a "3 waiting to sync" badge shows anything unsynced.
+4. **Settings:** ranch, pastures (upload, or draw on the map), herds. Everything else lives in the admin console.
 
-**Cut from the rancher view:** Data & Providers JSON, model metrics, calibration/shadow review, planner tables, Sensors (until it's live), scenario seed and modeling window. These stay available on an admin page.
+**Phone-specific design rules:**
+- Text of at least 17 px and tap targets of at least 48 px, usable with gloves.
+- High-contrast "sunlight" theme by default.
+- First load under about 300 KB before map tiles, so it works on one bar of LTE.
 
 ## Phases
 
-| Phase | Scope | Stack | Rough effort | Exit test |
-|---|---|---|---|---|
-| **0 (this week)** | Turn on DigitalOcean backups. Pin Streamlit. Merge PR #1 after the live terrain check. | — | hours | Backups visible in DO; app unchanged otherwise |
-| **1: Robust** | Worker + results DB; Streamlit rebuilt as 4 `st.navigation` pages that only read results; demo ranch separated from real accounts; first-run boundary setup; UI smoke tests | Python only (your current skills) | ~2–3 weeks | Page load < 3 s with providers down; 0 external calls during page load; 3 ranchers complete setup alone |
-| **2: Rancher-native** | Weekly brief (email first, SMS optional); phone-first view that works offline for Log and the last synced results | Small API + lightweight web app (PWA), or stay in Streamlit if Phase 1 testing shows phones are fine | ~4–8 weeks | Ranchers act on the brief without opening the app; logging works with no signal and syncs later |
+| Phase | Scope | Rough effort | Exit test |
+|---|---|---|---|
+| **0 (this week)** | Turn on DigitalOcean backups; merge PR #1 after the live terrain check; pin Streamlit | hours | Backups visible; current app unchanged |
+| **1: Engine → results** | Worker + SQLite results table + read-only FastAPI; status rules from observed data only; tests | ~1–2 weeks | Nightly run fills results for Caja Caliente; API answers in < 300 ms with every outside source down |
+| **2: Phone app** | PWA with Today, Pastures, Log (offline queue), Settings; install on your iPhone | ~3–4 weeks | Installed on your phone; logging a move in airplane mode syncs when signal returns; usable one-handed outdoors |
+| **3: Terrain + polish** | 3D terrain in the phone map; Streamlit trimmed to an admin console; optional alerts later | ~1–2 weeks | Terrain loads on cellular in < 5 s |
 
 ## Risks and honest caveats
 
 - **The status calls are only as good as the model.** Today the forage score is trained on a synthetic target (see `DATA_UPGRADE_PLAN.md`). A cleaner app will make those numbers *more* believable, so fix the target before ranchers rely on the Good/Watch/Act colors. Until then, base status only on observed inputs (rain vs. normal, NDVI vs. normal, RAP trend, drought, days rested) with simple, explainable rules.
 - **A rewrite drops behavior that existing tests don't cover.** Phase 1 keeps `src/ranch_ai` and its tests unchanged and adds smoke tests for every page.
-- **SMS costs money per message and needs consent handling.** Start with email.
+- **iPhone background sync is limited for web apps.** Queued logs sync when the app is next opened with signal, not silently in the background. That's acceptable for logging, but say so in the UI.
+- **New front-end code to maintain.** Keep the PWA small: 4 screens, no design framework, and end-to-end tests with Playwright, which is already available.
 - **Effort ranges are estimates** for one developer working with Claude. Validate them against Phase 1 actuals.
 
 ## Decisions (2026-10-13)
 
-1. **Audience: your own land first.** Optimize for Caja Caliente. Keep account and onboarding work minimal, but don't hard-code the ranch, so other ranches can be added later.
-2. **Stack: Python/Streamlit first.** Phase 1 stays in Python. Revisit a PWA only if phone use proves painful.
-3. **Alerts: none yet.** Leave the weekly brief and alerts out of scope. The worker still records results, so alerts can be added later without rework.
-
-### Resulting Phase 1 scope
-- Worker (systemd timer) that writes pasture-day results with source and date to SQLite.
-- 4 pages (`st.navigation`): Today · Pastures · Log · Settings, plus an admin page for diagnostics.
-- Status rules use observed inputs only (rain vs. normal, NDVI vs. normal, RAP trend, drought, days rested). The synthetic forage score is hidden.
-- Smoke tests for every page; no external calls during page load.
+1. **Audience: your own land first.** Optimize for Caja Caliente, but don't hard-code it.
+2. **Platform: phone first, delivered as an installable web app (PWA).** Python stays for the engine, worker and API. Streamlit becomes your desktop admin console only.
+3. **Alerts: none yet.** The worker still records results with dates, so alerts or web push can be added later without rework.
