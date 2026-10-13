@@ -132,7 +132,7 @@ class WorkspaceModelStore:
             "workspace_id": self.workspace_id,
             "dataset_signature": dataset_signature,
             "random_state": int(random_state),
-            "saved_at": pd.Timestamp.utcnow().isoformat(),
+            "saved_at": pd.Timestamp.now("UTC").isoformat(),
             "row_count": int(len(df)),
             "column_count": int(len(df.columns)),
             "selected_forage_model": forage_artifacts.selected_model_name,
