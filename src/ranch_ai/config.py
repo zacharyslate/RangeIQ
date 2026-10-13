@@ -339,9 +339,11 @@ class TerrainConfig:
     )
     resolution_m: float = 1.0
     buffer_m: float = 120.0
-    # The 3DEP ImageServer caps exports at 8000 x 8000; stay well below that so
-    # large ranches coarsen gracefully instead of failing.
+    # The 3DEP ImageServer caps exports at 8000 x 8000. RangeIQ runs on small
+    # servers, so cap the grid at ~2.5 M cells (1 m up to ~600 ac; ~2.5 m for
+    # 10,000 ac) to keep peak memory well under 1 GB.
     max_pixels_per_side: int = 3000
+    max_total_pixels: int = 2_500_000
     timeout_seconds: int = 60
     cache_ttl_days: int = 180
     # Slope for grazing-capacity classes is computed on a coarsened surface so

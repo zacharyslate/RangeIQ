@@ -107,6 +107,15 @@ def test_large_aoi_coarsens_resolution():
     assert resolution == pytest.approx(10.0)
 
 
+def test_total_pixel_budget_caps_large_ranches():
+    # ~10,000 ac square: 6.36 km per side.
+    width, height, resolution = plan_raster_size((0.0, 0.0, 6360.0, 6360.0), 1.0, 3000, 2_500_000)
+    assert width * height <= 2_500_000 * 1.01
+    assert resolution == pytest.approx(4.02, rel=0.01)
+    # Small parcels keep 1 m.
+    assert plan_raster_size((0.0, 0.0, 500.0, 300.0), 1.0, 3000, 2_500_000)[2] == pytest.approx(1.0)
+
+
 def test_default_ranch_stats_match_boundary_area(tmp_path):
     pastures = load_pastures()
     result = TerrainService(Settings(), cache_dir=tmp_path).load(pastures, provider="mock")

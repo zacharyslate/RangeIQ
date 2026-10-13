@@ -105,6 +105,7 @@ def plan_raster_size(
     bounds: tuple[float, float, float, float],
     resolution_m: float,
     max_pixels_per_side: int,
+    max_total_pixels: int | None = None,
 ) -> tuple[int, int, float]:
     """Return (width, height, effective_resolution_m), coarsening if the AOI is large."""
     minx, miny, maxx, maxy = bounds
@@ -115,6 +116,8 @@ def plan_raster_size(
     longest = max(span_x, span_y)
     if longest / resolution > max_pixels_per_side:
         resolution = longest / max_pixels_per_side
+    if max_total_pixels and (span_x / resolution) * (span_y / resolution) > max_total_pixels:
+        resolution = math.sqrt(span_x * span_y / max_total_pixels)
     width = max(int(math.ceil(span_x / resolution)), 2)
     height = max(int(math.ceil(span_y / resolution)), 2)
     return width, height, resolution
@@ -354,7 +357,9 @@ class TerrainService:
         resolution = float(self.config.resolution_m if resolution_m is None else resolution_m)
 
         epsg, bounds = compute_request_bounds(pastures, buffer)
-        width, height, effective_resolution = plan_raster_size(bounds, resolution, self.config.max_pixels_per_side)
+        width, height, effective_resolution = plan_raster_size(
+            bounds, resolution, self.config.max_pixels_per_side, self.config.max_total_pixels
+        )
         status: dict[str, Any] = {
             "requested_provider": requested_provider,
             "crs_epsg": epsg,

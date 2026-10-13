@@ -44,16 +44,20 @@ class TerrainDerivatives:
 
 def slope_aspect(elevation_m: np.ndarray, resolution_m: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Slope (deg, %) and aspect from a north-up grid using central differences."""
-    elevation = np.asarray(elevation_m, dtype="float64")
-    d_row, d_col = np.gradient(elevation, resolution_m)
+    # float32 throughout: halves peak memory on large ranches versus float64.
+    elevation = np.asarray(elevation_m, dtype="float32")
+    d_row, d_col = np.gradient(elevation, np.float32(resolution_m))
     dz_dx = d_col  # east
-    dz_dy = -d_row  # north (row index increases southward)
+    dz_dy = np.negative(d_row, out=d_row)  # north (row index increases southward)
     gradient = np.hypot(dz_dx, dz_dy)
-    slope_deg = np.degrees(np.arctan(gradient))
-    slope_pct = gradient * 100.0
-    aspect = (np.degrees(np.arctan2(-dz_dx, -dz_dy)) + 360.0) % 360.0
+    aspect = np.degrees(np.arctan2(-dz_dx, -dz_dy))
+    aspect += 360.0
+    aspect %= 360.0
     aspect[gradient < 1e-6] = np.nan
-    return slope_deg.astype("float32"), slope_pct.astype("float32"), aspect.astype("float32")
+    del dz_dx, dz_dy, d_col
+    slope_pct = gradient * np.float32(100.0)
+    slope_deg = np.degrees(np.arctan(gradient))
+    return slope_deg.astype("float32", copy=False), slope_pct.astype("float32", copy=False), aspect.astype("float32", copy=False)
 
 
 def hillshade(
