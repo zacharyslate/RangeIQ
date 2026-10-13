@@ -1,4 +1,16 @@
 rangeiq.example.com {
     encode zstd gzip
-    reverse_proxy 127.0.0.1:8501
+
+    # Phone app + its light API
+    handle /app* {
+        reverse_proxy 127.0.0.1:8502
+    }
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8502
+    }
+
+    # Desktop console (Streamlit)
+    handle {
+        reverse_proxy 127.0.0.1:8501
+    }
 }

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RangeIQ</title>
+<meta name="description" content="RangeIQ for your phone: how each pasture is doing, rain, weather and alerts, and a quick log for moves, rain gauge readings and notes. Works with weak or no signal.">
+<meta name="theme-color" content="#f4ecdf">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="RangeIQ">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+<script type="importmap">{"imports":{"three":"./vendor/three/three.module.min.js"}}</script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><img src="icon-192.png" alt="" width="30" height="30"><span id="brandName">RangeIQ</span></div>
+  <div class="top-actions">
+    <button type="button" id="installBtn" class="pill" hidden>Install</button>
+    <button type="button" id="syncPill" class="pill" hidden></button>
+  </div>
+</header>
+
+<div id="banner" class="banner" role="status" hidden></div>
+
+<main id="views">
+  <!-- ============================== SIGN IN -->
+  <section class="view" id="v-login" hidden aria-labelledby="l-h">
+    <div class="hero">
+      <img class="login-logo" src="icon-192.png" alt="" width="96" height="96">
+      <h1 id="l-h">Sign in to RangeIQ</h1>
+      <p class="dim">Use the same email and password as the RangeIQ website. You'll stay signed in on this phone.</p>
+    </div>
+    <form class="card form" id="loginForm" autocomplete="on">
+      <label>Email<input type="email" id="loginEmail" autocomplete="username" inputmode="email" required></label>
+      <label>Password<input type="password" id="loginPassword" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">Sign in</button>
+      <p class="error" id="loginError" role="alert" hidden></p>
+    </form>
+  </section>
+
+  <!-- ============================== TODAY -->
+  <section class="view" id="v-today" hidden aria-labelledby="t-h">
+    <div class="hero">
+      <div class="eyebrow" id="t-updated">Today</div>
+      <h1 id="t-h">How the ranch looks</h1>
+      <p class="dim" id="t-sum"></p>
+    </div>
+    <div class="counts" id="t-counts"></div>
+    <ul class="plist" id="t-pastures"></ul>
+    <div class="card" id="t-alerts" hidden></div>
+    <div class="card" id="t-weather"></div>
+    <div class="card" id="t-rain"></div>
+    <div class="card" id="t-fire" hidden></div>
+    <div class="actions3">
+      <button type="button" class="big" data-log="move"><span class="ic" aria-hidden="true">⇄</span>Moved cattle</button>
+      <button type="button" class="big" data-log="rain"><span class="ic" aria-hidden="true">☂</span>Rain gauge</button>
+      <button type="button" class="big" data-log="note"><span class="ic" aria-hidden="true">✎</span>Note</button>
+    </div>
+  </section>
+
+  <!-- ============================== PASTURES -->
+  <section class="view" id="v-pastures" hidden aria-labelledby="p-h">
+    <div class="hero"><h1 id="p-h">Pastures</h1><p class="dim">Tap a pasture on the map or in the list.</p></div>
+    <button type="button" class="secondary" data-go="terrain"><span aria-hidden="true">⛰</span> See the ranch in 3D</button>
+    <div id="map" class="map" role="region" aria-label="Map of pastures"></div>
+    <ul class="plist" id="p-list"></ul>
+  </section>
+
+  <!-- ============================== PASTURE DETAIL -->
+  <section class="view" id="v-pasture" hidden aria-labelledby="d-h">
+    <button type="button" class="back" data-go="pastures">‹ Pastures</button>
+    <div class="hero"><div class="eyebrow" id="d-acres"></div><h1 id="d-h"></h1><p id="d-status"></p></div>
+    <div class="card" id="d-signals"></div>
+    <div class="card" id="d-terrain"></div>
+    <div class="card" id="d-logs"></div>
+    <div class="actions3">
+      <button type="button" class="big" data-log="move" data-here="1"><span class="ic" aria-hidden="true">⇄</span>Moved cattle here</button>
+      <button type="button" class="big" data-log="rain" data-here="1"><span class="ic" aria-hidden="true">☂</span>Rain gauge</button>
+      <button type="button" class="big" data-log="note" data-here="1"><span class="ic" aria-hidden="true">✎</span>Note</button>
+    </div>
+  </section>
+
+  <!-- ============================== 3D TERRAIN -->
+  <section class="view" id="v-terrain" hidden aria-labelledby="td-h">
+    <button type="button" class="back" id="terrainBack">‹ Back</button>
+    <div class="hero"><h1 id="td-h">3D terrain</h1><p class="dim">Drag to turn, pinch or scroll to zoom, two fingers to move.</p></div>
+    <div id="terrain3d" class="terrain3d" role="img" aria-label="3D view of the ranch: lidar elevation with the aerial photo on top and pasture outlines"></div>
+    <div class="row" role="group" aria-label="Height exaggeration">
+      <span class="dim" style="align-self:center">Height ×</span>
+      <button type="button" class="pill" data-exag="1">1</button><button type="button" class="pill" data-exag="2">2</button>
+      <button type="button" class="pill" data-exag="4">4</button><button type="button" class="pill" id="terrainReset">Reset view</button>
+    </div>
+    <p class="src" id="td-src"></p>
+  </section>
+
+  <!-- ============================== LOG -->
+  <section class="view" id="v-log" hidden aria-labelledby="g-h">
+    <div class="hero"><h1 id="g-h">Log</h1><p class="dim">Saved on this phone first, then sent when there's signal.</p></div>
+    <div class="actions3">
+      <button type="button" class="big" data-log="move"><span class="ic" aria-hidden="true">⇄</span>Moved cattle</button>
+      <button type="button" class="big" data-log="rain"><span class="ic" aria-hidden="true">☂</span>Rain gauge</button>
+      <button type="button" class="big" data-log="note"><span class="ic" aria-hidden="true">✎</span>Note</button>
+    </div>
+    <div class="card" id="g-queue" hidden></div>
+    <div class="card"><h2>Recent</h2><ul class="loglist" id="g-list"></ul></div>
+  </section>
+
+  <!-- ============================== MORE -->
+  <section class="view" id="v-more" hidden aria-labelledby="m-h">
+    <div class="hero"><h1 id="m-h">More</h1></div>
+    <div class="card"><h2>Add RangeIQ to your home screen</h2><p class="dim" id="m-install"></p></div>
+    <div class="card"><h2>Where the data comes from</h2><ul class="srclist" id="m-sources"></ul>
+      <p class="dim small">RangeIQ checks these sources every night. A source marked "not available" is left out of the pasture status instead of being guessed.</p></div>
+    <div class="card"><h2>How pasture status works</h2>
+      <p class="dim">Each pasture is rated from what was actually measured: rain compared with the same months in past years, satellite greenness compared with normal for the season, the U.S. Drought Monitor, long-term grass and bare-ground trends, and how long cattle have been in it.</p>
+      <p class="dim"><b>Good</b>: no warning signs. <b>Watch</b>: one thing is off. <b>Act</b>: two or more things are off. These are starting thresholds; your own eyes on the grass come first.</p>
+    </div>
+    <div class="card"><h2>Account</h2><p class="dim" id="m-account"></p>
+      <div class="row"><a class="pill" href="../">Open the desktop console</a><button type="button" class="pill" id="logoutBtn">Sign out</button></div></div>
+    <div class="card"><h2>Text size</h2><div class="row" role="group" aria-label="Text size">
+      <button type="button" class="pill" data-size="1">Normal</button><button type="button" class="pill" data-size="1.15">Large</button><button type="button" class="pill" data-size="1.3">Extra large</button></div></div>
+  </section>
+</main>
+
+<nav class="tabs" aria-label="Main">
+  <button type="button" data-tab="today"><span aria-hidden="true">☀</span>Today</button>
+  <button type="button" data-tab="pastures"><span aria-hidden="true">▦</span>Pastures</button>
+  <button type="button" data-tab="log"><span aria-hidden="true">✎</span>Log</button>
+  <button type="button" data-tab="more"><span aria-hidden="true">≡</span>More</button>
+</nav>
+
+<!-- bottom sheet for the log forms -->
+<div class="sheet-back" id="sheetBack" hidden></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden>
+  <h2 id="sheetTitle"></h2>
+  <form id="sheetForm" class="form"></form>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
