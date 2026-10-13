@@ -84,8 +84,14 @@ No big-bang rewrite.
 - **SMS costs money per message and needs consent handling.** Start with email.
 - **Effort ranges are estimates** for one developer working with Claude. Validate them against Phase 1 actuals.
 
-## Decisions needed
+## Decisions (2026-10-13)
 
-1. **Audience:** is this for your own land first, or a product for other ranchers? This changes how much account, onboarding and support work is needed.
-2. **Phase 2 stack:** stay in Python/Streamlit (you can maintain it alone) or build a small PWA (better on phones and offline, but adds a JavaScript front end).
-3. **Alerts:** email only, or also SMS?
+1. **Audience: your own land first.** Optimize for Caja Caliente. Keep account and onboarding work minimal, but don't hard-code the ranch, so other ranches can be added later.
+2. **Stack: Python/Streamlit first.** Phase 1 stays in Python. Revisit a PWA only if phone use proves painful.
+3. **Alerts: none yet.** Leave the weekly brief and alerts out of scope. The worker still records results, so alerts can be added later without rework.
+
+### Resulting Phase 1 scope
+- Worker (systemd timer) that writes pasture-day results with source and date to SQLite.
+- 4 pages (`st.navigation`): Today · Pastures · Log · Settings, plus an admin page for diagnostics.
+- Status rules use observed inputs only (rain vs. normal, NDVI vs. normal, RAP trend, drought, days rested). The synthetic forage score is hidden.
+- Smoke tests for every page; no external calls during page load.
