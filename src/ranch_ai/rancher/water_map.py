@@ -69,7 +69,7 @@ def _centre(geometry: dict[str, Any]) -> tuple[float, float] | None:
     return best
 
 
-def fetch_water_features(pastures, *, get: Callable[..., Any] | None = None, timeout: int = 30) -> list[dict[str, Any]]:
+def fetch_water_features(pastures, *, get: Callable[..., Any] | None = None, timeout: int = 120) -> list[dict[str, Any]]:
     get = get or requests.Session().get
     bbox = _ring_bbox(pastures)
     out: list[dict[str, Any]] = []
@@ -101,16 +101,22 @@ def water_features(workspace_id: str, pastures, cache_dir: Path, **kw) -> dict[s
     bbox = _ring_bbox(pastures)
     try:
         cached = json.loads(cache.read_text(encoding="utf-8"))
-        if cached.get("bbox") == [round(v, 5) for v in bbox] and time.time() - cached.get("fetched", 0) < CACHE_DAYS * 86400:
+        same = cached.get("bbox") == [round(v, 5) for v in bbox]
+        if same and cached.get("features") is not None and time.time() - cached.get("fetched", 0) < CACHE_DAYS * 86400:
             return {"features": cached["features"], "as_of": cached.get("as_of"), "error": None}
+        # The USGS service is sometimes slow; after a failure wait 6 hours before trying again, so hourly runs stay quick.
+        if same and cached.get("failed_at") and time.time() - cached["failed_at"] < 6 * 3600:
+            return {"features": cached.get("features") or [], "as_of": cached.get("as_of"), "error": cached.get("error")}
     except (OSError, ValueError, KeyError):
         cached = None
     try:
         feats = fetch_water_features(pastures, **kw)
     except Exception as exc:  # noqa: BLE001 - optional layer
-        if cached:
-            return {"features": cached.get("features", []), "as_of": cached.get("as_of"), "error": f"using saved copy ({type(exc).__name__})"}
-        return {"features": [], "as_of": None, "error": f"USGS water map unavailable ({type(exc).__name__})"}
+        old = (cached or {}).get("features")
+        err = f"using saved copy ({type(exc).__name__})" if old else f"USGS water map unavailable ({type(exc).__name__}); will try again later"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({**(cached or {}), "bbox": [round(v, 5) for v in bbox], "failed_at": time.time(), "error": err}), encoding="utf-8")
+        return {"features": old or [], "as_of": (cached or {}).get("as_of"), "error": err}
     as_of = time.strftime("%Y-%m-%d")
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps({"bbox": [round(v, 5) for v in bbox], "fetched": time.time(), "as_of": as_of, "features": feats}), encoding="utf-8")
