@@ -72,3 +72,34 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - Patrignani, A., & Ochsner, T. E. (2015). Canopeo: A powerful new tool for measuring fractional green canopy cover. *Agronomy Journal*, 107(6), 2312–2320. https://doi.org/10.2134/agronj15.0150
 - Hall, F. C. (2002). *Photo point monitoring handbook* (Gen. Tech. Rep. PNW-GTR-526). USDA Forest Service, Pacific Northwest Research Station. https://doi.org/10.2737/PNW-GTR-526
 - Snyder, J. P. (1987). *Map projections: A working manual* (USGS Professional Paper 1395). https://doi.org/10.3133/pp1395
+
+## To do (jobs around the ranch)
+
+- **Who can add and check off:** anyone on the ranch (owner, partner or crew) can add a job, and anyone can check it off. The app records who checked it off and when.
+- **Job details:** a title (or one-tap ideas like "Check waters" or "Fix fence"), when it's due, a repeat (every day, 2 or 3 days, week, 2 weeks, month), the pasture, the person, and notes.
+- **Repeating jobs** move their due date on from the day they were done ("Check waters every 2 days"), and the list shows who did them last.
+- **Home** shows what's overdue or due today with a big check box. The **To do** tab groups jobs into Overdue, Today, Coming up and Any time. Jobs done in the last 2 weeks stay visible, and can be un-checked by the person who did them or by the owner.
+- **Make it a job:** any photo or report has a **Make it a job** button. It copies the problem, the pasture and the location into a new job.
+- **Works offline:** jobs work with no signal. Changes are saved on the phone and sent later. Each change has its own id, so sending it twice does nothing.
+
+## One login, several ranches
+
+- A person can be on several ranches: the owner of their own, and a **partner** or **crew** on others.
+- The owner makes a **crew code** (ranch hands) or a **partner code** (a co-owner or manager with the same rights; it works once and lasts 2 days).
+- Someone who already has a login joins with their own email and password. The ranch is added to their account.
+- With more than one ranch, tap the ranch name at the top (or More → Your ranches) to switch. The app reopens on the last ranch used.
+- Switching waits until everything recorded for the current ranch has been sent, so nothing lands on the wrong ranch.
+
+## Staying signed in
+
+- A phone sign-in lasts a year and renews itself whenever the app is used, so a hand who opens it regularly never has to sign in again.
+- The app opens straight to Home.
+- On iPhone, the Home Screen app keeps its own sign-in, separate from Safari. Add it to the Home Screen first, then sign in there once.
+- New owner accounts are closed (`RANGEIQ_OPEN_SIGNUP=1` reopens them). Crew and partner codes still work.
+
+## Satellite greenness
+
+- The worker reads each Sentinel-2 scene **once for the whole ranch** (red, near-infrared, and the scene classification layer to drop cloud, shadow, snow and water). It keeps a pasture's value only when at least half of that pasture is clear.
+- Results are stored, so each hourly run only reads new scenes, within a 5-minute budget, newest first.
+- On Clear Creek Ranch (29 pastures, 4 years, 98 scenes) the first full load took 220 s, against hours for the old per-pasture pull.
+- Greenness compares the last 30 days with the same ±20-day window in earlier years (needs at least 2 earlier years).

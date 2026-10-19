@@ -127,10 +127,45 @@ def create_app(
         found = app.state.store.session(_bearer(authorization) or rangeiq_session)
         if found is None:
             raise HTTPException(status_code=401, detail="Please sign in.")
-        member = app.state.store.membership(found["user_id"])
-        if member is not None and member["workspace_id"] != found["workspace_id"]:
+        role = role_on(found["user_id"], found["workspace_id"])
+        if role is None:                     # removed from that ranch
             raise HTTPException(status_code=401, detail="Please sign in.")
-        return {**found, "role": member["role"] if member else "owner"}
+        return {**found, "role": role}
+
+    def role_on(user_id: str, workspace_id: str) -> str | None:
+        """'owner' for your own ranch or as a partner, 'crew' for a ranch hand, None if no access."""
+        member = app.state.store.membership(user_id, workspace_id)
+        if member is not None:
+            return member["role"]
+        user = app.state.auth.get_user_by_id(user_id)
+        return "owner" if user is not None and user.workspace_id == workspace_id else None
+
+    def ranch_name(workspace_id: str, fallback: str = "Ranch") -> str:
+        snap = app.state.store.latest_snapshot(workspace_id) or {}
+        name = (snap.get("ranch") or {}).get("name")
+        if not name:
+            owners = app.state.auth.get_users_by_workspace(workspace_id)
+            name = owners[0].ranch_name if owners else None
+        return name or fallback
+
+    def ranches_of(user) -> list[dict[str, Any]]:
+        """Every ranch this person can open: their own (if it has a boundary or nothing else) and the ones they joined."""
+        joined = [{"workspace_id": m["workspace_id"], "role": m["role"]} for m in app.state.store.memberships_of(user.user_id)]
+        own_snap = app.state.store.latest_snapshot(user.workspace_id) or {}
+        own_ready = bool(own_snap) and not own_snap.get("setup_needed")
+        out = []
+        if own_ready or not joined:
+            out.append({"workspace_id": user.workspace_id, "role": "owner"})
+        out += [j for j in joined if j["workspace_id"] != user.workspace_id]
+        for r in out:
+            r["name"] = ranch_name(r["workspace_id"], user.ranch_name if r["workspace_id"] == user.workspace_id else "Ranch")
+        return out
+
+    def signed_in_reply(user, workspace_id: str, response: Response) -> dict[str, Any]:
+        token = app.state.store.create_session(user.user_id, workspace_id)
+        response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, secure=SECURE_COOKIE, samesite="lax", path="/")
+        return {"name": user.full_name, "ranch": ranch_name(workspace_id, user.ranch_name), "token": token,
+                "role": role_on(user.user_id, workspace_id), "workspace_id": workspace_id, "ranches": ranches_of(user)}
 
     def owner_only(sess: dict[str, str] = Depends(session)) -> dict[str, str]:
         if sess["role"] != "owner":
@@ -173,15 +208,15 @@ def create_app(
             app.state.throttle.fail("email:" + email, client)
             raise HTTPException(status_code=401, detail="That email and password don't match.") from None
         app.state.throttle.clear("email:" + email)
-        member = app.state.store.membership(user.user_id)
-        workspace = member["workspace_id"] if member else user.workspace_id
-        token = app.state.store.create_session(user.user_id, workspace)
-        response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, secure=SECURE_COOKIE, samesite="lax", path="/")
-        return {"name": user.full_name, "ranch": user.ranch_name, "token": token, "role": member["role"] if member else "owner"}
+        ranches = ranches_of(user)
+        wanted = str(payload.get("ranch") or "")          # the phone remembers the last ranch used
+        workspace = next((r["workspace_id"] for r in ranches if r["workspace_id"] == wanted), ranches[0]["workspace_id"])
+        return signed_in_reply(user, workspace, response)
 
     @app.post("/api/join")
     def join(request: Request, response: Response, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """A ranch hand signs up with the owner's crew code."""
+        """Join a ranch with a code from its owner: a new ranch hand makes an account; someone who already has a
+        RangeIQ login (e.g. the owner of another ranch) just adds this ranch with their email and password."""
         client = client_key(request)
         if app.state.throttle.blocked(client):
             raise HTTPException(status_code=429, detail="Too many attempts. Wait 15 minutes and try again.")
@@ -189,19 +224,43 @@ def create_app(
         if invite is None:
             app.state.throttle.fail(client)
             raise HTTPException(status_code=400, detail="That crew code isn't valid or has expired. Ask the ranch owner for a new one.")
-        owner_snapshot = app.state.store.latest_snapshot(invite["workspace_id"]) or {}
-        ranch_name = (owner_snapshot.get("ranch") or {}).get("name") or "Crew"
-        name = str(payload.get("name", "")).strip()[:80]
-        try:
-            user = app.state.auth.create_user(email=str(payload.get("email", "")), password=str(payload.get("password", "")),
-                                              full_name=name, ranch_name=ranch_name, ranch_address="Crew member")
-        except AuthError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
-        app.state.store.add_member(user.user_id, invite["workspace_id"], name, role="crew")
+        name_of_ranch = ranch_name(invite["workspace_id"], "Crew")
+        role = invite.get("role") or "crew"
+        email, password = str(payload.get("email", "")), str(payload.get("password", ""))
+        existing = app.state.auth.get_user_by_email(email) if email.strip() else None
+        if existing is not None:
+            try:
+                user = app.state.auth.authenticate_user(email=email, password=password)
+            except AuthError:
+                app.state.throttle.fail(client)
+                raise HTTPException(status_code=401, detail="You already have a RangeIQ login with that email. Use its password.") from None
+            name = user.full_name
+        else:
+            name = str(payload.get("name", "")).strip()[:80]
+            try:
+                user = app.state.auth.create_user(email=email, password=password, full_name=name, ranch_name=name_of_ranch,
+                                                  ranch_address="Crew member")
+            except AuthError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+        if role_on(user.user_id, invite["workspace_id"]) != "owner":     # never downgrade an owner
+            app.state.store.add_member(user.user_id, invite["workspace_id"], name, role=role)
         app.state.store.use_invite(invite["code"])
-        token = app.state.store.create_session(user.user_id, invite["workspace_id"])
-        response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, secure=SECURE_COOKIE, samesite="lax", path="/")
-        return {"name": user.full_name, "ranch": ranch_name, "token": token, "role": "crew"}
+        return signed_in_reply(user, invite["workspace_id"], response)
+
+    @app.get("/api/ranches")
+    def ranches(sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        user = app.state.auth.get_user_by_id(sess["user_id"])
+        return {"current": sess["workspace_id"], "ranches": ranches_of(user) if user else []}
+
+    @app.post("/api/switch")
+    def switch_ranch(response: Response, payload: dict[str, Any] = Body(...), sess: dict[str, str] = Depends(session),
+                     rangeiq_session: str | None = Cookie(default=None), authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        user = app.state.auth.get_user_by_id(sess["user_id"])
+        target = str(payload.get("workspace_id") or "")
+        if user is None or target not in {r["workspace_id"] for r in ranches_of(user)}:
+            raise HTTPException(status_code=403, detail="You don't have access to that ranch.")
+        app.state.store.end_session(_bearer(authorization) or rangeiq_session)
+        return signed_in_reply(user, target, response)
 
     @app.post("/api/logout")
     def logout(
@@ -218,9 +277,8 @@ def create_app(
         user = app.state.auth.get_user_by_id(sess["user_id"])
         if user is None:
             raise HTTPException(status_code=401, detail="Please sign in.")
-        snap = app.state.store.latest_snapshot(sess["workspace_id"]) or {}
-        ranch = (snap.get("ranch") or {}).get("name") or user.ranch_name
-        return {"name": user.full_name, "email": user.email, "ranch": ranch, "role": sess["role"], "user_id": sess["user_id"]}
+        return {"name": user.full_name, "email": user.email, "ranch": ranch_name(sess["workspace_id"], user.ranch_name),
+                "role": sess["role"], "user_id": sess["user_id"], "workspace_id": sess["workspace_id"], "ranches": ranches_of(user)}
 
     # -- crew -------------------------------------------------------------------------
     @app.get("/api/crew")
@@ -228,8 +286,9 @@ def create_app(
         return {"invites": app.state.store.list_invites(sess["workspace_id"]), "members": app.state.store.members(sess["workspace_id"])}
 
     @app.post("/api/crew/invites")
-    def new_invite(sess: dict[str, str] = Depends(owner_only)) -> dict[str, Any]:
-        return app.state.store.create_invite(sess["workspace_id"], sess["user_id"])
+    def new_invite(payload: dict[str, Any] | None = Body(default=None), sess: dict[str, str] = Depends(owner_only)) -> dict[str, Any]:
+        role = "owner" if (payload or {}).get("role") in {"owner", "partner"} else "crew"
+        return app.state.store.create_invite(sess["workspace_id"], sess["user_id"], role=role)
 
     @app.delete("/api/crew/invites/{code}")
     def revoke_invite(code: str, sess: dict[str, str] = Depends(owner_only)) -> dict[str, bool]:
@@ -333,6 +392,30 @@ def create_app(
         if sess["role"] != "owner" and app.state.store.log_user(sess["workspace_id"], client_id) not in {None, sess["user_id"]}:
             raise HTTPException(status_code=403, detail="You can only delete your own entries.")
         return {"deleted": app.state.store.delete_log(sess["workspace_id"], client_id)}
+
+    # -- to-do list: jobs anyone on the ranch can add and check off ----------------------
+    def people(workspace_id: str) -> list[dict[str, str]]:
+        owners = [{"user_id": u.user_id, "name": u.full_name or "Owner", "role": "owner"}
+                  for u in app.state.auth.get_users_by_workspace(workspace_id)]
+        crew = [{"user_id": m["user_id"], "name": m["name"] or "Crew", "role": m["role"]} for m in app.state.store.members(workspace_id)]
+        seen, out = set(), []
+        for p in owners + crew:
+            if p["user_id"] not in seen:
+                seen.add(p["user_id"]); out.append(p)
+        return out
+
+    @app.get("/api/tasks")
+    def list_tasks(sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        return {"tasks": app.state.store.list_tasks(sess["workspace_id"]), "people": people(sess["workspace_id"])}
+
+    @app.post("/api/tasks")
+    def task_ops(payload: Any = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        ops = payload if isinstance(payload, list) else [payload]
+        if len(ops) > 200 or not all(isinstance(o, dict) for o in ops):
+            raise HTTPException(status_code=400, detail="Send a list of at most 200 changes.")
+        result = app.state.store.apply_task_ops(sess["workspace_id"], ops, user_id=sess["user_id"], user_name=who(sess),
+                                                is_owner=sess["role"] == "owner")
+        return {**result, "tasks": app.state.store.list_tasks(sess["workspace_id"])}
 
     @app.get("/")
     def root() -> RedirectResponse:

@@ -150,7 +150,7 @@
   const imageOf = p => p._pending ? p.imageUrl : fileUrl(p.image_url);
 
   // ---------------------------------------------------------------- views
-  const TABS = ["home", "map", "log", "more"];
+  const TABS = ["home", "todo", "map", "log", "more"];
   const OLD = {today: "home", pastures: "map", terrain: "map"};
   function show(view) {
     view = OLD[view] || view || "home";
@@ -168,7 +168,7 @@
     document.querySelector(".tabs").hidden = tab === "login";
     const hash = tab === "pasture" ? "pasture-" + encodeURIComponent(currentPasture) : tab;
     if (location.hash !== "#" + hash) history.replaceState(null, "", "#" + hash);
-    ({home: renderHome, map: renderMap, pasture: renderPasture, log: renderLog, more: renderMore}[tab] || (() => {}))();
+    ({home: renderHome, todo: renderTodo, map: renderMap, pasture: renderPasture, log: renderLog, more: renderMore}[tab] || (() => {}))();
     window.scrollTo(0, 0);
   }
   document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => show(b.dataset.tab));
@@ -195,8 +195,8 @@
       const data = await api("snapshot");
       if (data.pending || data.setup_needed) { snap = null; store.del("snapshot"); store.set("setupMsg", data.message); }
       else { snap = data; snapAt = new Date().toISOString(); store.set("snapshot", snap); store.set("snapshotAt", snapAt); store.del("setupMsg"); }
-      const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs)]);
-      me = m; photos = ph; serverLogs = lg;
+      const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs), loadTasks()]);
+      me = m; photos = ph; serverLogs = lg; if (m.workspace_id) store.set("lastRanch", m.workspace_id);
       store.set("me", me); store.set("photos", photos); store.set("serverLogs", serverLogs);
     } catch (e) {
       if (e.signin) { show("login"); return; }
@@ -205,7 +205,7 @@
   function rerender() {
     const v = [...document.querySelectorAll(".view")].find(x => !x.hidden);
     if (!v) return;
-    ({"v-home": renderHome, "v-pasture": renderPasture, "v-log": renderLog, "v-more": renderMore}[v.id] || (() => {}))();
+    ({"v-home": renderHome, "v-todo": renderTodo, "v-pasture": renderPasture, "v-log": renderLog, "v-more": renderMore}[v.id] || (() => {}))();
     if (v.id === "v-map" && mapMode === "2d") renderMap();
     updateSyncPill();
   }
@@ -213,8 +213,10 @@
   // ---------------------------------------------------------------- HOME
   function renderHome() {
     $("brandName").textContent = (snap && snap.ranch.name) || (me && me.ranch) || "RangeIQ";
+    $("brandCaret").hidden = !(me && (me.ranches || []).length > 1);
     $("h-h").textContent = (snap && snap.ranch.name) || "Today";
     $("h-updated").textContent = snap ? "Updated " + when(snap.generated_at) : "";
+    homeTodo();
     const box = $("h-attention");
     if (!snap) {
       box.innerHTML = `<h2>Getting started</h2><p class="dim">${esc(store.get("setupMsg", "") || "Waiting for the first ranch update…")}</p>`;
@@ -422,6 +424,10 @@
   // ---------------------------------------------------------------- MORE (crew, settings)
   async function renderMore() {
     $("o-who").textContent = me ? `${me.name}${me.role === "crew" ? " · crew" : ""} · ${me.ranch}` : "";
+    const rs = (me && me.ranches) || [];
+    $("o-ranch").hidden = rs.length < 2;
+    $("o-ranch").innerHTML = `<h2>Your ranches</h2><div class="row">${rs.map(r => `<button type="button" class="${r.workspace_id === me.workspace_id ? "primary" : "secondary"}"
+      data-ranch="${esc(r.workspace_id)}">${esc(r.name)}</button>`).join("")}</div><p class="dim small">You can also tap the ranch name at the top.</p>`;
     $("o-console").hidden = !isOwner();
     $("o-sources").innerHTML = ((snap && snap.sources) || []).map(s => `<li><span><b>${esc(s.name)}</b><br><span class="${s.live ? "ok-txt" : "no-txt"}">${s.live ? "Working" : s.demo ? "Demo values" : "Not available"}</span></span>
       <span class="when">${s.as_of ? esc(when(s.as_of, false)) : ""}</span></li>`).join("") || "<li class='dim'>No data yet.</li>";
@@ -432,14 +438,17 @@
     try {
       const c = await api("crew");
       crew.innerHTML = `<h2>Your crew</h2>
-        <p class="dim">Give a ranch hand a crew code. They tap <b>Join a ranch crew</b> when they open RangeIQ. Hands can see the ranch, take photos and log work, but can't change settings.</p>
+        <p class="dim">Give a ranch hand a <b>crew code</b>. They tap <b>Join a ranch crew</b> when they open RangeIQ. Hands can see the ranch, take photos, log work and check off jobs, but can't change settings.</p>
+        <p class="dim">A <b>partner code</b> is for a co-owner or manager: same rights as you, including the crew. It works once and lasts 2 days. Someone who already has a RangeIQ login uses it with their own email and password, and gets both ranches in one app.</p>
         ${c.invites.map(i => `<div class="row" style="align-items:center"><b style="font-size:1.5rem;letter-spacing:.08em">${esc(i.code)}</b>
-          <span class="dim small">until ${esc(when(i.expires_at, false))} · used ${i.uses}/${i.max_uses}</span>
+          <span class="dim small">${i.role === "owner" ? "<b>partner</b> · " : "crew · "}until ${esc(when(i.expires_at, false))} · used ${i.uses}/${i.max_uses}</span>
           <button type="button" class="pill" data-revoke="${esc(i.code)}">Stop code</button></div>`).join("")}
-        <button type="button" class="primary" id="newCode">Make a crew code</button>
-        ${c.members.length ? `<h3>Crew members</h3><ul class="srclist">${c.members.map(m => `<li><span><b>${esc(m.name)}</b><br><span class="dim small">joined ${esc(when(m.joined_at, false))}</span></span>
+        <div class="row"><button type="button" class="primary" id="newCode">Make a crew code</button>
+          <button type="button" class="secondary" id="newPartner">Make a partner code</button></div>
+        ${c.members.length ? `<h3>People on this ranch</h3><ul class="srclist">${c.members.map(m => `<li><span><b>${esc(m.name)}</b><br><span class="dim small">${m.role === "owner" ? "partner" : "crew"} · joined ${esc(when(m.joined_at, false))}</span></span>
           <button type="button" class="pill" data-remove="${esc(m.user_id)}">Remove</button></li>`).join("")}</ul>` : ""}`;
-      $("newCode").onclick = async () => { try { await api("crew/invites", {method: "POST"}); renderMore(); } catch (e) { toast(e.message); } };
+      $("newCode").onclick = async () => { try { await api("crew/invites", {method: "POST", body: "{}"}); renderMore(); } catch (e) { toast(e.message); } };
+      $("newPartner").onclick = async () => { try { await api("crew/invites", {method: "POST", body: JSON.stringify({role: "partner"})}); renderMore(); } catch (e) { toast(e.message); } };
       crew.querySelectorAll("[data-revoke]").forEach(b => b.onclick = async () => { await api("crew/invites/" + encodeURIComponent(b.dataset.revoke), {method: "DELETE"}); renderMore(); });
       crew.querySelectorAll("[data-remove]").forEach(b => b.onclick = async () => {
         if (!confirm("Remove this person from your crew? They'll be signed out.")) return;
@@ -452,7 +461,7 @@
   $("logoutBtn").onclick = async () => {
     if ((store.get("queue", []).length || pending.length) && !confirm("Some photos or entries haven't been sent yet. Sign out anyway? They stay on this phone.")) return;
     try { await api("logout", {method: "POST"}); } catch (e) {}
-    ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me"].forEach(k => store.del(k)); snap = null; me = null; photos = []; show("login");
+    ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me", "tasks", "people"].forEach(k => store.del(k)); snap = null; me = null; photos = []; show("login");
   };
 
   // ---------------------------------------------------------------- sheets
@@ -654,8 +663,9 @@
       ${l.text ? `<p>${esc(l.text)}</p>` : ""}
       <p class="dim">${esc(when(l.logged_at))}${l.by ? " · " + esc(l.by) : ""}${l.accuracy_m ? " · 📍 ±" + l.accuracy_m + " m" : l.lat == null ? " · no location" : ""}</p>
       ${l._pending ? "<p class='pending'>Waiting to send.</p>" : ""}
-      <div class="row">${l.lat != null ? `<button type="button" class="secondary" id="rpMap">Show on map</button>` : ""}
+      <div class="row"><button type="button" class="primary" id="rpJob">＋ Make it a job</button>${l.lat != null ? `<button type="button" class="secondary" id="rpMap">Show on map</button>` : ""}
       ${l._pending || isOwner() || mine ? `<button type="button" class="secondary" id="rpDel">Delete</button>` : ""}</div>`);
+    $("rpJob").onclick = () => window.__rangeiqMakeJob(l, false);
     if ($("rpMap")) $("rpMap").onclick = () => { closeSheet(); mapMode = "2d"; show("map"); setTimeout(() => map && map.setView([l.lat, l.lon], 17), 400); };
     if ($("rpDel")) $("rpDel").onclick = async () => {
       if (!confirm("Delete this report?")) return;
@@ -680,8 +690,9 @@
       ${spot.length > 1 ? `<h3>This spot over time</h3><div class="spotrow">${spot.map(x => `<button type="button" data-photo="${esc(x.client_id)}"
         ${x.client_id === p.client_id ? 'aria-current="true"' : ""}><img src="${esc(thumbOf(x))}" alt="" loading="lazy"><span>${esc(when(x.taken_at, false))}<br>
         <b>${(x.analysis || {}).green_pct ?? "–"}% green</b></span></button>`).join("")}</div>` : ""}
-      <div class="row">${p.lat != null ? `<button type="button" class="secondary" id="phMap">Show on map</button>` : ""}
+      <div class="row"><button type="button" class="primary" id="phJob">＋ Make it a job</button>${p.lat != null ? `<button type="button" class="secondary" id="phMap">Show on map</button>` : ""}
       ${canDelete ? `<button type="button" class="secondary" id="phDel">Delete</button>` : ""}</div>`);
+    $("phJob").onclick = () => window.__rangeiqMakeJob(p, true);
     if ($("phMap")) $("phMap").onclick = () => { closeSheet(); mapMode = "2d"; show("map"); setTimeout(() => map && map.setView([p.lat, p.lon], 17), 400); };
     if ($("phDel")) $("phDel").onclick = async () => {
       if (!confirm("Delete this photo?")) return;
@@ -692,7 +703,153 @@
     };
   }
 
-  // ---------------------------------------------------------------- sync (logs + photos)
+
+  // ---------------------------------------------------------------- TO DO: jobs around the ranch
+  // Anyone on the ranch can add a job; anyone can check it off. Changes are saved on the phone and sent when there's signal.
+  let tasks = store.get("tasks", []), people = store.get("people", []);
+  const REPEATS = [[0, "Just once"], [1, "Every day"], [2, "Every 2 days"], [3, "Every 3 days"], [7, "Every week"], [14, "Every 2 weeks"], [30, "Every month"]];
+  const JOB_IDEAS = ["Check waters", "Fix fence", "Check cattle", "Put out mineral / salt", "Check windmill", "Grade road", "Spray weeds"];
+  const localDay = (d = new Date()) => new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+  const addDays = (iso, n) => localDay(new Date(new Date(iso + "T12:00:00").getTime() + n * 864e5));
+  const personName = id => (people.find(p => p.user_id === id) || {}).name || "";
+  function applyTaskOp(op) {
+    const i = tasks.findIndex(t => t.task_id === op.task_id), t = tasks[i];
+    if (op.op === "add" && !t) tasks.push({task_id: op.task_id, title: op.title, note: op.note || null, pasture_id: op.pasture_id || null,
+      due_date: op.due_date || null, repeat_days: op.repeat_days || 0, assignee_id: op.assignee_id || null, lat: op.lat ?? null, lon: op.lon ?? null,
+      source_id: op.source_id || null, created_by: me && me.user_id, created_by_name: me && me.name, created_at: op.at, done_at: null, history: []});
+    if (!t) return;
+    if (op.op === "done") {
+      t.history = [{op: "done", by: me && me.name, at: op.at}, ...(t.history || [])];
+      if (t.repeat_days) { t._prevDue = t.due_date; t.due_date = addDays(localDay(new Date(op.at)), t.repeat_days); }
+      else { t.done_at = op.at; t.done_by = me && me.user_id; t.done_by_name = me && me.name; }
+    }
+    if (op.op === "undo") {
+      if (t.repeat_days) { if (t._prevDue !== undefined) t.due_date = t._prevDue; }
+      else { t.done_at = null; t.done_by = null; t.done_by_name = null; }
+      t.history = (t.history || []).slice(1);
+    }
+    if (op.op === "delete") tasks.splice(i, 1);
+  }
+  function taskOp(op) {
+    op = {op_id: uid(), at: new Date().toISOString(), ...op};
+    applyTaskOp(op); store.set("tasks", tasks);
+    const q = store.get("taskq", []); q.push(op); store.set("taskq", q);
+    rerender(); syncAll();
+  }
+  async function loadTasks() {
+    try { const d = await api("tasks"); people = d.people || []; store.set("people", people); setTasksFromServer(d.tasks); } catch (e) { if (e.signin) throw e; }
+  }
+  function setTasksFromServer(list) {
+    tasks = list || []; store.get("taskq", []).forEach(applyTaskOp); store.set("tasks", tasks);   // keep unsent changes on top
+  }
+  function taskBucket(t) {
+    if (t.done_at) return "done";
+    if (!t.due_date) return "any";
+    const today = localDay();
+    return t.due_date < today ? "late" : t.due_date === today ? "today" : "soon";
+  }
+  function dueText(t) {
+    if (t.done_at) return `Done ${when(t.done_at)}${t.done_by_name ? " by " + t.done_by_name : ""}`;
+    if (!t.due_date) return "Any time";
+    const today = localDay(), d = t.due_date;
+    if (d < today) { const n = Math.round((new Date(today) - new Date(d)) / 864e5); return n === 1 ? "Was due yesterday" : `Was due ${n} days ago`; }
+    if (d === today) return "Due today";
+    if (d === addDays(today, 1)) return "Due tomorrow";
+    return "Due " + new Date(d + "T12:00:00").toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"});
+  }
+  function taskRow(t) {
+    const done = !!t.done_at, last = (t.history || [])[0];
+    const bits = [dueText(t), t.repeat_days ? "🔁 " + REPEATS.find(r => r[0] === t.repeat_days)[1].toLowerCase() : "",
+      t.pasture_id ? pastureName(t.pasture_id) : "", t.assignee_id ? "for " + personName(t.assignee_id) : "",
+      t.repeat_days && last && last.op === "done" ? `last done ${when(last.at)} by ${last.by}` : ""].filter(Boolean);
+    return `<li class="task ${taskBucket(t)}"><button type="button" class="check" data-check="${esc(t.task_id)}" aria-pressed="${done}"
+        aria-label="${done ? "Mark not done" : "Check off"}: ${esc(t.title)}">${done ? "✓" : ""}</button>
+      <button type="button" class="tbody" data-task="${esc(t.task_id)}"><b>${esc(t.title)}</b><span class="meta">${esc(bits.join(" · "))}</span></button></li>`;
+  }
+  function sortedOpen() {
+    const order = {late: 0, today: 1, soon: 2, any: 3};
+    return tasks.filter(t => !t.done_at).sort((a, b) => order[taskBucket(a)] - order[taskBucket(b)] || String(a.due_date || "9").localeCompare(String(b.due_date || "9"))
+      || String(a.created_at).localeCompare(String(b.created_at)));
+  }
+  function renderTodo() {
+    const open = sortedOpen(), done = tasks.filter(t => t.done_at).sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)));
+    const mine = me && me.user_id, groups = [["late", "Overdue"], ["today", "Today"], ["soon", "Coming up"], ["any", "Any time"]];
+    const filt = store.get("todoMine", false) ? (t => !t.assignee_id || t.assignee_id === mine) : (() => true);
+    $("t-mine").setAttribute("aria-pressed", String(store.get("todoMine", false)));
+    $("t-list").innerHTML = groups.map(([k, label]) => { const list = open.filter(t => taskBucket(t) === k && filt(t));
+        return list.length ? `<h2>${label}</h2><ul class="tasks">${list.map(taskRow).join("")}</ul>` : ""; }).join("")
+      || `<div class="allclear"><span class="big-ok" aria-hidden="true">✓</span><span>Nothing to do. Add a job with the button above.</span></div>`;
+    $("t-done").innerHTML = done.length ? `<details class="card"><summary><h2>Done in the last 2 weeks (${done.length})</h2></summary>
+      <ul class="tasks">${done.map(taskRow).join("")}</ul></details>` : "";
+  }
+  function homeTodo() {
+    const open = sortedOpen().filter(t => ["late", "today"].includes(taskBucket(t)));
+    const box = $("h-todo");
+    box.hidden = !open.length;
+    if (open.length) box.innerHTML = `<h2>To do today <span class="dim">(${open.length})</span></h2><ul class="tasks">${open.slice(0, 4).map(taskRow).join("")}</ul>
+      <button type="button" class="linkbtn" data-go="todo">All jobs ›</button>`;
+  }
+  $("t-mine").onclick = () => { store.set("todoMine", !store.get("todoMine", false)); renderTodo(); };
+  $("t-add").onclick = () => addTask();
+  document.addEventListener("click", e => {
+    const c = e.target.closest("[data-check]");
+    if (c) { const t = tasks.find(x => x.task_id === c.dataset.check); if (!t) return;
+      if (t.done_at) taskOp({op: "undo", task_id: t.task_id});
+      else { taskOp({op: "done", task_id: t.task_id}); toast(t.repeat_days ? `Done. Next: ${dueText(tasks.find(x => x.task_id === t.task_id))}.` : "Done. Nice work."); }
+      return; }
+    const b = e.target.closest("[data-task]"); if (b) openTask(b.dataset.task);
+  });
+  function openTask(id) {
+    const t = tasks.find(x => x.task_id === id); if (!t) return;
+    const canDelete = isOwner() || (me && t.created_by === me.user_id);
+    openSheet(t.title, `${t.note ? `<p>${esc(t.note)}</p>` : ""}
+      <p class="dim">${esc(dueText(t))}${t.repeat_days ? " · 🔁 " + esc(REPEATS.find(r => r[0] === t.repeat_days)[1].toLowerCase()) : ""}
+        ${t.pasture_id ? " · " + esc(pastureName(t.pasture_id)) : ""}${t.assignee_id ? " · for " + esc(personName(t.assignee_id)) : ""}</p>
+      <p class="dim small">Added by ${esc(t.created_by_name || "?")} ${esc(when(t.created_at))}</p>
+      ${(t.history || []).length ? `<h3>History</h3><ul class="srclist">${t.history.map(h => `<li><span>${h.op === "done" ? "✓ Checked off" : "↩ Undone"} by ${esc(h.by || "?")}</span>
+        <span class="when">${esc(when(h.at))}</span></li>`).join("")}</ul>` : ""}
+      <div class="row"><button type="button" class="primary" data-check="${esc(t.task_id)}">${t.done_at ? "Mark not done" : "✓ Check off"}</button>
+      ${t.lat != null ? `<button type="button" class="secondary" id="tkMap">Show on map</button>` : ""}
+      ${t.source_id ? `<button type="button" class="secondary" data-photo="${esc(t.source_id)}">See the report</button>` : ""}
+      ${canDelete ? `<button type="button" class="secondary" id="tkDel">Delete</button>` : ""}</div>`);
+    $("sheetBody").querySelector("[data-check]").addEventListener("click", () => setTimeout(closeSheet, 50));
+    if ($("tkMap")) $("tkMap").onclick = () => { closeSheet(); mapMode = "2d"; show("map"); setTimeout(() => map && map.setView([t.lat, t.lon], 17), 400); };
+    if ($("tkDel")) $("tkDel").onclick = () => { if (confirm("Delete this job?")) { taskOp({op: "delete", task_id: t.task_id}); closeSheet(); } };
+  }
+  function addTask(pre = {}) {
+    const today = localDay();
+    openSheet("Add a job", `<form class="form" id="taskForm">
+      <label>What needs doing?<input name="title" maxlength="120" required value="${esc(pre.title || "")}" placeholder="Fix the fence by the north gate"></label>
+      <div class="quick">${JOB_IDEAS.map(j => `<button type="button" data-idea="${esc(j)}">${esc(j)}</button>`).join("")}</div>
+      <label>When<select name="due"><option value="${today}">Today</option><option value="${addDays(today, 1)}">Tomorrow</option>
+        <option value="${addDays(today, 7)}">Within a week</option><option value="">Any time</option><option value="pick">Pick a date…</option></select></label>
+      <input type="date" name="due_pick" hidden min="${today}">
+      <label>Repeat<select name="repeat_days">${REPEATS.map(([d, l]) => `<option value="${d}">${l}</option>`).join("")}</select></label>
+      <label>Where (optional)<select name="pasture_id">${pastureOptions(pre.pasture_id, "Anywhere / whole ranch")}</select></label>
+      <label>Who (optional)<select name="assignee_id"><option value="">Anyone</option>${people.map(p => `<option value="${esc(p.user_id)}">${esc(p.name)}</option>`).join("")}</select></label>
+      <label>Notes (optional)<textarea name="note" maxlength="1000">${esc(pre.note || "")}</textarea></label>
+      <div class="row"><button type="submit" class="primary">Add job</button><button type="button" class="secondary" id="taskCancel">Cancel</button></div></form>`);
+    const f = $("taskForm");
+    f.querySelectorAll("[data-idea]").forEach(b => b.onclick = () => { f.title.value = b.dataset.idea; if (/water|cattle/i.test(b.dataset.idea)) f.repeat_days.value = "2"; });
+    f.due.onchange = () => { f.due_pick.hidden = f.due.value !== "pick"; };
+    $("taskCancel").onclick = closeSheet;
+    f.onsubmit = e => {
+      e.preventDefault();
+      const due = f.due.value === "pick" ? f.due_pick.value : f.due.value;
+      taskOp({op: "add", task_id: uid(), title: f.title.value.trim(), due_date: due || null, repeat_days: Number(f.repeat_days.value),
+        pasture_id: f.pasture_id.value || null, assignee_id: f.assignee_id.value || null, note: f.note.value.trim() || null,
+        lat: pre.lat ?? null, lon: pre.lon ?? null, source_id: pre.source_id || null});
+      closeSheet(); toast("Job added."); if (!pre.source_id) show("todo");
+    };
+  }
+  // "Make it a job" from a photo or a report
+  window.__rangeiqMakeJob = (x, isPhoto) => {
+    const top = topTag(x.tags);
+    addTask({title: top ? (TAG[top].level === "info" ? `Check on ${top.toLowerCase()}` : `Deal with: ${top.toLowerCase()}`) : (isPhoto ? "Follow up on photo" : "Follow up"),
+      pasture_id: x.pasture_id, note: x.text || x.note || "", lat: x.lat, lon: x.lon, source_id: x.client_id});
+  };
+
+  // ---------------------------------------------------------------- sync (logs + photos + jobs)
   let syncing = false;
   async function syncAll(manual) {
     if (syncing) return;
@@ -711,6 +868,14 @@
         try { await api("photos", {method: "POST", body: fd}); await idb.del(rec.client_id); }
         catch (e) { if (e.signin) throw e; if (e.status === 400 || e.status === 413) await idb.del(rec.client_id); else break; }
       }
+      const tq = store.get("taskq", []);
+      if (tq.length) {
+        const res = await api("tasks", {method: "POST", body: JSON.stringify(tq)});
+        const sent = new Set([...res.applied, ...res.errors.map(e => e.op_id)]);
+        store.set("taskq", store.get("taskq", []).filter(o => !sent.has(o.op_id)));
+        if (res.errors.length) toast(res.errors[0].error);
+        setTasksFromServer(res.tasks);
+      } else await loadTasks();
       await loadPending();
       const [ph, lg] = await Promise.all([api("photos"), api("logs")]);
       photos = ph; serverLogs = lg; store.set("photos", photos); store.set("serverLogs", serverLogs);
@@ -718,7 +883,7 @@
     finally { syncing = false; rerender(); }
   }
   function updateSyncPill() {
-    const n = store.get("queue", []).length + pending.length, p = $("syncPill");
+    const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length, p = $("syncPill");
     p.hidden = !n; p.textContent = n + " waiting to send";
   }
   $("syncPill").onclick = () => syncAll(true);
@@ -730,9 +895,31 @@
   });
   async function signedIn(who) {
     if (who.token) store.set("token", who.token);
-    me = {name: who.name, ranch: who.ranch, role: who.role || "owner"}; store.set("me", me);
+    me = {name: who.name, ranch: who.ranch, role: who.role || "owner", workspace_id: who.workspace_id, ranches: who.ranches || []}; store.set("me", me);
+    if (who.workspace_id) store.set("lastRanch", who.workspace_id);
     show("home"); await refresh(); syncAll();
   }
+  // ---------------------------------------------------------------- switch between ranches (one login, several ranches)
+  const unsent = () => store.get("queue", []).length + pending.length + store.get("taskq", []).length;
+  async function switchRanch(workspaceId) {
+    if (!me || workspaceId === me.workspace_id) { closeSheet(); return; }
+    if (unsent()) { await syncAll(true); if (unsent()) { toast("Some photos or entries for this ranch haven't sent yet. Switch once they have."); return; } }
+    try {
+      const who = await api("switch", {method: "POST", body: JSON.stringify({workspace_id: workspaceId})});
+      ["snapshot", "snapshotAt", "serverLogs", "photos", "tasks", "people"].forEach(k => store.del(k));
+      snap = null; photos = []; serverLogs = []; tasks = []; people = [];
+      if (view3d) { view3d.dispose(); view3d = null; }
+      closeSheet(); toast("Now on " + who.ranch); await signedIn(who);
+    } catch (e) { if (e.signin) show("login"); else toast(navigator.onLine ? e.message : "Switching ranches needs signal."); }
+  }
+  function ranchPicker() {
+    const rs = (me && me.ranches) || [];
+    if (rs.length < 2) return;
+    openSheet("Which ranch?", `<div class="tagpick">${rs.map(r => `<button type="button" class="${r.workspace_id === me.workspace_id ? "primary" : "secondary"}"
+      data-ranch="${esc(r.workspace_id)}">${esc(r.name)}${r.role === "crew" ? " (crew)" : ""}</button>`).join("")}</div>`);
+  }
+  $("brandBtn").onclick = ranchPicker;
+  document.addEventListener("click", e => { const r = e.target.closest("[data-ranch]"); if (r) switchRanch(r.dataset.ranch); });
   $("loginEmail").value = store.get("lastEmail", "");
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});   // ask the phone not to clear the sign-in
   const iosBrowser = /iphone|ipad|ipod/i.test(navigator.userAgent) && !navigator.standalone;
@@ -740,7 +927,8 @@
   $("loginForm").onsubmit = async e => {
     e.preventDefault(); $("loginError").hidden = true;
     try { store.set("lastEmail", $("loginEmail").value.trim());
-      await signedIn(await api("login", {method: "POST", body: JSON.stringify({email: $("loginEmail").value.trim(), password: $("loginPassword").value})})); $("loginPassword").value = ""; }
+      await signedIn(await api("login", {method: "POST", body: JSON.stringify({email: $("loginEmail").value.trim(), password: $("loginPassword").value,
+        ranch: store.get("lastRanch", "")})})); $("loginPassword").value = ""; }
     catch (err) { $("loginError").textContent = navigator.onLine ? err.message : "Signing in needs signal."; $("loginError").hidden = false; }
   };
   $("joinForm").onsubmit = async e => {

@@ -575,3 +575,69 @@ def test_phone_sign_in_renews_itself_when_used(tmp_path):
         expires = datetime.fromisoformat(conn.execute("SELECT expires_at FROM sessions").fetchone()[0])
     assert expires > datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS - 2)
     assert SESSION_DAYS >= 365
+
+
+def test_todo_list_add_check_off_repeat_undo_and_permissions(client):
+    owner = _login(client)
+    ws = client.user.workspace_id
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    hand = {"Authorization": "Bearer " + client.post("/api/join", json={"code": code, "name": "Luis", "email": "luis@example.com",
+                                                                        "password": "HandPass123"}).json()["token"]}
+    client.cookies.clear()
+    ops = [
+        {"op_id": "o1", "op": "add", "task_id": "t1", "title": "Fix north fence", "pasture_id": "P2", "due_date": "2026-10-20"},
+        {"op_id": "o2", "op": "add", "task_id": "t2", "title": "Check waters", "repeat_days": 2, "due_date": "2026-10-19"},
+        {"op_id": "o3", "op": "add", "task_id": "t3", "title": ""},
+    ]
+    res = client.post("/api/tasks", headers=owner, json=ops).json()
+    assert res["applied"] == ["o1", "o2"] and res["errors"][0]["op_id"] == "o3"
+    assert client.post("/api/tasks", headers=owner, json=ops[:2]).json()["applied"] == ["o1", "o2"]      # re-send is safe
+    data = client.get("/api/tasks", headers=hand).json()
+    assert {t["title"] for t in data["tasks"]} == {"Fix north fence", "Check waters"}
+    assert {p["name"] for p in data["people"]} == {"Zach", "Luis"}
+
+    # The hand checks both off (e.g. sent later from the field).
+    res = client.post("/api/tasks", headers=hand, json=[{"op_id": "h1", "op": "done", "task_id": "t1", "at": "2026-10-19T15:00:00Z"},
+                                                         {"op_id": "h2", "op": "done", "task_id": "t2", "at": "2026-10-19T15:05:00Z"}]).json()
+    tasks = {t["task_id"]: t for t in res["tasks"]}
+    assert tasks["t1"]["done_by_name"] == "Luis" and tasks["t1"]["done_at"].startswith("2026-10-19")
+    assert tasks["t2"]["done_at"] is None and tasks["t2"]["due_date"] == "2026-10-21"                   # repeating: next due
+    assert tasks["t2"]["history"][0]["by"] == "Luis"
+    # Only the hand or the owner can undo; hands can't delete the owner's jobs.
+    assert client.post("/api/tasks", headers=hand, json=[{"op_id": "h3", "op": "undo", "task_id": "t2"}]).json()["applied"] == ["h3"]
+    assert {t["task_id"]: t for t in client.get("/api/tasks", headers=owner).json()["tasks"]}["t2"]["due_date"] == "2026-10-19"
+    assert client.post("/api/tasks", headers=hand, json=[{"op_id": "h4", "op": "delete", "task_id": "t1"}]).json()["errors"]
+    assert client.post("/api/tasks", headers=owner, json=[{"op_id": "o4", "op": "delete", "task_id": "t1"}]).json()["applied"] == ["o4"]
+    assert [t["task_id"] for t in client.get("/api/tasks", headers=owner).json()["tasks"]] == ["t2"]
+
+
+def test_one_login_for_two_ranches_with_partner_code_and_switching(client):
+    # Justin owns Clear Creek; Zach owns Caja Caliente. Justin gives Zach a partner code.
+    justin = client.app.state.auth.create_user(email="justin@example.com", password="ClearCreek9", full_name="Justin",
+                                               ranch_name="Clear Creek Ranch", ranch_address="TX")
+    store = client.store
+    store.save_snapshot(justin.workspace_id, {"generated_at": "2026-10-19T05:00:00+00:00", "ranch": {"name": "Clear Creek Ranch"}, "pastures": []})
+    store.save_snapshot(client.user.workspace_id, {"generated_at": "2026-10-19T05:00:00+00:00", "ranch": {"name": "Caja Caliente"}, "pastures": []})
+    j = {"Authorization": "Bearer " + client.post("/api/login", json={"email": "justin@example.com", "password": "ClearCreek9"}).json()["token"]}
+    code = client.post("/api/crew/invites", headers=j, json={"role": "partner"}).json()
+    assert code["role"] == "owner" and code["max_uses"] == 1
+    client.cookies.clear()
+
+    # Zach joins with his EXISTING login (wrong password refused), and lands on Clear Creek as a partner.
+    assert client.post("/api/join", json={"code": code["code"], "email": "zach@example.com", "password": "nope-nope"}).status_code == 401
+    joined = client.post("/api/join", json={"code": code["code"], "email": "zach@example.com", "password": "CorrectHorse9"}).json()
+    assert joined["ranch"] == "Clear Creek Ranch" and joined["role"] == "owner"
+    assert {r["name"] for r in joined["ranches"]} == {"Caja Caliente", "Clear Creek Ranch"}
+    z = {"Authorization": "Bearer " + joined["token"]}
+    client.cookies.clear()
+    assert client.get("/api/crew", headers=z).status_code == 200                       # partner can manage crew
+
+    # Switch to Caja Caliente; the old token stops working, the new one opens the other ranch.
+    sw = client.post("/api/switch", headers=z, json={"workspace_id": client.user.workspace_id}).json()
+    assert sw["ranch"] == "Caja Caliente" and client.get("/api/me", headers=z).status_code == 401
+    z2 = {"Authorization": "Bearer " + sw["token"]}
+    assert client.get("/api/snapshot", headers=z2).json()["ranch"]["name"] == "Caja Caliente"
+    assert client.post("/api/switch", headers=z2, json={"workspace_id": "user-someone-else"}).status_code == 403
+    # Signing in again goes to the ranch the phone asks for.
+    again = client.post("/api/login", json={"email": "zach@example.com", "password": "CorrectHorse9", "ranch": justin.workspace_id}).json()
+    assert again["ranch"] == "Clear Creek Ranch"

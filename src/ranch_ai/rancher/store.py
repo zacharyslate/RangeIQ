@@ -94,6 +94,17 @@ class AppStore:
                     name TEXT,
                     joined_at TEXT NOT NULL
                 );
+                -- One person can be on several ranches (e.g. owner of one, partner or crew on another).
+                CREATE TABLE IF NOT EXISTS ranch_members (
+                    user_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    name TEXT,
+                    joined_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, workspace_id)
+                );
+                INSERT OR IGNORE INTO ranch_members(user_id, workspace_id, role, name, joined_at)
+                    SELECT user_id, workspace_id, role, name, joined_at FROM memberships;
                 CREATE TABLE IF NOT EXISTS invites (
                     code TEXT PRIMARY KEY,
                     workspace_id TEXT NOT NULL,
@@ -108,6 +119,32 @@ class AppStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    note TEXT,
+                    pasture_id TEXT,
+                    due_date TEXT,
+                    repeat_days INTEGER NOT NULL DEFAULT 0,
+                    assignee_id TEXT,
+                    lat REAL, lon REAL,
+                    source_id TEXT,
+                    created_by TEXT, created_by_name TEXT, created_at TEXT NOT NULL,
+                    done_at TEXT, done_by TEXT, done_by_name TEXT,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS ix_tasks_ws ON tasks(workspace_id);
+                CREATE TABLE IF NOT EXISTS task_ops (
+                    op_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    op TEXT NOT NULL,
+                    user_id TEXT, user_name TEXT,
+                    at TEXT NOT NULL,
+                    prev TEXT
+                );
+                CREATE INDEX IF NOT EXISTS ix_task_ops ON task_ops(workspace_id, task_id, at);
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -117,6 +154,9 @@ class AppStore:
                 );
                 """
             )
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(invites)").fetchall()}
+            if "role" not in cols:
+                conn.execute("ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'crew'")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -321,16 +361,21 @@ class AppStore:
     # -- crew (ranch hands) ---------------------------------------------------------
     INVITE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # no 0/O, 1/I/L
 
-    def create_invite(self, workspace_id: str, created_by: str, days: int = 7, max_uses: int = 10) -> dict[str, Any]:
+    def create_invite(self, workspace_id: str, created_by: str, days: int = 7, max_uses: int = 10, role: str = "crew") -> dict[str, Any]:
+        """role 'crew' = ranch hand; 'owner' = partner with the same rights as the owner (crew, settings)."""
+        if role not in {"crew", "owner"}:
+            raise ValueError("role must be crew or owner")
+        if role == "owner":
+            days, max_uses = 2, 1
         raw = "".join(secrets.choice(self.INVITE_ALPHABET) for _ in range(6))
         code = f"{raw[:3]}-{raw[3:]}"
         now = utc_now()
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO invites(code, workspace_id, created_by, created_at, expires_at, max_uses) VALUES (?, ?, ?, ?, ?, ?)",
-                (code, workspace_id, created_by, _iso(now), _iso(now + timedelta(days=days)), max_uses),
+                "INSERT INTO invites(code, workspace_id, created_by, created_at, expires_at, max_uses, role) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (code, workspace_id, created_by, _iso(now), _iso(now + timedelta(days=days)), max_uses, role),
             )
-        return {"code": code, "expires_at": _iso(now + timedelta(days=days)), "max_uses": max_uses, "uses": 0}
+        return {"code": code, "expires_at": _iso(now + timedelta(days=days)), "max_uses": max_uses, "uses": 0, "role": role}
 
     @staticmethod
     def normalize_code(code: str) -> str:
@@ -351,7 +396,7 @@ class AppStore:
     def list_invites(self, workspace_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT code, expires_at, max_uses, uses FROM invites WHERE workspace_id = ? AND revoked = 0 AND expires_at >= ? "
+                "SELECT code, expires_at, max_uses, uses, role FROM invites WHERE workspace_id = ? AND revoked = 0 AND expires_at >= ? "
                 "AND uses < max_uses ORDER BY created_at DESC", (workspace_id, _iso(utc_now()))).fetchall()
         return [dict(r) for r in rows]
 
@@ -362,29 +407,134 @@ class AppStore:
 
     def add_member(self, user_id: str, workspace_id: str, name: str, role: str = "crew") -> None:
         with self._connect() as conn:
-            conn.execute("INSERT OR REPLACE INTO memberships(user_id, workspace_id, role, name, joined_at) VALUES (?, ?, ?, ?, ?)",
+            conn.execute("INSERT OR REPLACE INTO ranch_members(user_id, workspace_id, role, name, joined_at) VALUES (?, ?, ?, ?, ?)",
                          (user_id, workspace_id, role, name, _iso(utc_now())))
 
-    def membership(self, user_id: str) -> dict[str, Any] | None:
+    def membership(self, user_id: str, workspace_id: str | None = None) -> dict[str, Any] | None:
+        """This person's membership of one ranch (or their most recent one)."""
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM memberships WHERE user_id = ?", (user_id,)).fetchone()
+            if workspace_id is None:
+                row = conn.execute("SELECT * FROM ranch_members WHERE user_id = ? ORDER BY joined_at DESC LIMIT 1", (user_id,)).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM ranch_members WHERE user_id = ? AND workspace_id = ?", (user_id, workspace_id)).fetchone()
         return dict(row) if row else None
+
+    def memberships_of(self, user_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM ranch_members WHERE user_id = ? ORDER BY joined_at", (user_id,)).fetchall()
+        return [dict(r) for r in rows]
 
     def members(self, workspace_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT user_id, name, role, joined_at FROM memberships WHERE workspace_id = ? ORDER BY joined_at",
+            rows = conn.execute("SELECT user_id, name, role, joined_at FROM ranch_members WHERE workspace_id = ? ORDER BY joined_at",
                                 (workspace_id,)).fetchall()
         return [dict(r) for r in rows]
 
     def remove_member(self, workspace_id: str, user_id: str) -> bool:
         with self._connect() as conn:
-            cur = conn.execute("DELETE FROM memberships WHERE workspace_id = ? AND user_id = ?", (workspace_id, user_id))
-            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            cur = conn.execute("DELETE FROM ranch_members WHERE workspace_id = ? AND user_id = ?", (workspace_id, user_id))
+            conn.execute("DELETE FROM memberships WHERE workspace_id = ? AND user_id = ?", (workspace_id, user_id))
+            conn.execute("DELETE FROM sessions WHERE user_id = ? AND workspace_id = ?", (user_id, workspace_id))
         return cur.rowcount > 0
 
     def crew_user_ids(self) -> set[str]:
         with self._connect() as conn:
-            return {r["user_id"] for r in conn.execute("SELECT user_id FROM memberships WHERE role = 'crew'").fetchall()}
+            return {r["user_id"] for r in conn.execute("SELECT user_id FROM ranch_members WHERE role = 'crew'").fetchall()}
+
+    # -- to-do list (jobs around the ranch) --------------------------------------
+    TASK_OPS = {"add", "done", "undo", "delete"}
+
+    def list_tasks(self, workspace_id: str, done_days: int = 14) -> list[dict[str, Any]]:
+        since = _iso(utc_now() - timedelta(days=done_days))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE workspace_id = ? AND deleted = 0 AND (done_at IS NULL OR done_at >= ?)",
+                (workspace_id, since)).fetchall()
+            history = conn.execute(
+                "SELECT task_id, op, user_name, at FROM task_ops WHERE workspace_id = ? AND op IN ('done','undo') AND at >= ? ORDER BY at DESC",
+                (workspace_id, since)).fetchall()
+        hist: dict[str, list[dict[str, Any]]] = {}
+        for h in history:
+            hist.setdefault(h["task_id"], []).append({"op": h["op"], "by": h["user_name"], "at": h["at"]})
+        out = []
+        for r in rows:
+            item = {k: r[k] for k in ("task_id", "title", "note", "pasture_id", "due_date", "repeat_days", "assignee_id", "lat", "lon",
+                                      "source_id", "created_by", "created_by_name", "created_at", "done_at", "done_by", "done_by_name")}
+            item["history"] = hist.get(r["task_id"], [])[:5]
+            out.append(item)
+        return out
+
+    def apply_task_ops(self, workspace_id: str, ops: list[dict[str, Any]], *, user_id: str, user_name: str,
+                       is_owner: bool) -> dict[str, Any]:
+        """Apply to-do changes sent from phones. Each op has an op_id, so re-sending after lost signal is safe."""
+        applied, errors = [], []
+        for op in ops:
+            op_id = str(op.get("op_id") or "").strip()
+            kind = str(op.get("op") or "")
+            task_id = str(op.get("task_id") or "").strip()
+            try:
+                if not op_id or len(op_id) > 64 or not task_id or len(task_id) > 64:
+                    raise ValueError("op_id and task_id are required.")
+                if kind not in self.TASK_OPS:
+                    raise ValueError(f"op must be one of {sorted(self.TASK_OPS)}.")
+                with self._connect() as conn:
+                    if conn.execute("SELECT 1 FROM task_ops WHERE op_id = ?", (op_id,)).fetchone():
+                        applied.append(op_id); continue
+                    at = str(op.get("at") or _iso(utc_now()))[:40]
+                    task = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+                    if task is not None and task["workspace_id"] != workspace_id:
+                        raise ValueError("task_id already used.")
+                    prev = None
+                    if kind == "add":
+                        if task is None:
+                            title = str(op.get("title") or "").strip()[:120]
+                            if not title:
+                                raise ValueError("A job needs a title.")
+                            repeat = int(op.get("repeat_days") or 0)
+                            if repeat not in {0, 1, 2, 3, 7, 14, 30}:
+                                raise ValueError("repeat_days must be 0, 1, 2, 3, 7, 14 or 30.")
+                            due = str(op.get("due_date") or "")[:10] or None
+                            if due:
+                                datetime.strptime(due, "%Y-%m-%d")
+                            num = lambda k: float(op[k]) if op.get(k) is not None else None  # noqa: E731
+                            conn.execute(
+                                "INSERT INTO tasks(task_id, workspace_id, title, note, pasture_id, due_date, repeat_days, assignee_id, lat, lon, "
+                                "source_id, created_by, created_by_name, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (task_id, workspace_id, title, (str(op.get("note") or "").strip()[:1000] or None), op.get("pasture_id"),
+                                 due, repeat, op.get("assignee_id"), num("lat"), num("lon"), op.get("source_id"), user_id, user_name, at))
+                    elif task is None or task["deleted"]:
+                        raise ValueError("That job no longer exists.")
+                    elif kind == "done":
+                        if task["repeat_days"]:
+                            # Repeating job: log it and move the due date on from the day it was done.
+                            prev = json.dumps({"due_date": task["due_date"], "done_at": task["done_at"]})
+                            next_due = (datetime.fromisoformat(at.replace("Z", "+00:00")).date() + timedelta(days=task["repeat_days"])).isoformat()
+                            conn.execute("UPDATE tasks SET due_date = ? WHERE task_id = ?", (next_due, task_id))
+                        elif task["done_at"] is None:
+                            conn.execute("UPDATE tasks SET done_at = ?, done_by = ?, done_by_name = ? WHERE task_id = ?",
+                                         (at, user_id, user_name, task_id))
+                    elif kind == "undo":
+                        last = conn.execute("SELECT * FROM task_ops WHERE task_id = ? AND op = 'done' ORDER BY at DESC LIMIT 1",
+                                            (task_id,)).fetchone()
+                        if last is None:
+                            raise ValueError("Nothing to undo.")
+                        if not is_owner and last["user_id"] != user_id:
+                            raise PermissionError("Only the person who checked it off, or the owner, can undo it.")
+                        if task["repeat_days"] and last["prev"]:
+                            conn.execute("UPDATE tasks SET due_date = ? WHERE task_id = ?", (json.loads(last["prev"]).get("due_date"), task_id))
+                        else:
+                            conn.execute("UPDATE tasks SET done_at = NULL, done_by = NULL, done_by_name = NULL WHERE task_id = ?", (task_id,))
+                        conn.execute("UPDATE task_ops SET op = 'done-undone' WHERE op_id = ?", (last["op_id"],))
+                    elif kind == "delete":
+                        if not is_owner and task["created_by"] != user_id:
+                            raise PermissionError("Only the owner or whoever added it can delete a job.")
+                        conn.execute("UPDATE tasks SET deleted = 1 WHERE task_id = ?", (task_id,))
+                    conn.execute("INSERT INTO task_ops(op_id, workspace_id, task_id, op, user_id, user_name, at, prev) VALUES (?,?,?,?,?,?,?,?)",
+                                 (op_id, workspace_id, task_id, kind, user_id, user_name, at, prev))
+                applied.append(op_id)
+            except (ValueError, PermissionError, TypeError) as exc:
+                errors.append({"op_id": op_id, "error": str(exc)})
+        return {"applied": applied, "errors": errors}
 
     # -- sessions --------------------------------------------------------------
     @staticmethod

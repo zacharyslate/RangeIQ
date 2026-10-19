@@ -226,6 +226,11 @@ class AuthService:
             row = connection.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         return self._row_to_user(row)
 
+    def get_users_by_workspace(self, workspace_id: str) -> list[AuthUser]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM users WHERE workspace_id = ? ORDER BY created_at", (workspace_id,)).fetchall()
+        return [user for user in (self._row_to_user(row) for row in rows) if user is not None]
+
     def get_user_by_email(self, email: str) -> AuthUser | None:
         normalized_email = self._normalize_email(email)
         with self._connect() as connection:
