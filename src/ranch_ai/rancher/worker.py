@@ -82,6 +82,25 @@ def usable_providers(app_settings: Settings, env: dict | None = None) -> list[st
     return []
 
 
+def terrain_needs_rebuild(store: AppStore, workspace_id: str, pastures, max_age_days: int = 30) -> bool:
+    """The 3D terrain and aerial photo change rarely: rebuild when the format, the boundary or the month changes."""
+    from datetime import datetime, timezone
+
+    from ranch_ai.rancher.terrain3d import ASSET_VERSION
+
+    meta = store.terrain_meta(workspace_id)
+    if not meta or meta.get("asset_version") != ASSET_VERSION:
+        return True
+    ids = sorted(str(p) for p in pastures["pasture_id"])
+    if sorted(str(o.get("id")) for o in meta.get("outlines", [])) != ids:
+        return True
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(str(meta.get("updated_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return age.days >= max_age_days
+
+
 def ranch_greenness(workspace_id: str, pastures, *, budget_seconds: float | None = None, store=None) -> dict:
     """Read new Sentinel-2 scenes for the whole ranch (time-limited), then work out each pasture's greenness."""
     from datetime import date
@@ -173,6 +192,16 @@ def build_workspace(
         include_terrain=include_terrain,
         terrain_result=terrain_result,
     )
+    if not demo:
+        from ranch_ai.rancher.water_map import water_features
+
+        water = water_features(workspace_id, pastures, default_settings.vegetation_cache_dir.parent / "water")
+        snapshot["water_map"] = water
+        snapshot.setdefault("sources", []).append({
+            "name": "USGS water map (NHD)", "provider": "USGS National Hydrography Dataset", "live": not water.get("error") or bool(water["features"]),
+            "stale": False, "demo": False, "as_of": water.get("as_of"), "mode": "real" if not water.get("error") else "unavailable",
+            "note": water.get("error")})
+        report["water_features"] = len(water["features"])
     store.save_snapshot(workspace_id, snapshot)
     report["pastures"] = len(snapshot["pastures"])
     report["acres"] = snapshot["ranch"]["acres"]
@@ -181,7 +210,8 @@ def build_workspace(
     if notes:
         report["why_not_live"] = notes
 
-    if terrain_result is not None and terrain_result.grid is not None and (is_live(terrain_result.status.get("mode")) or demo):
+    if terrain_result is not None and terrain_result.grid is not None and (is_live(terrain_result.status.get("mode")) or demo) \
+            and terrain_needs_rebuild(store, workspace_id, pastures):
         from ranch_ai.rancher.terrain3d import build_terrain_assets
 
         assets = build_terrain_assets(terrain_result.grid, pastures, user_agent=app_settings.terrain.user_agent)

@@ -23,6 +23,23 @@ export function toUTM(lat, lon, zone, south) {
   return [x, y];
 }
 
+// UTM metres -> WGS84 lat/lon (Snyder 1987, eqs. 8-12 to 8-25). Used to turn a tap on the 3D ground into a GPS point.
+export function fromUTM(x, y, zone, south) {
+  const a = 6378137, f = 1 / 298.257223563, k0 = 0.9996, e2 = f * (2 - f), ep2 = e2 / (1 - e2);
+  const e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2)), lam0 = ((zone - 1) * 6 - 180 + 3) * D2R;
+  const M = (south ? y - 10000000 : y) / k0;
+  const mu = M / (a * (1 - e2 / 4 - 3 * e2 * e2 / 64 - 5 * e2 ** 3 / 256));
+  const phi1 = mu + (3 * e1 / 2 - 27 * e1 ** 3 / 32) * Math.sin(2 * mu) + (21 * e1 * e1 / 16 - 55 * e1 ** 4 / 32) * Math.sin(4 * mu)
+    + (151 * e1 ** 3 / 96) * Math.sin(6 * mu) + (1097 * e1 ** 4 / 512) * Math.sin(8 * mu);
+  const s1 = Math.sin(phi1), c1 = Math.cos(phi1), t1 = Math.tan(phi1);
+  const C1 = ep2 * c1 * c1, T1 = t1 * t1, N1 = a / Math.sqrt(1 - e2 * s1 * s1), R1 = a * (1 - e2) / (1 - e2 * s1 * s1) ** 1.5;
+  const D = (x - 500000) / (N1 * k0);
+  const lat = phi1 - (N1 * t1 / R1) * (D * D / 2 - (5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * ep2) * D ** 4 / 24
+    + (61 + 90 * T1 + 298 * C1 + 45 * T1 * T1 - 252 * ep2 - 3 * C1 * C1) * D ** 6 / 720);
+  const lon = lam0 + (D - (1 + 2 * T1 + C1) * D ** 3 / 6 + (5 - 2 * C1 + 28 * T1 - 3 * C1 * C1 + 8 * ep2 + 24 * T1 * T1) * D ** 5 / 120) / c1;
+  return [lat / D2R, lon / D2R];
+}
+
 const WALL_VERT = `
   attribute float v;
   varying float vV;
@@ -240,13 +257,19 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
 
   // ---------------------------------------------------------------- tap: photo pin first, then pasture under the finger
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
-  let down = null;
+  let down = null, picker = null;
   renderer.domElement.addEventListener("pointerdown", e => { down = [e.clientX, e.clientY]; });
   renderer.domElement.addEventListener("pointerup", e => {
     if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 8) return;
     const r = renderer.domElement.getBoundingClientRect();
     ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
+    if (picker) {                                  // "tap the map where it is"
+      const g = ray.intersectObject(mesh)[0]; if (!g || !zoneMatch || !origin) return;
+      const lx = g.point.x / S + W / 2, ly = H / 2 - g.point.z / S;
+      const [lat, lon] = fromUTM(lx + origin[0], ly + origin[1], +zoneMatch[2], zoneMatch[1] === "7");
+      const cb = picker; picker = null; renderer.domElement.style.cursor = ""; cb(lat, lon); return;
+    }
     const hitPin = ray.intersectObjects(pins.children.filter(o => o.isSprite))[0];
     if (hitPin) { onPhoto(hitPin.object.userData.photo); return; }
     const hit = ray.intersectObject(mesh)[0]; if (!hit) return;
@@ -308,6 +331,17 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     setLook,
     contourFt: () => topoMat && topoMat.userData.interval,
     setPhotos(list) { photoList = list || []; drawPins(); },
+    setStatuses(map) { statusById = map || {}; drawWalls(); },
+    setPasturesVisible(on) { walls.visible = labels.visible = !!on; },
+    pickOnce(cb) { picker = cb; renderer.domElement.style.cursor = "crosshair"; },
+    cancelPick() { picker = null; renderer.domElement.style.cursor = ""; },
+    focus(lat, lon) {                              // fly to a GPS point
+      const xy = localXY(lat, lon); if (!xy) return false;
+      const target = toScene(xy[0], xy[1]);
+      controls.target.copy(target);
+      camera.position.copy(target).addScaledVector(new THREE.Vector3(-0.3, 0.62, 0.72).normalize(), 0.16);
+      controls.update(); return true;
+    },
     reset,
     dispose() {
       running = false; ro.disconnect(); controls.dispose();

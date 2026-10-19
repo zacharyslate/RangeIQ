@@ -72,6 +72,7 @@
     <div class="card" id="h-todo" hidden></div>
     <div class="card" id="h-attention"></div>
     <div class="card" id="h-weather"></div>
+    <div class="card" id="h-sky" hidden></div>
   </section>
 
   <!-- ============================== TO DO -->
@@ -95,8 +96,11 @@
         <button type="button" data-look="photo" aria-pressed="true">Photo</button>
         <button type="button" data-look="topo" aria-pressed="false">Topo</button>
       </div>
-      <button type="button" class="pill" id="photosToggle" aria-pressed="true" title="Show photos and reports on the map">📍 Pins</button>
+      <button type="button" class="pill" id="layersBtn" aria-pressed="false" title="Choose what shows on the map">🗂 Layers</button>
+      <button type="button" class="pill" id="addPlaceBtn" title="Add a water tank, pond, blind, gate…">＋ Place</button>
     </div>
+    <div class="card" id="layerCard" hidden></div>
+    <div class="pickbar" id="pickBar" hidden role="status"><b>Tap the map where it is.</b> <button type="button" class="pill" id="pickCancel">Cancel</button></div>
     <div id="map" class="map" role="region" aria-label="Map of pastures and photos"></div>
     <div id="map3d" class="map3d" hidden role="img" aria-label="3D view of the ranch with glowing pasture boundaries"></div>
     <div class="row" id="exagRow" hidden role="group" aria-label="Height exaggeration">
@@ -141,6 +145,9 @@
     <div class="hero"><h1 id="o-h">More</h1><p class="dim" id="o-who"></p></div>
     <div class="card" id="o-ranch" hidden></div>
     <div class="card" id="o-crew" hidden></div>
+    <div class="card"><h2>Warnings</h2>
+      <label class="switchrow"><input type="checkbox" id="o-everyday"> <span>Ignore drought &amp; low rain in pasture status</span></label>
+      <p class="dim small">Drought and rain are the same for every pasture and are often "normal" out here. With this on, a pasture's status comes from its own greenness, long-term trend, grazing days and what the crew reports. Severe-weather alerts and crew reports always show.</p></div>
     <div class="card"><h2>Text size</h2><div class="row" role="group" aria-label="Text size">
       <button type="button" class="pill" data-size="1">Normal</button><button type="button" class="pill" data-size="1.15">Large</button><button type="button" class="pill" data-size="1.3">Extra large</button></div></div>
     <div class="card"><h2>Put RangeIQ on your home screen</h2><p class="dim" id="o-install"></p></div>
@@ -172,6 +179,7 @@
 </div>
 
 <script src="config.js"></script>
+<script src="sky.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

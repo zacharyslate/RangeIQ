@@ -393,6 +393,30 @@ def create_app(
             raise HTTPException(status_code=403, detail="You can only delete your own entries.")
         return {"deleted": app.state.store.delete_log(sess["workspace_id"], client_id)}
 
+    # -- places on the map (tanks, ponds, blinds, gates, ...) ----------------------------
+    @app.get("/api/places")
+    def list_places(sess: dict[str, str] = Depends(session)) -> list[dict[str, Any]]:
+        return app.state.store.list_places(sess["workspace_id"])
+
+    @app.post("/api/places")
+    def save_places(payload: Any = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        items = payload if isinstance(payload, list) else [payload]
+        if len(items) > 200 or not all(isinstance(i, dict) for i in items):
+            raise HTTPException(status_code=400, detail="Send a list of at most 200 places.")
+        saved, errors = [], []
+        for item in items:
+            try:
+                if item.get("deleted"):
+                    app.state.store.delete_place(sess["workspace_id"], str(item.get("place_id")), user_id=sess["user_id"],
+                                                 is_owner=sess["role"] == "owner")
+                else:
+                    app.state.store.save_place(sess["workspace_id"], item, user_id=sess["user_id"], user_name=who(sess),
+                                               is_owner=sess["role"] == "owner")
+                saved.append(item.get("place_id"))
+            except (ValueError, PermissionError) as exc:
+                errors.append({"place_id": item.get("place_id"), "error": str(exc)})
+        return {"saved": saved, "errors": errors, "places": app.state.store.list_places(sess["workspace_id"])}
+
     # -- to-do list: jobs anyone on the ranch can add and check off ----------------------
     def people(workspace_id: str) -> list[dict[str, str]]:
         owners = [{"user_id": u.user_id, "name": u.full_name or "Owner", "role": "owner"}

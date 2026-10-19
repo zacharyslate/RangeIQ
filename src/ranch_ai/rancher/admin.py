@@ -208,6 +208,12 @@ def summary() -> int:
                 tally.setdefault((g.get("label", g.get("key")), g.get("level")), []).append(g.get("text", ""))
         for (label, level), texts in sorted(tally.items()):
             print(f"   signal {label}: {level} x{len(texts)} (e.g. {texts[0][:110]})")
+        water = snap.get("water_map") or {}
+        if water:
+            kinds: dict[str, int] = {}
+            for f in water.get("features", []):
+                kinds[f["kind"]] = kinds.get(f["kind"], 0) + 1
+            print(f"   USGS water map: {len(water.get('features', []))} features {kinds}" + (f" ({water['error']})" if water.get("error") else ""))
         if terrain:
             print(f"   3D: {terrain['nx']}x{terrain['ny']} mesh, DEM {terrain['dem_source']} {terrain['dem_resolution_m']} m, "
                   f"surface {terrain['texture_source']}" + (f" ({terrain['texture_note']})" if terrain.get("texture_note") else ""))
