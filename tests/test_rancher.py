@@ -276,3 +276,50 @@ def test_admin_finds_account_by_email(tmp_path, capsys):
     assert info["ranch"] == "Mesa Ranch" and info["boundary_file"] is None and "pastures" not in info
     with pytest.raises(SystemExit):
         admin.find_account("nobody@example.com", auth_db=tmp_path / "auth.sqlite")
+
+
+# --- GitHub-hosted app: bearer tokens, CORS, sign-in throttle ---------------------------
+@pytest.fixture()
+def pages_client(tmp_path):
+    auth = AuthService(tmp_path / "auth.sqlite")
+    user = auth.create_user(email="zach@example.com", password="CorrectHorse9", full_name="Zach",
+                            ranch_name="Caja Caliente", ranch_address="Alpine, TX")
+    store = AppStore(tmp_path / "app.sqlite")
+    app = create_app(store=store, auth=auth, web_dir=tmp_path / "none", allowed_origins=["https://zacharyslate.github.io"])
+    c = TestClient(app, base_url="https://rangeiq.org")
+    c.user, c.store = user, store  # type: ignore[attr-defined]
+    return c
+
+
+def test_bearer_token_works_without_cookies(pages_client):
+    token = pages_client.post("/api/login", json={"email": "zach@example.com", "password": "CorrectHorse9"}).json()["token"]
+    pages_client.cookies.clear()
+    assert pages_client.get("/api/me").status_code == 401
+    auth = {"Authorization": f"Bearer {token}"}
+    assert pages_client.get("/api/me", headers=auth).json()["ranch"] == "Caja Caliente"
+    assert pages_client.post("/api/logs", headers=auth, json={"client_id": "t-1", "kind": "rain", "inches": 0.3}).json()["saved"] == ["t-1"]
+    pages_client.post("/api/logout", headers=auth)
+    assert pages_client.get("/api/me", headers=auth).status_code == 401
+
+
+def test_cors_allows_github_pages_only(pages_client):
+    pre = pages_client.options("/api/snapshot", headers={
+        "Origin": "https://zacharyslate.github.io", "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization"})
+    assert pre.status_code == 200
+    assert pre.headers["access-control-allow-origin"] == "https://zacharyslate.github.io"
+    assert "authorization" in pre.headers["access-control-allow-headers"].lower()
+    evil = pages_client.options("/api/snapshot", headers={
+        "Origin": "https://evil.example", "Access-Control-Request-Method": "GET"})
+    assert "access-control-allow-origin" not in evil.headers
+    simple = pages_client.get("/api/health", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in simple.headers
+
+
+def test_sign_in_is_throttled_after_repeated_failures(pages_client):
+    bad = {"email": "zach@example.com", "password": "wrong-password"}
+    codes = [pages_client.post("/api/login", json=bad).status_code for _ in range(9)]
+    assert codes[:8] == [401] * 8 and codes[8] == 429
+    # Even the right password waits out the window, so guessing can't continue.
+    good = pages_client.post("/api/login", json={"email": "zach@example.com", "password": "CorrectHorse9"})
+    assert good.status_code == 429

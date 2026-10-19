@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RangeIQ: the ranch app</title>
+<meta name="description" content="RangeIQ for your phone: how each pasture is doing, rain, weather and alerts, a quick log for moves and rain gauge readings, and your ranch in 3D from USGS lidar. Works with weak or no signal.">
+<meta name="theme-color" content="#f4ecdf">
+<link rel="icon" href="icon-192.png">
+<style>
+  :root{--bg:#f4ecdf;--surface:#fffaf2;--ink:#1d150f;--ink-2:#4a3b2e;--rule:#d6c1a8;--accent:#234f34;--accent-ink:#fff;
+    --f:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color-scheme:light}
+  @media (prefers-color-scheme:dark){:root{--bg:#12100d;--surface:#1c1915;--ink:#f3ece2;--ink-2:#d6cabb;--rule:#3a332a;--accent:#7fb38f;--accent-ink:#0d150f;color-scheme:dark}}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 var(--f)}
+  main{max-width:880px;margin:0 auto;padding:28px 18px 48px;display:grid;gap:22px}
+  header{display:flex;align-items:center;gap:14px} header img{border-radius:16px}
+  h1{font-size:2.1rem;line-height:1.1;margin:0} h2{font-size:1.25rem;margin:0 0 8px}
+  p{margin:0} .dim{color:var(--ink-2)}
+  .cta{display:flex;flex-wrap:wrap;gap:12px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;min-height:56px;padding:0 24px;border-radius:14px;font-weight:700;font-size:1.05rem;text-decoration:none}
+  .btn.main{background:var(--accent);color:var(--accent-ink)} .btn.alt{border:1px solid var(--rule);color:var(--ink);background:var(--surface)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+  .card{background:var(--surface);border:1px solid var(--rule);border-radius:16px;padding:18px;display:grid;gap:8px;align-content:start}
+  ol{margin:0;padding-left:1.2rem;display:grid;gap:6px}
+  .qr{display:flex;gap:16px;align-items:center} .qr img{width:150px;height:150px;border-radius:10px;border:1px solid var(--rule)}
+  @media (max-width:640px){.desk{display:none}}
+  footer{font-size:.85rem;color:var(--ink-2)}
+</style>
+</head>
+<body>
+<main>
+  <header><img src="icon-192.png" alt="" width="64" height="64"><div><h1>RangeIQ</h1><p class="dim">The ranch app for your phone</p></div></header>
+
+  <p>See how each pasture is doing, how much rain you've had against normal, weather alerts and fire danger, and your ranch in 3D from USGS lidar. Log a move or a rain gauge reading in two taps, even with no signal.</p>
+
+  <div class="cta">
+    <a class="btn main" href="app/">Open RangeIQ</a>
+    <a class="btn alt" href="https://rangeiq.org/">Desktop console</a>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h2>iPhone</h2><ol>
+      <li>Open this page in <b>Safari</b>.</li>
+      <li>Tap <b>Open RangeIQ</b>, then sign in.</li>
+      <li>Tap the <b>Share</b> button, then <b>Add to Home Screen</b>.</li></ol></div>
+    <div class="card"><h2>Android</h2><ol>
+      <li>Open this page in <b>Chrome</b>.</li>
+      <li>Tap <b>Open RangeIQ</b>, then sign in.</li>
+      <li>Tap <b>Install</b> at the top, or the menu ⋮ → <b>Install app</b>.</li></ol></div>
+    <div class="card desk"><h2>On a computer?</h2>
+      <div class="qr"><img src="qr-app.png" alt="QR code that opens the RangeIQ app on your phone" width="150" height="150">
+        <p class="dim">Point your phone's camera here to open the app on your phone.</p></div></div>
+  </div>
+
+  <div class="card"><h2>Your ranch data stays private</h2>
+    <p class="dim">This page and the app's code are hosted on GitHub. Your pasture boundaries, logs and ranch data are not. They stay on the RangeIQ server and are only sent to your phone after you sign in.</p></div>
+
+  <footer>Data: National Weather Service, NASA POWER, U.S. Drought Monitor, Sentinel-2 (Earth Search), Rangeland Analysis Platform, USGS 3DEP lidar and The National Map, USDA NAIP imagery. Map: Leaflet. 3D: three.js.</footer>
+</main>
+</body>
+</html>

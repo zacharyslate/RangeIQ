@@ -4,7 +4,8 @@
 (function () {
   "use strict";
   const $ = id => document.getElementById(id);
-  const API = new URL("../api/", location.href).href;
+  // Where the ranch data lives. config.js sets this when the app is hosted apart from the server (GitHub Pages).
+  const API = new URL(window.RANGEIQ_API || "../api/", location.href).href;
   const store = {
     get(k, d) { try { const v = localStorage.getItem("riq." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem("riq." + k, JSON.stringify(v)); } catch (e) {} },
@@ -35,9 +36,13 @@
     return d.toLocaleDateString([], {month: "short", day: "numeric", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric"}) + (withTime ? " " + t : "");
   }
   function toast(msg) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
+  function authHeaders(extra = {}) {
+    const token = store.get("token", null);
+    return token ? {...extra, "Authorization": "Bearer " + token} : extra;
+  }
   async function api(path, opts = {}) {
-    const res = await fetch(API + path, {credentials: "same-origin", headers: {"Content-Type": "application/json"}, ...opts});
-    if (res.status === 401) { const e = new Error("signin"); e.signin = true; throw e; }
+    const res = await fetch(API + path, {credentials: "same-origin", ...opts, headers: authHeaders({"Content-Type": "application/json", ...(opts.headers || {})})});
+    if (res.status === 401 && path !== "login") { store.del("token"); const e = new Error("signin"); e.signin = true; throw e; }
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || ("HTTP " + res.status));
     return res.json();
   }
@@ -91,7 +96,10 @@
   async function refresh() {
     try {
       const data = await api("snapshot");
-      if (data.pending) { snap = null; $("t-sum").textContent = data.message; renderToday(); return; }
+      if (data.pending || data.setup_needed) {
+        snap = null; store.del("snapshot"); renderToday(); $("t-sum").textContent = data.message;
+        $("t-weather").innerHTML = "<h2>Getting started</h2><p class='dim'>" + esc(data.message) + "</p>"; return;
+      }
       snap = data; snapFetchedAt = new Date().toISOString();
       store.set("snapshot", snap); store.set("snapshotAt", snapFetchedAt);
       renderToday();
@@ -230,7 +238,7 @@
 
   // ---------------------------------------------------------------- 3D TERRAIN (three.js loads only here)
   async function getBytes(path) {
-    const res = await fetch(API + path, {credentials: "same-origin"});
+    const res = await fetch(API + path, {credentials: "same-origin", headers: authHeaders()});
     if (res.status === 401) { const e = new Error("signin"); e.signin = true; throw e; }
     if (!res.ok) throw new Error(res.status === 404 ? "notready" : "HTTP " + res.status);
     return {bytes: await res.arrayBuffer(), mime: res.headers.get("Content-Type") || ""};
@@ -351,7 +359,7 @@
   $("logoutBtn").onclick = async () => {
     if (store.get("queue", []).length && !confirm("You have entries that haven't been sent yet. Sign out anyway? They stay on this phone.")) return;
     try { await api("logout", {method: "POST"}); } catch (e) {}
-    store.del("snapshot"); store.del("snapshotAt"); store.del("serverLogs"); snap = null; show("login");
+    store.del("token"); store.del("snapshot"); store.del("snapshotAt"); store.del("serverLogs"); snap = null; show("login");
   };
   function setSize(v) { document.documentElement.style.setProperty("--scale", v); store.set("scale", v);
     document.querySelectorAll("[data-size]").forEach(b => b.setAttribute("aria-pressed", b.dataset.size === String(v))); }
@@ -362,7 +370,8 @@
   $("loginForm").onsubmit = async e => {
     e.preventDefault(); $("loginError").hidden = true;
     try {
-      await api("login", {method: "POST", body: JSON.stringify({email: $("loginEmail").value.trim(), password: $("loginPassword").value})});
+      const who = await api("login", {method: "POST", body: JSON.stringify({email: $("loginEmail").value.trim(), password: $("loginPassword").value})});
+      if (who.token) store.set("token", who.token);
       $("loginPassword").value = ""; show("today"); await refresh(); sync();
     } catch (err) { $("loginError").textContent = navigator.onLine ? (err.message === "signin" ? "That email and password don't match." : err.message) : "Signing in needs signal."; $("loginError").hidden = false; }
   };
