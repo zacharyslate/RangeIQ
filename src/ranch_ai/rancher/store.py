@@ -22,7 +22,8 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB_PATH = Path(os.getenv("RANGEIQ_APP_DB", PROJECT_ROOT / "data" / "processed" / "rangeiq_app.sqlite"))
-SESSION_DAYS = int(os.getenv("RANGEIQ_SESSION_DAYS", "60"))
+# Phone sign-ins last a year and renew themselves whenever the app is used, so nobody has to keep signing in.
+SESSION_DAYS = int(os.getenv("RANGEIQ_SESSION_DAYS", "365"))
 LOG_KINDS = {"move", "rain", "note"}
 
 
@@ -176,7 +177,17 @@ class AppStore:
         if kind not in LOG_KINDS:
             raise ValueError(f"kind must be one of {sorted(LOG_KINDS)}.")
         logged_at = str(entry.get("logged_at") or _iso(utc_now()))
-        payload = {k: v for k, v in entry.items() if k not in {"client_id", "kind", "logged_at", "pasture_id"}}
+        payload = {k: v for k, v in entry.items() if k not in {"client_id", "kind", "logged_at", "pasture_id", "user_id"}}
+        # Location of a report (for the map): keep only sensible numbers.
+        for key, low, high in (("lat", -90, 90), ("lon", -180, 180), ("accuracy_m", 0, 100000)):
+            if key in payload:
+                try:
+                    value = float(payload[key])
+                    payload[key] = value if low <= value <= high else None
+                except (TypeError, ValueError):
+                    payload[key] = None
+                if payload[key] is None:
+                    payload.pop(key)
         with self._connect() as conn:
             existing = conn.execute("SELECT * FROM logs WHERE client_id = ?", (client_id,)).fetchone()
             if existing is not None:
@@ -218,6 +229,7 @@ class AppStore:
             "logged_at": row["logged_at"],
             "received_at": row["received_at"],
             **json.loads(row["payload"] or "{}"),
+            "user_id": row["user_id"],
         }
 
     # -- app secret (signs photo links) ------------------------------------------
@@ -395,8 +407,14 @@ class AppStore:
             return None
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM sessions WHERE token_hash = ?", (self._hash(token),)).fetchone()
-        if row is None or row["expires_at"] < _iso(utc_now()):
+        now = utc_now()
+        if row is None or row["expires_at"] < _iso(now):
             return None
+        # Sliding renewal, at most once a day: a sign-in that keeps being used never runs out.
+        if row["expires_at"] < _iso(now + timedelta(days=SESSION_DAYS - 1)):
+            with self._connect() as conn:
+                conn.execute("UPDATE sessions SET expires_at = ? WHERE token_hash = ?",
+                             (_iso(now + timedelta(days=SESSION_DAYS)), self._hash(token)))
         return {"user_id": row["user_id"], "workspace_id": row["workspace_id"]}
 
     def end_session(self, token: str | None) -> None:

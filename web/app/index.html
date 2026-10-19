@@ -43,6 +43,8 @@
       <label>Password<input type="password" id="loginPassword" autocomplete="current-password" required></label>
       <button type="submit" class="primary">Sign in</button>
       <p class="error" id="loginError" role="alert" hidden></p>
+      <p class="dim small">You only sign in once: RangeIQ keeps you signed in on this phone.</p>
+      <p class="dim small" id="loginTip" hidden><b>iPhone:</b> add RangeIQ to your Home Screen first (Share → Add to Home Screen), then sign in there. The Home Screen app keeps its own sign-in.</p>
     </form>
     <form class="card form" id="joinForm" autocomplete="on" hidden>
       <p class="dim">Ask the ranch owner for the crew code. It looks like <b>K7M-4QX</b>.</p>
@@ -65,7 +67,7 @@
       <button type="button" class="big photo" data-act="photo"><span class="ic" aria-hidden="true">📷</span>Take photo</button>
       <button type="button" class="big" data-act="rain"><span class="ic" aria-hidden="true">🌧</span>Rain gauge</button>
       <button type="button" class="big" data-act="move"><span class="ic" aria-hidden="true">🐄</span>Moved cattle</button>
-      <button type="button" class="big warnbtn" data-act="report"><span class="ic" aria-hidden="true">⚠️</span>Report problem</button>
+      <button type="button" class="big warnbtn" data-act="report"><span class="ic" aria-hidden="true">⚠️</span>Report<small>problem or sighting</small></button>
     </div>
     <div class="card" id="h-attention"></div>
     <div class="card" id="h-weather"></div>
@@ -83,7 +85,7 @@
         <button type="button" data-look="photo" aria-pressed="true">Photo</button>
         <button type="button" data-look="topo" aria-pressed="false">Topo</button>
       </div>
-      <button type="button" class="pill" id="photosToggle" aria-pressed="true">📷 Photos</button>
+      <button type="button" class="pill" id="photosToggle" aria-pressed="true" title="Show photos and reports on the map">📍 Pins</button>
     </div>
     <div id="map" class="map" role="region" aria-label="Map of pastures and photos"></div>
     <div id="map3d" class="map3d" hidden role="img" aria-label="3D view of the ranch with glowing pasture boundaries"></div>
@@ -118,6 +120,7 @@
       <button type="button" data-filter="problem" aria-pressed="false">Problems</button>
       <button type="button" data-filter="rain" aria-pressed="false">Rain</button>
       <button type="button" data-filter="move" aria-pressed="false">Moves</button>
+      <button type="button" data-filter="wildlife" aria-pressed="false">Wildlife</button>
     </div>
     <div class="card" id="g-queue" hidden></div>
     <ul class="timeline" id="g-list"></ul>
