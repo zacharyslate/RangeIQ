@@ -79,5 +79,12 @@ jobs:
         run: |
           f="$RUNNER_TEMP/server-output.txt"
           [ -s "$f" ] || exit 0
-          body="$(tail -c 60000 "$f" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"} {print}')"
-          echo "::notice title=Server output::${body}"
+          # Annotations are cut at about 4 KB each and a step may add 10, so send the last ~36 KB in 9 parts.
+          python3 - "$f" <<'PY'
+          import sys
+          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()[-34000:]
+          parts = [text[i:i + 3800] for i in range(0, len(text), 3800)][:9]
+          for n, part in enumerate(parts, 1):
+              body = part.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::notice title=Server output {n}/{len(parts)}::{body}")
+          PY
