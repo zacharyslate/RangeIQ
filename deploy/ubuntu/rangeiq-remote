@@ -34,7 +34,7 @@ health() {
     printf '  %-22s %s\n' "${unit}" "$(systemctl is-active "${unit}" 2>/dev/null || true)"
   done
   printf '  %-22s %s\n' "api /api/health" "$(curl -fsS --max-time 10 http://127.0.0.1:8502/api/health 2>/dev/null || echo FAILED)"
-  printf '  %-22s %s\n' "console /_stcore/health" "$(curl -fsS --max-time 10 http://127.0.0.1:8501/_stcore/health 2>/dev/null || echo FAILED)"
+  printf '  %-22s %s\n' "console health" "$(curl -fsS --max-time 10 http://127.0.0.1:8501/console/_stcore/health 2>/dev/null || curl -fsS --max-time 10 http://127.0.0.1:8501/_stcore/health 2>/dev/null || echo FAILED)"
   printf '  %-22s %s\n' "commit" "$(as_app git -C "${APP_DIR}" log -1 --format='%h %s' 2>/dev/null)"
 }
 
