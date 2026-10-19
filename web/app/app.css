@@ -28,7 +28,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .top{position:sticky;top:0;z-index:30;display:flex;align-items:center;justify-content:space-between;gap:10px;
   padding:calc(env(safe-area-inset-top) + 8px) 14px 8px;background:color-mix(in srgb,var(--bg) 92%,transparent);
   backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--rule)}
-.brand{display:flex;align-items:center;gap:9px;font:700 1.2rem/1 var(--f-disp)}
+.brand{display:flex;align-items:center;gap:9px;font:700 1.2rem/1 var(--f-disp);background:none;border:0;color:inherit;padding:4px 0;cursor:pointer;min-height:44px}
 .brand img{border-radius:8px}
 .top-actions{display:flex;gap:8px}
 .pill{display:inline-flex;align-items:center;justify-content:center;min-height:44px;border:1px solid var(--rule);background:var(--surface);
@@ -112,7 +112,7 @@ main{max-width:680px;margin:0 auto;padding:14px 14px 20px}
 .quick button{min-height:52px;border-radius:12px;border:1px solid var(--rule);background:var(--surface-2);font-weight:700;cursor:pointer}
 .error{color:var(--act);font-weight:600}
 
-.tabs{position:fixed;left:0;right:0;bottom:0;z-index:40;display:grid;grid-template-columns:repeat(4,1fr);
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:40;display:grid;grid-template-columns:repeat(5,1fr);
   background:var(--surface);border-top:1px solid var(--rule);padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
 .tabs button{display:grid;justify-items:center;gap:2px;background:none;border:0;min-height:58px;font-size:.82rem;font-weight:600;color:var(--muted);cursor:pointer}
 .tabs button span{font-size:1.35rem;line-height:1}
@@ -220,3 +220,16 @@ details.card summary::-webkit-details-marker{display:none}
 .photo-pin.report{background:#fffaf2;border-color:#1f4f6e}
 .photo-pin.report.flag{border-color:#c0392b}
 @media (prefers-color-scheme: dark){.tagchips button.infotag[aria-pressed="true"],.tag.info{background:#1d3346;color:#cfe3f5;border-color:#6aa0c8}}
+.tasks{list-style:none;margin:0 0 6px;padding:0;display:grid;gap:8px}
+.task{display:flex;align-items:stretch;gap:10px;background:var(--surface);border:1px solid var(--rule);border-radius:14px;padding:6px 8px 6px 6px}
+.task.late{border-left:5px solid var(--act)}
+.task.today{border-left:5px solid var(--watch,#e0a21b)}
+.task .check{flex:0 0 48px;height:48px;align-self:center;border-radius:12px;border:2.5px solid var(--ink);background:var(--bg);
+  font:800 1.5rem/1 system-ui;color:#fff;cursor:pointer}
+.task .check[aria-pressed="true"]{background:var(--good);border-color:var(--good)}
+.task.done b{text-decoration:line-through;opacity:.65}
+.task .tbody{flex:1;text-align:left;background:none;border:0;padding:4px 0;color:inherit;cursor:pointer;display:grid;gap:2px}
+.task .tbody .meta{font-size:.85rem;color:var(--ink-2,#6b5d50)}
+.linkbtn{background:none;border:0;color:var(--accent,#1f4f6e);font-weight:700;padding:8px 0;cursor:pointer}
+#v-todo h2{margin:18px 0 8px}
+.tabs button{font-size:.78rem}
