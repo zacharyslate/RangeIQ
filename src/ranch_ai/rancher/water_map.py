@@ -69,6 +69,29 @@ def _centre(geometry: dict[str, Any]) -> tuple[float, float] | None:
     return best
 
 
+def _rings(pastures) -> list[list[tuple[float, float]]]:
+    out = []
+    for geom in pastures["geometry"]:
+        ring = json.loads(geom) if isinstance(geom, str) else geom
+        out.append([(float(p[0]), float(p[1])) for p in ring])
+    return out
+
+
+def _inside(lon: float, lat: float, ring: list[tuple[float, float]]) -> bool:
+    inside = False
+    for i in range(len(ring)):
+        (xi, yi), (xj, yj) = ring[i], ring[i - 1]
+        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
+            inside = not inside
+    return inside
+
+
+def on_the_ranch(features: list[dict[str, Any]], pastures) -> list[dict[str, Any]]:
+    """Only water inside a pasture (the query box also covers neighbours' land)."""
+    rings = _rings(pastures)
+    return [f for f in features if any(_inside(f["lon"], f["lat"], r) for r in rings)]
+
+
 def fetch_water_features(pastures, *, get: Callable[..., Any] | None = None, timeout: int = 120) -> list[dict[str, Any]]:
     get = get or requests.Session().get
     bbox = _ring_bbox(pastures)
@@ -92,12 +115,12 @@ def fetch_water_features(pastures, *, get: Callable[..., Any] | None = None, tim
         out.append({"id": "nhd-" + str(p.get("PERMANENT_IDENTIFIER") or len(out)), "kind": kind, "label": KIND_LABEL[kind],
                     "name": p.get("GNIS_NAME") or None, "lat": round(float(coords[1]), 6), "lon": round(float(coords[0]), 6), "acres": None,
                     "intermittent": False})
-    return out
+    return on_the_ranch(out, pastures)
 
 
 def water_features(workspace_id: str, pastures, cache_dir: Path, **kw) -> dict[str, Any]:
     """Cached for CACHE_DAYS. Returns {"features": [...], "as_of": iso, "error": str | None}."""
-    cache = Path(cache_dir) / f"nhd_{''.join(c for c in workspace_id if c.isalnum() or c in '-_')}.json"
+    cache = Path(cache_dir) / f"nhd2_{''.join(c for c in workspace_id if c.isalnum() or c in '-_')}.json"
     bbox = _ring_bbox(pastures)
     try:
         cached = json.loads(cache.read_text(encoding="utf-8"))

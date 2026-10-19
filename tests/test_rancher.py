@@ -680,7 +680,7 @@ def test_usgs_water_map_turns_ponds_and_springs_into_pins(tmp_path):
     from ranch_ai.rancher.water_map import water_features
 
     pastures = pd.DataFrame({"pasture_id": ["A"], "geometry": [[[-103.70, 30.30], [-103.68, 30.30], [-103.68, 30.32], [-103.70, 30.32]]]})
-    calls = []
+    calls = []   # (the box query adds ~200 m around the ranch, so a neighbour's well just north is returned and must be dropped)
 
     class Resp:
         def __init__(self, payload): self.payload = payload
@@ -696,7 +696,9 @@ def test_usgs_water_map_turns_ponds_and_springs_into_pins(tmp_path):
                  "geometry": {"type": "Polygon", "coordinates": [square]}},
                 {"properties": {"FTYPE": 493, "FCODE": 49300, "PERMANENT_IDENTIFIER": "est"}, "geometry": {"type": "Polygon", "coordinates": [square]}}]})
         return Resp({"features": [{"properties": {"FTYPE": 458, "FCODE": 45800, "PERMANENT_IDENTIFIER": "s1", "GNIS_NAME": "Cottonwood Spring"},
-                                   "geometry": {"type": "Point", "coordinates": [-103.695, 30.305]}}]})
+                                   "geometry": {"type": "Point", "coordinates": [-103.695, 30.305]}},
+                                  {"properties": {"FTYPE": 488, "FCODE": 48800, "PERMANENT_IDENTIFIER": "nb"},     # neighbour's well
+                                   "geometry": {"type": "Point", "coordinates": [-103.6995, 30.3215]}}]})
 
     out = water_features("ws", pastures, tmp_path, get=fake_get)
     kinds = {f["kind"]: f for f in out["features"]}
