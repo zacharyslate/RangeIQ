@@ -105,6 +105,20 @@ Useful official references:
 - [Deploy your app on Streamlit Community Cloud](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy)
 - [Manage app secrets](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management)
 
+## Automatic deploys and safe server checks (GitHub Actions)
+
+`.github/workflows/server.yml` deploys to the droplet on every push to `main`. It can also run `check`, `refresh`, `diagnose` or `logs` on demand (**Actions → Server → Run workflow**).
+
+One-time setup on the droplet:
+
+```bash
+cd /opt/rangeiq && sudo bash deploy/ubuntu/setup_github_access.sh
+```
+
+This creates a locked-down `rangeiq-ci` user whose key can **only** run `/usr/local/sbin/rangeiq-remote`. That script allows a fixed list of actions with validated arguments; there is no shell and no port forwarding. Paste the three secrets the script prints into **Settings → Secrets and variables → Actions**.
+
+The repo is public, so the server scrubs emails, account ids and coordinates from everything it prints. To revoke access: `sudo rm /home/rangeiq-ci/.ssh/authorized_keys`. After changing `deploy/ubuntu/rangeiq-remote`, re-run the setup script to install the new copy.
+
 ## Deploy On A DigitalOcean Droplet
 
 For a faster US-hosted deployment than Streamlit Community Cloud, RangeIQ can run on a Linux VM and sit behind a reverse proxy.

@@ -81,7 +81,7 @@ def export(workspace_id: str, store: AppStore, directory: Path) -> list[Path]:
     return written
 
 
-def diagnose_greenness(workspace_id: str) -> int:
+def diagnose_greenness(workspace_id: str, redact: bool = False) -> int:
     """Step through the Sentinel-2 greenness pull for one pasture and say exactly where it fails."""
     import time
 
@@ -99,7 +99,8 @@ def diagnose_greenness(workspace_id: str) -> int:
     record = pastures.iloc[0]
     ring = record["geometry"] if not isinstance(record["geometry"], str) else json.loads(record["geometry"])
     feature = {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [ring]}}
-    print(f"Pasture: {record['name']} ({float(record['acres']):.1f} ac); provider={cfg.provider}; STAC={cfg.earth_search_stac_url}; "
+    label = "first pasture" if redact else f"{record['name']} ({float(record['acres']):.1f} ac)"
+    print(f"Pasture: {label}; provider={cfg.provider}; STAC={cfg.earth_search_stac_url}; "
           f"collection={cfg.ndvi_default_collection}; max cloud={cfg.ndvi_cloud_cover_max}%")
     try:
         import rasterio
@@ -150,6 +151,53 @@ def diagnose_greenness(workspace_id: str) -> int:
     return 0
 
 
+def summary() -> int:
+    """Per-ranch health from stored snapshots, with no names, emails or locations (safe for public CI logs)."""
+    from datetime import datetime, timezone
+
+    from ranch_ai.rancher.worker import account_workspaces
+
+    store = AppStore()
+    workspaces = account_workspaces(default_settings.auth_db_path)
+    print(f"{len(workspaces)} account(s)")
+    for index, workspace_id in enumerate(workspaces, start=1):
+        snap = store.latest_snapshot(workspace_id)
+        if snap is None:
+            print(f"ranch {index}: no snapshot yet"); continue
+        if snap.get("setup_needed"):
+            print(f"ranch {index}: no pasture boundary uploaded"); continue
+        age_h = None
+        try:
+            age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(snap["generated_at"])).total_seconds() / 3600
+        except (KeyError, ValueError):
+            pass
+        sources = snap.get("sources", [])
+        live = [x["name"] for x in sources if x.get("live")]
+        down = [x for x in sources if not x.get("live")]
+        terrain = store.terrain_meta(workspace_id)
+        age = f"{age_h:.1f} h ago" if age_h is not None else "at an unknown time"
+        print(f"ranch {index}: {len(snap.get('pastures', []))} pastures, status {snap.get('counts')}, "
+              f"{len(live)}/{len(sources)} sources live, updated {age}")
+        for x in down:
+            print(f"   NOT LIVE: {x['name']}" + (f" - {x['note']}" if x.get("note") else ""))
+        if terrain:
+            print(f"   3D: {terrain['nx']}x{terrain['ny']} mesh, DEM {terrain['dem_source']} {terrain['dem_resolution_m']} m, "
+                  f"surface {terrain['texture_source']}" + (f" ({terrain['texture_note']})" if terrain.get("texture_note") else ""))
+    return 0
+
+
+def diagnose_all(redact: bool = True) -> int:
+    from ranch_ai.rancher.worker import account_workspaces, workspace_inputs
+
+    worst = 0
+    for index, workspace_id in enumerate(account_workspaces(default_settings.auth_db_path), start=1):
+        if workspace_inputs(workspace_id)[1] is None:
+            continue
+        print(f"--- ranch {index}")
+        worst = max(worst, diagnose_greenness(workspace_id, redact=redact))
+    return worst
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="RangeIQ admin: run one account's ranch.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -162,7 +210,13 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--db", help="App database path.")
     d = sub.add_parser("diagnose", help="Test the satellite greenness pull step by step for an account.")
     d.add_argument("email")
+    sub.add_parser("summary", help="Per-ranch health with no personal details (safe for public logs).")
+    sub.add_parser("diagnose-all", help="Greenness diagnosis for every ranch, with no personal details.")
     args = parser.parse_args(argv)
+    if args.command == "summary":
+        return summary()
+    if args.command == "diagnose-all":
+        return diagnose_all(redact=True)
 
     user = find_account(args.email)
     if args.command == "diagnose":
