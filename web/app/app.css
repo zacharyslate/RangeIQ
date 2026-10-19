@@ -205,3 +205,18 @@ details.card summary::-webkit-details-marker{display:none}
 .spotrow img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px 8px 0 0;display:block}
 .spotrow span{display:block;font-size:.8rem;padding:3px 6px 5px;line-height:1.25}
 .map,.map3d{isolation:isolate;position:relative;z-index:0}   /* keep Leaflet panes (z-index 400+) under sheets and tabs */
+.big small{display:block;font-size:.72rem;font-weight:500;opacity:.85;margin-top:2px}
+.tagpick{display:grid;gap:8px}
+.tgroup{border:1px solid var(--rule);border-radius:14px;background:var(--surface)}
+.tgroup summary{min-height:48px;display:flex;align-items:center;gap:8px;padding:0 14px;font-weight:700;cursor:pointer;list-style:none}
+.tgroup summary::-webkit-details-marker{display:none}
+.tgroup summary::after{content:"▾";margin-left:auto;opacity:.6}
+.tgroup[open] summary::after{content:"▴"}
+.tgroup summary .n{color:var(--act);font-weight:700}
+.tgroup .tagchips{padding:0 12px 12px}
+.tagchips button.infotag[aria-pressed="true"]{background:#e3edf7;border-color:#1f4f6e;color:#1f4f6e}
+.tag.info{background:#e3edf7;color:#1f4f6e}
+.picked{margin:2px 0 0}
+.photo-pin.report{background:#fffaf2;border-color:#1f4f6e}
+.photo-pin.report.flag{border-color:#c0392b}
+@media (prefers-color-scheme: dark){.tagchips button.infotag[aria-pressed="true"],.tag.info{background:#1d3346;color:#cfe3f5;border-color:#6aa0c8}}

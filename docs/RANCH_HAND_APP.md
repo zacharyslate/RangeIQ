@@ -29,6 +29,25 @@ Everything a hand records (photos, rain, moves, problems) is saved on the phone 
 4. On the server, photos are private to the ranch and are served through signed links that expire.
 5. Photos appear as pins on the 2D map (with a wedge showing the direction the camera faced) and on the 3D view, and in the pasture page and the Log. Photos taken from the same spot share one pin. Opening one shows **"This spot over time"**.
 
+### What a hand can report
+
+Photos and the **Report** button share one list of quick-tap tags, in five groups that open one at a time:
+
+| Group | Tags (level) |
+| --- | --- |
+| 💧 Water | Water low, Trough or tank problem, Windmill or pump down (serious) · Pipe or float leak (watch) · Water OK (good) |
+| 🚧 Fences, gates & roads | Fence down (serious) · Fence damaged, Gate open, Gate damaged, Cattle guard problem, Washed-out road (watch) |
+| 🐄 Livestock | Cattle out, Sick or hurt animal, Dead animal (serious) · Stray animal (watch) · New calf (sighting) |
+| 🦌 Wildlife | Feral hogs, Hog rooting damage, Coyote or predator (watch) · Rattlesnake (heads-up) · Deer, Other wildlife (sighting) |
+| 🌾 Grass & land | Fire or smoke (serious) · Short or overgrazed grass, Weeds or brush, Poisonous plants, Erosion or washout (watch) · Good grass (good) |
+
+- **Serious** and **watch** tags feed pasture status for 14 days and show on Home for 3 days.
+- **Heads-up** (rattlesnake) shows on Home for 3 days so people know, but doesn't change pasture status.
+- **Sightings** (deer, new calf) are kept in the Log (filter: Wildlife) and on the map, but don't raise an alarm.
+- Reports save the phone's GPS location when it's available, so every report, not only photos, shows as a pin with its own icon (🐗, 🐍, 🚧, 💧…) on the 2D and 3D maps.
+
+The tag list lives in two places, `TAG_LEVELS` in `src/ranch_ai/rancher/status.py` and `TAG_GROUPS` in `web/app/app.js`, and a test fails if they differ.
+
 A problem tag (Water low, Fence down, Dead animal…) on a photo or a report feeds the pasture status for 14 days. A serious one (concern level) makes the pasture **Act** on its own, because it is a direct observation. Satellite and weather data still need two things off before they say Act.
 
 ## Honest limits

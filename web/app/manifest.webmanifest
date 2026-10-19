@@ -1,9 +1,9 @@
 {
   "name": "RangeIQ",
   "short_name": "RangeIQ",
-  "description": "How each pasture is doing, rain, weather and alerts, and a quick log for moves, rain gauge readings and notes. Works with weak or no signal.",
+  "description": "Your ranch on your phone: photos with location and direction, problems and wildlife sightings, rain and cattle moves, and what needs attention. Works with weak or no signal.",
   "id": "./",
-  "start_url": "./",
+  "start_url": "./#home",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
@@ -16,8 +16,8 @@
     {"src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
   ],
   "shortcuts": [
-    {"name": "Moved cattle", "url": "./#log-move"},
-    {"name": "Rain gauge", "url": "./#log-rain"},
-    {"name": "Pastures", "url": "./#pastures"}
+    {"name": "Report", "url": "./#act-report"},
+    {"name": "Rain gauge", "url": "./#act-rain"},
+    {"name": "Map", "url": "./#map"}
   ]
 }

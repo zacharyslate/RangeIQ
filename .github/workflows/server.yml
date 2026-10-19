@@ -70,7 +70,7 @@ jobs:
           case "$CMD" in *[!A-Za-z0-9._/\ -]*) echo "::error::Unsafe input"; exit 2;; esac
           echo "Requesting: $CMD"
           set -o pipefail
-          ssh -p "${PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 "$USER_@$HOST" "$CMD" 2>&1 | tee "$RUNNER_TEMP/server-output.txt"
+          ssh -p "${PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=40 "$USER_@$HOST" "$CMD" 2>&1 | tee "$RUNNER_TEMP/server-output.txt"
 
       # Also attach the (already scrubbed) server output to the run as an annotation, so it can be read
       # through the checks API as well as the log. Same visibility as the log; nothing extra is exposed.

@@ -114,12 +114,28 @@ def occupancy_signal(days_in_pasture: int | None, days_rested: int | None) -> Si
 
 
 # Tags a rancher can put on a photo or report. Problem tags put the pasture on Watch / Act.
-PROBLEM_TAGS = {
-    "Water low": "concern", "Trough or tank problem": "concern", "Fence down": "concern", "Gate open": "watch",
-    "Sick or hurt animal": "concern", "Dead animal": "concern", "Short or overgrazed grass": "watch",
-    "Weeds or brush": "watch", "Erosion or washout": "watch",
+# What a hand can tap on a photo or report. Keep in step with TAG_GROUPS in web/app/app.js (a test checks).
+#   concern: serious, makes a pasture Act on its own     watch: something is off (pasture Watch)
+#   alert:   heads-up for people (e.g. a rattlesnake); shows on Home but doesn't change pasture status
+#   info:    a sighting worth keeping (deer, new calf)   good: things are fine
+TAG_LEVELS = {
+    # Water
+    "Water low": "concern", "Trough or tank problem": "concern", "Windmill or pump down": "concern",
+    "Pipe or float leak": "watch", "Water OK": "good",
+    # Fences, gates & roads
+    "Fence down": "concern", "Fence damaged": "watch", "Gate open": "watch", "Gate damaged": "watch",
+    "Cattle guard problem": "watch", "Washed-out road": "watch",
+    # Livestock
+    "Cattle out": "concern", "Sick or hurt animal": "concern", "Dead animal": "concern", "Stray animal": "watch", "New calf": "info",
+    # Wildlife
+    "Feral hogs": "watch", "Hog rooting damage": "watch", "Coyote or predator": "watch", "Rattlesnake": "alert",
+    "Deer": "info", "Other wildlife": "info",
+    # Grass & land
+    "Fire or smoke": "concern", "Short or overgrazed grass": "watch", "Weeds or brush": "watch", "Poisonous plants": "watch",
+    "Erosion or washout": "watch", "Good grass": "good",
 }
-GOOD_TAGS = {"Water OK", "Good grass"}
+PROBLEM_TAGS = {tag: level for tag, level in TAG_LEVELS.items() if level in {"concern", "watch"}}
+GOOD_TAGS = {tag for tag, level in TAG_LEVELS.items() if level == "good"}
 FIELD_REPORT_DAYS = 14
 
 

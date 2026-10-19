@@ -151,6 +151,26 @@ def diagnose_greenness(workspace_id: str, redact: bool = False) -> int:
     return 0
 
 
+def _ranch_layout(index: int, workspace_id: str, snap: dict) -> None:
+    """Ranch name, boundary file and any property grouping in it (no coordinates)."""
+    from ranch_ai.rancher.worker import workspace_inputs
+
+    try:
+        _settings, pastures, boundary = workspace_inputs(workspace_id)
+    except Exception as exc:  # noqa: BLE001 - diagnostics only
+        print(f"   layout: could not read boundary ({type(exc).__name__})"); return
+    print(f"   ranch name: {(snap.get('ranch') or {}).get('name')!r}, boundary file: {boundary!r}, "
+          f"{(snap.get('ranch') or {}).get('acres')} acres")
+    if pastures is None:
+        return
+    cols = [c for c in pastures.columns if c != "geometry"]
+    print(f"   boundary columns: {cols}")
+    for col in cols:
+        if any(word in col.lower() for word in ("ranch", "property", "unit", "group", "folder", "parent", "owner")):
+            values = sorted({str(v) for v in pastures[col].dropna().tolist()})[:12]
+            print(f"   {col}: {values}")
+
+
 def summary() -> int:
     """Per-ranch health from stored snapshots, with no names, emails or locations (safe for public CI logs)."""
     from datetime import datetime, timezone
@@ -175,6 +195,7 @@ def summary() -> int:
         live = [x["name"] for x in sources if x.get("live")]
         down = [x for x in sources if not x.get("live")]
         terrain = store.terrain_meta(workspace_id)
+        _ranch_layout(index, workspace_id, snap)
         age = f"{age_h:.1f} h ago" if age_h is not None else "at an unknown time"
         print(f"ranch {index}: {len(snap.get('pastures', []))} pastures, status {snap.get('counts')}, "
               f"{len(live)}/{len(sources)} sources live, updated {age}")

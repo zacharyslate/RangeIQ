@@ -13,9 +13,30 @@
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
   const STATUS = {good: {word: "Good", icon: "✓"}, watch: {word: "Watch", icon: "!"}, act: {word: "Act", icon: "!!"}, unknown: {word: "No data", icon: "?"}};
   const LEVEL = {ok: "✓", watch: "!", concern: "!!", unavailable: "–"};
-  const PROBLEM_TAGS = ["Water low", "Trough or tank problem", "Fence down", "Gate open", "Sick or hurt animal", "Dead animal",
-    "Short or overgrazed grass", "Weeds or brush", "Erosion or washout"];
-  const GOOD_TAGS = ["Water OK", "Good grass"];
+  // What a hand can tap: [tag, level, map icon]. Keep in step with TAG_LEVELS in src/ranch_ai/rancher/status.py (a test checks).
+  // concern = serious (pasture Act); watch = something off; alert = heads-up for people; info = sighting; good = fine.
+  const TAG_GROUPS = /*TAGS*/[
+    {"group": "Water", "icon": "💧", "tags": [["Water low", "concern", "💧"], ["Trough or tank problem", "concern", "💧"], ["Windmill or pump down", "concern", "💧"],
+      ["Pipe or float leak", "watch", "💧"], ["Water OK", "good", "💧"]]},
+    {"group": "Fences, gates & roads", "icon": "🚧", "tags": [["Fence down", "concern", "🚧"], ["Fence damaged", "watch", "🚧"], ["Gate open", "watch", "🚪"],
+      ["Gate damaged", "watch", "🚪"], ["Cattle guard problem", "watch", "🚧"], ["Washed-out road", "watch", "🛣️"]]},
+    {"group": "Livestock", "icon": "🐄", "tags": [["Cattle out", "concern", "🐄"], ["Sick or hurt animal", "concern", "🐄"], ["Dead animal", "concern", "🐄"],
+      ["Stray animal", "watch", "🐄"], ["New calf", "info", "🐮"]]},
+    {"group": "Wildlife", "icon": "🦌", "tags": [["Feral hogs", "watch", "🐗"], ["Hog rooting damage", "watch", "🐗"], ["Coyote or predator", "watch", "🐺"],
+      ["Rattlesnake", "alert", "🐍"], ["Deer", "info", "🦌"], ["Other wildlife", "info", "🐾"]]},
+    {"group": "Grass & land", "icon": "🌾", "tags": [["Fire or smoke", "concern", "🔥"], ["Short or overgrazed grass", "watch", "🌾"], ["Weeds or brush", "watch", "🌿"],
+      ["Poisonous plants", "watch", "☠️"], ["Erosion or washout", "watch", "🌊"], ["Good grass", "good", "🌾"]]}
+  ]/*END*/;
+  const TAG = {};
+  TAG_GROUPS.forEach(g => g.tags.forEach(([name, level, icon]) => { TAG[name] = {level, icon, group: g.group}; }));
+  const tagsAt = (tags, levels) => (tags || []).filter(t => TAG[t] && levels.includes(TAG[t].level));
+  const PROBLEM_TAGS = Object.keys(TAG).filter(t => ["concern", "watch"].includes(TAG[t].level));
+  const GOOD_TAGS = Object.keys(TAG).filter(t => TAG[t].level === "good");
+  const HEADS_UP = ["concern", "watch", "alert"];
+  const RANK = {concern: 4, alert: 3, watch: 2, info: 1, good: 0};
+  const topTag = tags => (tags || []).filter(t => TAG[t]).sort((a, b) => RANK[TAG[b].level] - RANK[TAG[a].level])[0];
+  const tagClass = t => !TAG[t] ? "" : TAG[t].level === "good" ? " ok" : ["info", "alert"].includes(TAG[t].level) ? " info" : "";
+  const tagSpan = t => `<span class="tag${tagClass(t)}">${TAG[t] ? TAG[t].icon + " " : ""}${esc(t)}</span>`;
   const COLOR = {good: "#2e9d55", watch: "#e0a21b", act: "#d63c2f", unknown: "#8a8f96"};
 
   let snap = store.get("snapshot", null), snapAt = store.get("snapshotAt", null);
@@ -117,6 +138,13 @@
     }
     return out;
   }
+  // Reports (problems and sightings) saved with a GPS location also go on both maps.
+  const reportsWithPlace = () => logItems().filter(i => i.type === "problem" && i.l.lat != null).map(i => {
+    const top = topTag(i.l.tags);
+    return {client_id: i.l.client_id, lat: i.l.lat, lon: i.l.lon, icon: top ? TAG[top].icon : "📝", taken_at: i.at, report: true,
+      flagged: tagsAt(i.l.tags, HEADS_UP).length > 0, title: (i.l.tags || []).join(", ") || i.l.text || "Report"};
+  });
+  const mapPins = () => [...spots(allPhotos()), ...reportsWithPlace()];
   const sameSpot = p => p.lat == null ? [p] : allPhotos().filter(x => x.lat != null && metres(x, p) <= 35);
   const thumbOf = p => p._pending ? p.thumbUrl : fileUrl(p.thumb_url);
   const imageOf = p => p._pending ? p.imageUrl : fileUrl(p.image_url);
@@ -196,15 +224,17 @@
     (snap.alerts || []).forEach(a => items.push({cls: "alert", lead: "⚡", title: a.event, why: a.what_it_means || a.headline}));
     if (snap.fire && !/low/i.test(snap.fire.level)) items.push({cls: "watch", lead: "🔥", title: "Fire danger: " + snap.fire.level, why: (snap.fire.drivers || []).join(" · ")});
     const cutoff = Date.now() - 3 * 864e5;
-    allPhotos().filter(p => p.flagged && new Date(p.taken_at) > cutoff).slice(0, 3).forEach(p => items.push({
-      cls: "act", lead: "📷", title: (p.tags || []).filter(t => PROBLEM_TAGS.includes(t)).join(", ") || "Flagged photo",
-      why: `${p.pasture_id ? pastureName(p.pasture_id) + " · " : ""}${p.by ? p.by + " · " : ""}${when(p.taken_at)}`, photo: p.client_id}));
-    // Problems the crew reported in the last 3 days, before the server's next update folds them into pasture status.
-    const seen = new Set(items.filter(i => i.photo).map(i => i.photo));
-    logItems().filter(i => i.type === "problem" && new Date(i.at) > cutoff && (i.l.tags || []).some(t => PROBLEM_TAGS.includes(t)) && !seen.has(i.l.client_id))
-      .slice(0, 3).forEach(i => items.push({cls: "act", lead: "⚠️", title: i.l.tags.filter(t => PROBLEM_TAGS.includes(t)).join(", "),
-        why: `${i.l.pasture_id ? pastureName(i.l.pasture_id) + " · " : ""}${i.l.by ? i.l.by + " · " : ""}${when(i.at)}${i.l.text ? " · " + i.l.text : ""}`,
-        pasture: i.l.pasture_id || null, go: "log"}));
+    // What the crew saw in the last 3 days (photos and reports), before the server's next update folds it into pasture status.
+    // Sightings (deer, new calf) stay in the Log and on the map; only problems and heads-ups (rattlesnake) come here.
+    logItems().filter(i => (i.type === "photo" || i.type === "problem") && new Date(i.at) > cutoff)
+      .map(i => ({i, x: i.p || i.l, hot: tagsAt((i.p || i.l).tags, HEADS_UP)}))
+      .filter(({i, x, hot}) => hot.length || (i.p && x.flagged))
+      .sort((a, b) => (RANK[TAG[topTag(b.hot)]?.level] || 0) - (RANK[TAG[topTag(a.hot)]?.level] || 0)).slice(0, 4)
+      .forEach(({i, x, hot}) => { const top = topTag(hot); items.push({
+        cls: top && TAG[top].level === "concern" ? "act" : "watch", lead: top ? TAG[top].icon : "📷",
+        title: hot.join(", ") || "Much less green than before",
+        why: `${x.pasture_id ? pastureName(x.pasture_id) + " · " : ""}${x.by ? x.by + " · " : ""}${when(i.at)}${x.text ? " · " + x.text : ""}${i.p ? " · 📷" : ""}`,
+        photo: x.client_id}); });
     // Pastures: worst first; pastures with the same reason are grouped so the list stays short.
     const groups = new Map();
     snap.pastures.filter(p => p.status === "act" || p.status === "watch")
@@ -275,10 +305,11 @@
       poly.bindTooltip(esc(p.name), {permanent: snap.pastures.length <= 8, direction: "center", className: "maplabel"});
       poly.addTo(map); mapLayers.push(poly);
     });
-    if (showPhotos) spots(allPhotos()).forEach(p => {
+    if (showPhotos) mapPins().forEach(p => {
       const icon = L.divIcon({className: "", iconSize: [34, 34], iconAnchor: [17, 17], html:
-        `<div class="photo-pin${p.flagged ? " flag" : ""}">${p.heading_deg != null ? `<i class="cone" style="transform:rotate(${p.heading_deg}deg)"></i>` : ""}📷${p.n > 1 ? `<span class="n">${p.n}</span>` : ""}</div>`});
-      const m = L.marker([p.lat, p.lon], {icon, title: (p.n > 1 ? p.n + " photos here, newest " : "Photo ") + when(p.taken_at)}).on("click", () => openPhoto(p.client_id));
+        `<div class="photo-pin${p.flagged ? " flag" : ""}${p.report ? " report" : ""}">${p.heading_deg != null ? `<i class="cone" style="transform:rotate(${p.heading_deg}deg)"></i>` : ""}${p.icon || "📷"}${p.n > 1 ? `<span class="n">${p.n}</span>` : ""}</div>`});
+      const m = L.marker([p.lat, p.lon], {icon, title: p.report ? p.title + ", " + when(p.taken_at) : (p.n > 1 ? p.n + " photos here, newest " : "Photo ") + when(p.taken_at)})
+        .on("click", () => openPhoto(p.client_id));
       m.addTo(map); mapLayers.push(m);
     });
     map.invalidateSize(); map.fitBounds(all, {padding: [20, 20]});
@@ -292,7 +323,7 @@
   }
   async function render3d() {
     const box = $("map3d");
-    if (view3d) { view3d.setLook(look); view3d.setPhotos(showPhotos ? spots(allPhotos()) : []); src3d(); return; }
+    if (view3d) { view3d.setLook(look); view3d.setPhotos(showPhotos ? mapPins() : []); src3d(); return; }
     box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
     try {
       const [meta, height, texture, mod] = await Promise.all([api("terrain/meta"), getBytes("terrain/height"), getBytes("terrain/texture"), import("./terrain3d.js")]);
@@ -301,7 +332,7 @@
       const lonlatById = {};
       snap.pastures.forEach(p => { statusById[p.id] = p.status; namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
       view3d = mod.mount(box, {meta, height: height.bytes, texture, statusById, namesById, lonlatById, look, exaggeration: exag,
-        photos: showPhotos ? spots(allPhotos()) : [], onPhoto: openPhoto, onPasture: openPastureSheet});
+        photos: showPhotos ? mapPins() : [], onPhoto: openPhoto, onPasture: openPastureSheet});
       view3d.meta = meta; src3d();
     } catch (e) {
       if (e.signin) { show("login"); return; }
@@ -313,7 +344,7 @@
   document.querySelectorAll("[data-look]").forEach(b => b.onclick = () => { look = b.dataset.look; store.set("look", look); setPressed("[data-look]", "look", look); if (view3d) view3d.setLook(look); renderMap(); });
   document.querySelectorAll("[data-exag]").forEach(b => b.onclick = () => { exag = Number(b.dataset.exag); setPressed("[data-exag]", "exag", exag); if (view3d) view3d.setExaggeration(exag); });
   $("resetView").onclick = () => view3d && view3d.reset();
-  $("photosToggle").onclick = () => { showPhotos = !showPhotos; if (view3d) view3d.setPhotos(showPhotos ? spots(allPhotos()) : []); renderMap(); };
+  $("photosToggle").onclick = () => { showPhotos = !showPhotos; if (view3d) view3d.setPhotos(showPhotos ? mapPins() : []); renderMap(); };
 
   function openPastureSheet(id) {
     const p = snap && snap.pastures.find(x => x.id === id); if (!p) return;
@@ -359,18 +390,18 @@
     const by = x => x.by ? " · " + esc(x.by) : "";
     if (it.type === "photo") {
       const p = it.p, a = p.analysis || {};
-      const tags = (p.tags || []).map(t => `<span class="tag${GOOD_TAGS.includes(t) ? " ok" : ""}">${esc(t)}</span>`).join("");
+      const tags = (p.tags || []).map(tagSpan).join("");
       return `<li class="clickable" data-photo="${esc(p.client_id)}"><img src="${esc(thumbOf(p))}" alt="" loading="lazy">
         <b>Photo${p.pasture_id ? " · " + esc(pastureName(p.pasture_id)) : ""}${p.heading_deg != null ? " · facing " + compass(p.heading_deg) : ""}</b>
         <span>${tags}${a.green_pct != null ? ` <span class="dim">${a.green_pct}% green</span>` : ""}</span>
         <span class="meta">${esc(when(p.taken_at))}${by(p)}${p._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
     }
     const l = it.l;
-    const ico = {move: "🐄", rain: "🌧", problem: "⚠️"}[it.type] || "•";
+    const top = topTag(l.tags), ico = it.type === "problem" ? (top ? TAG[top].icon : "📝") : {move: "🐄", rain: "🌧"}[it.type] || "•";
     const what = it.type === "move" ? `Moved cattle${l.from_pasture_id ? " from " + esc(pastureName(l.from_pasture_id)) : ""} to <b>${esc(pastureName(l.pasture_id))}</b>${l.head ? " (" + esc(l.head) + " head)" : ""}`
       : it.type === "rain" ? `Rain gauge: <b>${Number(l.inches).toFixed(2)} in</b>${l.pasture_id ? " at " + esc(pastureName(l.pasture_id)) : ""}`
-      : `${(l.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}`;
-    return `<li><span class="ico" aria-hidden="true">${ico}</span><span>${what}</span><span></span>
+      : `${(l.tags || []).map(tagSpan).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}${l.lat != null ? " 📍" : ""}`;
+    return `<li${it.type === "problem" ? ` class="clickable" data-photo="${esc(l.client_id)}"` : ""}><span class="ico" aria-hidden="true">${ico}</span><span>${what}</span><span></span>
       <span class="meta">${esc(when(l.logged_at))}${by(l)}${l._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
   }
   function renderLog() {
@@ -380,7 +411,10 @@
     $("g-queue").innerHTML = `<p><b>${n} waiting to send.</b> Safe on this phone; they'll send by themselves when there's signal.</p>
       <button type="button" class="secondary" id="syncNow">Send now</button>`;
     if ($("syncNow")) $("syncNow").onclick = () => syncAll(true);
-    const items = logItems().filter(i => logFilter === "all" || i.type === logFilter || (logFilter === "problem" && i.type === "photo" && i.p.flagged)).slice(0, 80);
+    const tagsOf = i => (i.p || i.l).tags || [];
+    const items = logItems().filter(i => logFilter === "all" || i.type === logFilter
+      || (logFilter === "problem" && (i.type === "photo" || i.type === "problem") && (tagsAt(tagsOf(i), HEADS_UP).length || (i.p && i.p.flagged)))
+      || (logFilter === "wildlife" && tagsOf(i).some(t => TAG[t] && TAG[t].group === "Wildlife"))).slice(0, 80);
     $("g-list").innerHTML = items.length ? items.map(itemHtml).join("") : "<li class='dim'>Nothing yet. Use the buttons on Home.</li>";
   }
   document.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => { logFilter = b.dataset.filter; renderLog(); });
@@ -430,10 +464,21 @@
       .map(p => `<option value="${esc(p.id)}" ${p.id === selected ? "selected" : ""}>${esc(p.name)}</option>`).join("");
   }
   function tagChips(selected = []) {
-    return `<div class="tagchips" role="group" aria-label="What did you see?">${PROBLEM_TAGS.map(t => `<button type="button" data-tag="${esc(t)}" aria-pressed="${selected.includes(t)}">${esc(t)}</button>`).join("")}
-      ${GOOD_TAGS.map(t => `<button type="button" class="goodtag" data-tag="${esc(t)}" aria-pressed="${selected.includes(t)}">${esc(t)}</button>`).join("")}</div>`;
+    return `<div class="tagpick" role="group" aria-label="What did you see?">${TAG_GROUPS.map(g => `<details class="tgroup" name="tg">
+      <summary><span aria-hidden="true">${g.icon}</span> ${esc(g.group)} <span class="n"></span></summary>
+      <div class="tagchips">${g.tags.map(([t, level]) => `<button type="button" class="${level === "good" ? "goodtag" : level === "info" || level === "alert" ? "infotag" : ""}"
+        data-tag="${esc(t)}" aria-pressed="${selected.includes(t)}">${esc(t)}</button>`).join("")}</div></details>`).join("")}
+      <p class="picked dim" aria-live="polite"></p></div>`;
   }
-  function wireChips(root) { root.querySelectorAll("[data-tag]").forEach(b => b.onclick = () => b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"))); }
+  function wireChips(root) {
+    const update = () => {
+      root.querySelectorAll(".tgroup").forEach(d => { const n = d.querySelectorAll("[aria-pressed='true']").length; d.querySelector(".n").textContent = n ? `(${n})` : ""; });
+      const picked = chosenTags(root), out = root.querySelector(".picked");
+      if (out) out.innerHTML = picked.length ? "Picked: " + picked.map(tagSpan).join(" ") : "";
+    };
+    root.querySelectorAll("[data-tag]").forEach(b => b.onclick = () => { b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true")); update(); });
+    update();
+  }
   const chosenTags = root => [...root.querySelectorAll("[data-tag][aria-pressed='true']")].map(b => b.dataset.tag);
 
   // ---------------------------------------------------------------- quick logs (rain, move, report)
@@ -452,8 +497,10 @@
         <label>Out of (optional)<select name="from_pasture_id">${pastureOptions(null, "—")}</select></label>
         <label>Head (optional)<input type="number" name="head" inputmode="numeric" min="0" step="1"></label>`;
     } else {
-      kind = "report"; title = "Report a problem";
-      html = `<p class="dim">Tap what you saw. A photo helps: use <b>Take photo</b> instead if you can.</p>${tagChips()}
+      kind = "report"; title = "Report what you saw";
+      startSensors();                         // inside the tap, so the phone allows GPS
+      html = `<p class="dim">Problems and sightings: a broken fence, a washed-out road, hogs, a snake, deer. Open a group and tap what you saw.</p>${tagChips()}
+        <p class="dim" id="repWhere">📍 Getting your location…</p>
         <label>Where?<select name="pasture_id">${pastureOptions(here, "Whole ranch / not sure")}</select></label>
         <label>Anything else? (optional)<textarea name="text" maxlength="2000" placeholder="Which trough, how many head, which gate…"></textarea></label>`;
     }
@@ -461,7 +508,16 @@
       <div class="row"><button type="submit" class="primary">Save</button><button type="button" class="secondary" id="actCancel">Cancel</button></div></form>`);
     const f = $("actForm"); wireChips(f);
     f.querySelectorAll("[data-in]").forEach(b => b.onclick = () => { f.inches.value = b.dataset.in; });
-    $("actCancel").onclick = closeSheet;
+    let whereTimer = null;
+    if (kind === "report") whereTimer = setInterval(() => {
+      const w = $("repWhere"); if (!w) { clearInterval(whereTimer); return; }
+      const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
+      w.textContent = fx ? `📍 Your location will be saved with this report (±${fx.acc} m), so it shows on the map.` : "📍 Getting your location… (the report saves without it if there's no GPS)";
+      if (fx && !here && f.pasture_id && !f.pasture_id.dataset.touched) { const pid = pastureAt(fx.lon, fx.lat); if (pid) f.pasture_id.value = pid; }
+    }, 1000);
+    if (f.pasture_id) f.pasture_id.addEventListener("change", () => { f.pasture_id.dataset.touched = "1"; });
+    const done = () => { clearInterval(whereTimer); if (kind === "report") stopSensors(); };
+    $("actCancel").onclick = () => { done(); closeSheet(); };
     f.onsubmit = e => {
       e.preventDefault();
       const d = Object.fromEntries(new FormData(f).entries());
@@ -469,7 +525,13 @@
       if (d.pasture_id) entry.pasture_id = d.pasture_id;
       if (kind === "move") { if (d.from_pasture_id && d.from_pasture_id !== d.pasture_id) entry.from_pasture_id = d.from_pasture_id; if (d.head) entry.head = Number(d.head); }
       if (kind === "rain") entry.inches = Number(d.inches);
-      if (kind === "report") { entry.tags = chosenTags(f); entry.text = (d.text || "").trim(); if (!entry.tags.length && !entry.text) { toast("Tap what you saw, or write a note."); return; } }
+      if (kind === "report") {
+        entry.tags = chosenTags(f); entry.text = (d.text || "").trim();
+        if (!entry.tags.length && !entry.text) { toast("Tap what you saw, or write a note."); return; }
+        const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
+        if (fx) { entry.lat = fx.lat; entry.lon = fx.lon; entry.accuracy_m = fx.acc; }
+      }
+      done();
       const q = store.get("queue", []); q.push(entry); store.set("queue", q);
       closeSheet(); toast(navigator.onLine ? "Saved." : "Saved on this phone. It'll send when there's signal.");
       rerender(); syncAll();
@@ -576,7 +638,7 @@
       const meta = {client_id, taken_at: new Date().toISOString(), lat: fix ? fix.lat : null, lon: fix ? fix.lon : null, accuracy_m: fix ? fix.acc : null,
         heading_deg: heading, pasture_id: d.pasture_id || null, tags, note: (d.note || "").trim() || null, by: me && me.name,
         analysis: {...analysis, compared_to: prev ? prev.client_id : null, green_change_pts: delta},
-        flagged: tags.some(t => PROBLEM_TAGS.includes(t)) || (delta != null && delta <= -15)};
+        flagged: tagsAt(tags, HEADS_UP).length > 0 || (delta != null && delta <= -15)};
       try { await idb.put({client_id, meta, photo, thumb}); }
       catch (err) { toast("Couldn't save the photo on this phone: " + err.message); return; }
       URL.revokeObjectURL(previewUrl); closeSheet();
@@ -585,13 +647,32 @@
     };
   }
 
+  function openReport(id) {
+    const it = logItems().find(i => i.type === "problem" && i.l.client_id === id); if (!it) return;
+    const l = it.l, mine = me && me.user_id && l.user_id === me.user_id;
+    openSheet(l.pasture_id ? pastureName(l.pasture_id) : "Report", `<p>${(l.tags || []).map(tagSpan).join(" ")}</p>
+      ${l.text ? `<p>${esc(l.text)}</p>` : ""}
+      <p class="dim">${esc(when(l.logged_at))}${l.by ? " · " + esc(l.by) : ""}${l.accuracy_m ? " · 📍 ±" + l.accuracy_m + " m" : l.lat == null ? " · no location" : ""}</p>
+      ${l._pending ? "<p class='pending'>Waiting to send.</p>" : ""}
+      <div class="row">${l.lat != null ? `<button type="button" class="secondary" id="rpMap">Show on map</button>` : ""}
+      ${l._pending || isOwner() || mine ? `<button type="button" class="secondary" id="rpDel">Delete</button>` : ""}</div>`);
+    if ($("rpMap")) $("rpMap").onclick = () => { closeSheet(); mapMode = "2d"; show("map"); setTimeout(() => map && map.setView([l.lat, l.lon], 17), 400); };
+    if ($("rpDel")) $("rpDel").onclick = async () => {
+      if (!confirm("Delete this report?")) return;
+      try {
+        if (l._pending) store.set("queue", store.get("queue", []).filter(x => x.client_id !== id));
+        else await api("logs/" + encodeURIComponent(id), {method: "DELETE"});
+        serverLogs = serverLogs.filter(x => x.client_id !== id); store.set("serverLogs", serverLogs); closeSheet(); rerender();
+      } catch (e) { toast(e.message); }
+    };
+  }
   function openPhoto(id) {
-    const p = allPhotos().find(x => x.client_id === id); if (!p) return;
+    const p = allPhotos().find(x => x.client_id === id); if (!p) return openReport(id);
     const a = p.analysis || {}, spot = sameSpot(p);
     const canDelete = p._pending || isOwner() || (me && me.user_id && p.user_id === me.user_id);
     openSheet(p.pasture_id ? pastureName(p.pasture_id) : "Photo", `<img class="photoimg" src="${esc(imageOf(p))}" alt="Photo taken ${esc(when(p.taken_at))}">
       <p>${esc(when(p.taken_at))}${p.by ? " · " + esc(p.by) : ""}${p.heading_deg != null ? " · facing " + compass(p.heading_deg) : ""}${p.accuracy_m ? " · ±" + p.accuracy_m + " m" : ""}</p>
-      <p>${(p.tags || []).map(t => `<span class="tag${GOOD_TAGS.includes(t) ? " ok" : ""}">${esc(t)}</span>`).join("")}</p>
+      <p>${(p.tags || []).map(tagSpan).join(" ")}</p>
       ${p.note ? `<p>${esc(p.note)}</p>` : ""}
       <div class="stat"><div><span class="dim">Green</span><b>${a.green_pct ?? "–"}%</b></div><div><span class="dim">Brown or bare</span><b>${a.brown_bare_pct ?? "–"}%</b></div>
       ${a.green_change_pts != null ? `<div><span class="dim">vs. last photo here</span><b>${a.green_change_pts > 0 ? "+" : ""}${a.green_change_pts} pts</b></div>` : ""}</div>
@@ -652,9 +733,14 @@
     me = {name: who.name, ranch: who.ranch, role: who.role || "owner"}; store.set("me", me);
     show("home"); await refresh(); syncAll();
   }
+  $("loginEmail").value = store.get("lastEmail", "");
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});   // ask the phone not to clear the sign-in
+  const iosBrowser = /iphone|ipad|ipod/i.test(navigator.userAgent) && !navigator.standalone;
+  if (iosBrowser) $("loginTip").hidden = false;
   $("loginForm").onsubmit = async e => {
     e.preventDefault(); $("loginError").hidden = true;
-    try { await signedIn(await api("login", {method: "POST", body: JSON.stringify({email: $("loginEmail").value.trim(), password: $("loginPassword").value})})); $("loginPassword").value = ""; }
+    try { store.set("lastEmail", $("loginEmail").value.trim());
+      await signedIn(await api("login", {method: "POST", body: JSON.stringify({email: $("loginEmail").value.trim(), password: $("loginPassword").value})})); $("loginPassword").value = ""; }
     catch (err) { $("loginError").textContent = navigator.onLine ? err.message : "Signing in needs signal."; $("loginError").hidden = false; }
   };
   $("joinForm").onsubmit = async e => {

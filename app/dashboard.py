@@ -5,6 +5,7 @@ import base64
 import copy
 import html
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -528,14 +529,18 @@ def render_auth_gate(auth_service: AuthService) -> AuthUser:
         return current_user
 
     st.title("RangeIQ Access")
-    st.caption(
-        "Create an account to keep your ranch boundary, settings, and latest RangeIQ setup private to you. "
-        "Each account gets its own saved ranch workspace."
-    )
+    st.caption("Sign in to your ranch. Your boundary, settings and data stay private to your account.")
     if LIGHT_LOGO_PATH.exists() or DARK_LOGO_PATH.exists() or FALLBACK_LOGO_PATH.exists():
         st.image(str(LIGHT_LOGO_PATH if LIGHT_LOGO_PATH.exists() else FALLBACK_LOGO_PATH), width=280)
 
-    login_tab, signup_tab = st.tabs(["Log In", "Create Account"])
+    # RangeIQ is private to its ranches for now: no new owner accounts unless RANGEIQ_OPEN_SIGNUP=1.
+    # Ranch hands join from the phone app with a crew code from the owner.
+    open_signup = os.getenv("RANGEIQ_OPEN_SIGNUP", "0") == "1"
+    if open_signup:
+        login_tab, signup_tab = st.tabs(["Log In", "Create Account"])
+    else:
+        login_tab, signup_tab = st.container(), None
+        st.caption("RangeIQ is private to its ranches. Ranch hands: ask the owner for a crew code and use the phone app.")
 
     with login_tab:
         with st.form("rangeiq_login_form", clear_on_submit=False):
@@ -553,6 +558,8 @@ def render_auth_gate(auth_service: AuthService) -> AuthUser:
                 st.query_params["workspace"] = user.workspace_id
                 st.rerun()
 
+    if signup_tab is None:
+        st.stop()
     with signup_tab:
         with st.form("rangeiq_signup_form", clear_on_submit=False):
             signup_name = st.text_input("Your Name", key="signup_name")

@@ -525,3 +525,53 @@ def test_keyless_greenness_source_falls_back_to_free_sentinel2():
     assert usable_providers(s, env={"CLIMATE_ENGINE_API_KEY": "k"}) == [] and s.public_data.vegetation.provider == "climate_engine"
     s.public_data.vegetation.provider = "mock"
     assert usable_providers(s, env={}) == [] and s.public_data.vegetation.provider == "mock"
+
+
+def test_tag_catalog_matches_phone_app():
+    import json as _json
+    import pathlib
+    import re
+
+    from ranch_ai.rancher.status import TAG_LEVELS
+
+    js = (pathlib.Path(__file__).resolve().parents[1] / "web" / "app" / "app.js").read_text(encoding="utf-8")
+    groups = _json.loads(re.search(r"/\*TAGS\*/(.*?)/\*END\*/", js, re.S).group(1))
+    app_levels = {name: level for g in groups for name, level, _icon in g["tags"]}
+    assert app_levels == TAG_LEVELS
+    assert {"Feral hogs", "Rattlesnake", "Deer", "Washed-out road", "Fence damaged"} <= set(TAG_LEVELS)
+
+
+def test_sightings_do_not_change_pasture_status_but_problems_do():
+    from ranch_ai.rancher.status import field_report_signal
+
+    today = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    seen = (today - timedelta(days=1)).isoformat()
+    assert field_report_signal([{"logged_at": seen, "tags": ["Deer", "Rattlesnake", "New calf"]}], today) is None
+    assert field_report_signal([{"logged_at": seen, "tags": ["Deer", "Feral hogs"]}], today).level == "watch"
+    assert field_report_signal([{"logged_at": seen, "tags": ["Washed-out road", "Cattle out"]}], today).level == "concern"
+
+
+def test_report_location_is_kept_and_checked(tmp_path):
+    store = AppStore(tmp_path / "app.sqlite")
+    row, _ = store.add_log("ws", {"client_id": "r1", "kind": "note", "tags": ["Feral hogs"], "lat": "30.1", "lon": -103.5,
+                                  "accuracy_m": 7, "user_id": "spoofed"}, user_id="u1")
+    assert row["lat"] == 30.1 and row["lon"] == -103.5 and row["user_id"] == "u1"
+    row, _ = store.add_log("ws", {"client_id": "r2", "kind": "note", "lat": 999, "lon": "x"}, user_id="u1")
+    assert "lat" not in row and "lon" not in row
+
+
+def test_phone_sign_in_renews_itself_when_used(tmp_path):
+    import sqlite3 as _sqlite3
+
+    from ranch_ai.rancher.store import SESSION_DAYS
+
+    store = AppStore(tmp_path / "app.sqlite")
+    token = store.create_session("u1", "ws")
+    soon = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat(timespec="seconds")
+    with _sqlite3.connect(tmp_path / "app.sqlite") as conn:
+        conn.execute("UPDATE sessions SET expires_at = ?", (soon,))
+    assert store.session(token)["user_id"] == "u1"
+    with _sqlite3.connect(tmp_path / "app.sqlite") as conn:
+        expires = datetime.fromisoformat(conn.execute("SELECT expires_at FROM sessions").fetchone()[0])
+    assert expires > datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS - 2)
+    assert SESSION_DAYS >= 365
