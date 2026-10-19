@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -64,6 +65,23 @@ def force_live_providers(app_settings: Settings) -> list[str]:
     return changed
 
 
+def usable_providers(app_settings: Settings, env: dict | None = None) -> list[str]:
+    """If an account picked a greenness source that needs a key this server doesn't have, use the free
+    Earth Search copy of the same Sentinel-2 imagery instead of silently falling back to demo numbers.
+    A source that has its key is left alone. Returns notes on what was switched."""
+    env = os.environ if env is None else env
+    veg = app_settings.public_data.vegetation
+    provider = str(veg.provider).lower()
+    missing = {
+        "climate_engine": not env.get(veg.climate_engine_api_key_env),
+        "appeears": not (env.get(veg.appeears_username_env) and env.get(veg.appeears_password_env)),
+    }
+    if missing.get(provider):
+        veg.provider = LIVE_DEFAULTS["vegetation"]
+        return [f"vegetation: {provider} has no key on this server, using earth_search_stac (same Sentinel-2 imagery)"]
+    return []
+
+
 def workspace_inputs(workspace_id: str, base: Settings = default_settings):
     """Settings + pasture boundaries for a workspace, as saved from the desktop console.
 
@@ -100,6 +118,9 @@ def build_workspace(
 
     app_settings, pastures, boundary = workspace_inputs(workspace_id)
     report: dict = {"workspace_id": workspace_id, "boundary": boundary}
+    switched = usable_providers(app_settings)
+    if switched:
+        report["switched"] = switched
     if force_live:
         report["forced_live"] = force_live_providers(app_settings)
     if pastures is None:

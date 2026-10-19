@@ -180,6 +180,13 @@ def summary() -> int:
               f"{len(live)}/{len(sources)} sources live, updated {age}")
         for x in down:
             print(f"   NOT LIVE: {x['name']}" + (f" - {x['note']}" if x.get("note") else ""))
+        # What is driving the status: how many pastures each signal puts at each level, with one example.
+        tally: dict[tuple[str, str], list] = {}
+        for p in snap.get("pastures", []):
+            for g in p.get("signals", []):
+                tally.setdefault((g.get("label", g.get("key")), g.get("level")), []).append(g.get("text", ""))
+        for (label, level), texts in sorted(tally.items()):
+            print(f"   signal {label}: {level} x{len(texts)} (e.g. {texts[0][:110]})")
         if terrain:
             print(f"   3D: {terrain['nx']}x{terrain['ny']} mesh, DEM {terrain['dem_source']} {terrain['dem_resolution_m']} m, "
                   f"surface {terrain['texture_source']}" + (f" ({terrain['texture_note']})" if terrain.get("texture_note") else ""))
