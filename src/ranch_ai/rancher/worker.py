@@ -25,15 +25,17 @@ from ranch_ai.utils.io import load_pastures
 DEFAULT_WORKSPACE = "default"
 
 
-def account_workspaces(auth_db_path: Path) -> list[str]:
+def account_workspaces(auth_db_path: Path, store: AppStore | None = None) -> list[str]:
+    """Owners' ranches. Crew members (ranch hands) work on their owner's ranch, so their own empty one is skipped."""
     if not Path(auth_db_path).exists():
         return []
+    crew = (store or AppStore()).crew_user_ids()
     with sqlite3.connect(auth_db_path) as conn:
         try:
-            rows = conn.execute("SELECT workspace_id FROM users ORDER BY created_at").fetchall()
+            rows = conn.execute("SELECT user_id, workspace_id FROM users ORDER BY created_at").fetchall()
         except sqlite3.Error:
             return []
-    return [normalize_workspace_id(row[0]) for row in rows if row[0]]
+    return [normalize_workspace_id(ws) for uid, ws in rows if ws and uid not in crew]
 
 
 LIVE_DEFAULTS = {
@@ -120,6 +122,7 @@ def build_workspace(
         app_settings,
         pastures,
         logs=store.list_logs(workspace_id, limit=1000),
+        photos=store.list_photos(workspace_id, limit=500),
         demo=demo,
         include_terrain=include_terrain,
         terrain_result=terrain_result,

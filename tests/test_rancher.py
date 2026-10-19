@@ -401,3 +401,114 @@ def test_public_bundle_can_skip_vegetation():
                                                           include_vegetation=False)
     assert bundle.vegetation_artifacts is None and bundle.vegetation.empty
     assert not any(st.component.startswith("Vegetation") for st in bundle.source_status)
+
+
+# --- ranch-hand app: field reports, photos, crew -------------------------------------
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 200 + b"\xff\xd9"
+
+
+def test_field_reports_drive_status():
+    from ranch_ai.rancher.status import Signal, field_report_signal
+
+    today = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    recent = (today - timedelta(days=2)).isoformat()
+    old = (today - timedelta(days=30)).isoformat()
+    sig = field_report_signal([{"taken_at": recent, "tags": ["Gate open"]},
+                               {"logged_at": recent, "tags": ["Dead animal"], "by": "Luis"}], today)
+    assert sig.level == "concern" and "Dead animal" in sig.text and "Luis" in sig.text
+    assert field_report_signal([{"taken_at": old, "tags": ["Fence down"]}], today) is None
+    assert field_report_signal([{"taken_at": recent, "tags": ["Good grass"]}], today).level == "ok"
+    # A serious problem seen on the ground is enough for Act; one bad satellite/weather number is only Watch.
+    assert combine([sig, Signal("rain", "Rain", "ok", "fine", "x", None)]).status == "act"
+    assert combine([Signal("rain", "Rain", "concern", "dry", "x", None)]).status == "watch"
+    assert combine([Signal("rain", "Rain", "concern", "dry", "x", None), Signal("grass", "Grass", "concern", "brown", "x", None)]).status == "act"
+
+
+def _login(c, email="zach@example.com", password="CorrectHorse9"):
+    r = c.post("/api/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+def _upload(c, headers, client_id, **meta):
+    files = {"photo": ("p.jpg", JPEG, "image/jpeg"), "thumb": ("t.jpg", JPEG, "image/jpeg")}
+    import json as _json
+    return c.post("/api/photos", headers=headers, files=files,
+                  data={"meta": _json.dumps({"client_id": client_id, "taken_at": "2026-10-18T15:00:00Z", **meta})})
+
+
+def test_photos_upload_list_signed_links_and_delete(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("RANGEIQ_PHOTO_DIR", str(tmp_path / "photos"))
+    owner = _login(client)
+    r = _upload(client, owner, "ph-1", lat=30.3, lon=-103.6, heading_deg=270, tags=["Water low"], flagged=True,
+                analysis={"green_pct": 41, "brown_bare_pct": 50})
+    assert r.status_code == 200 and r.json()["created"] is True
+    assert _upload(client, owner, "ph-1").json()["created"] is False          # re-send after lost signal
+    assert _upload(client, owner, "bad id!").status_code == 400
+    bad = client.post("/api/photos", headers=owner, data={"meta": '{"client_id": "x"}'},
+                      files={"photo": ("p.png", b"\x89PNG....", "image/png"), "thumb": ("t.jpg", JPEG, "image/jpeg")})
+    assert bad.status_code == 400
+
+    [photo] = client.get("/api/photos", headers=owner).json()
+    assert photo["heading_deg"] == 270 and photo["tags"] == ["Water low"] and photo["flagged"] and photo["by"] == "Zach"
+    assert photo["analysis"]["green_pct"] == 41
+    client.cookies.clear()
+    assert client.get(photo["thumb_url"]).content == JPEG                     # signed link works without sign-in
+    assert client.get(photo["image_url"].replace("sig=", "sig=0")).status_code == 403
+    assert client.get(photo["image_url"].replace("kind=image", "kind=thumb")).status_code == 403
+    assert client.delete("/api/photos/ph-1", headers=owner).json()["deleted"] is True
+    assert client.get("/api/photos", headers=owner).json() == []
+    assert client.get(photo["thumb_url"]).status_code == 404
+
+
+def test_crew_code_join_roles_and_removal(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("RANGEIQ_PHOTO_DIR", str(tmp_path / "photos"))
+    owner = _login(client)
+    ws = client.user.workspace_id
+    client.store.save_snapshot(ws, {"generated_at": "2026-10-19T05:00:00+00:00", "ranch": {"name": "Caja Caliente"}, "pastures": []})
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    assert len(code) == 7 and code[3] == "-"
+
+    assert client.post("/api/join", json={"code": "ZZZ-ZZZ", "name": "Luis", "email": "luis@example.com",
+                                          "password": "HandPass123"}).status_code == 400
+    joined = client.post("/api/join", json={"code": code.lower().replace("-", " "), "name": "Luis",
+                                            "email": "luis@example.com", "password": "HandPass123"})
+    assert joined.status_code == 200 and joined.json()["role"] == "crew" and joined.json()["ranch"] == "Caja Caliente"
+    hand = {"Authorization": f"Bearer {joined.json()['token']}"}
+    client.cookies.clear()
+
+    me = client.get("/api/me", headers=hand).json()
+    assert me["role"] == "crew" and me["ranch"] == "Caja Caliente"
+    assert client.get("/api/snapshot", headers=hand).json()["ranch"]["name"] == "Caja Caliente"   # sees the owner's ranch
+    assert client.get("/api/crew", headers=hand).status_code == 403                                # can't manage the crew
+    assert client.post("/api/crew/invites", headers=hand).status_code == 403
+    # Hand logs work and photos on the owner's ranch, credited by name.
+    assert client.post("/api/logs", headers=hand, json={"client_id": "h-1", "kind": "note", "tags": ["Fence down"]}).json()["saved"] == ["h-1"]
+    assert _upload(client, hand, "h-ph").status_code == 200
+    assert client.get("/api/logs", headers=owner).json()[0]["by"] == "Luis"
+    assert client.get("/api/photos", headers=owner).json()[0]["by"] == "Luis"
+    # Hands can delete their own entries but not the owner's.
+    client.post("/api/logs", headers=owner, json={"client_id": "o-1", "kind": "rain", "inches": 0.2})
+    assert client.delete("/api/logs/o-1", headers=hand).status_code == 403
+    assert client.delete("/api/logs/h-1", headers=hand).json()["deleted"] is True
+    # Signing in again lands on the owner's ranch, not an empty one of their own.
+    assert client.post("/api/login", json={"email": "luis@example.com", "password": "HandPass123"}).json()["role"] == "crew"
+
+    crew = client.get("/api/crew", headers=owner).json()
+    assert [m["name"] for m in crew["members"]] == ["Luis"] and crew["invites"][0]["uses"] == 1
+    luis_id = crew["members"][0]["user_id"]
+    assert client.delete(f"/api/crew/members/{luis_id}", headers=owner).json()["removed"] is True
+    assert client.get("/api/me", headers=hand).status_code == 401                                  # signed out everywhere
+    assert client.delete(f"/api/crew/invites/{code}", headers=owner).json()["revoked"] is True
+    assert client.post("/api/join", json={"code": code, "name": "X", "email": "x@example.com", "password": "HandPass123"}).status_code == 400
+
+
+def test_worker_skips_crew_accounts(tmp_path):
+    from ranch_ai.rancher.worker import account_workspaces
+
+    auth = AuthService(tmp_path / "auth.sqlite")
+    owner = auth.create_user(email="o@example.com", password="CorrectHorse9", full_name="O", ranch_name="R", ranch_address="TX")
+    hand = auth.create_user(email="h@example.com", password="CorrectHorse9", full_name="H", ranch_name="R", ranch_address="Crew member")
+    store = AppStore(tmp_path / "app.sqlite")
+    store.add_member(hand.user_id, owner.workspace_id, "H")
+    assert account_workspaces(tmp_path / "auth.sqlite", store) == [owner.workspace_id]

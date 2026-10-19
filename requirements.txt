@@ -9,3 +9,4 @@ scikit-learn>=1.5
 streamlit>=1.40,<2
 fastapi>=0.110
 uvicorn>=0.29
+python-multipart>=0.0.9

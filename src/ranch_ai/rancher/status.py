@@ -11,6 +11,7 @@ not calibrated values. Adjust them to the ranch as observations accumulate.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 # --- thresholds (starting points; tune per ranch) ---------------------------
@@ -112,13 +113,59 @@ def occupancy_signal(days_in_pasture: int | None, days_rested: int | None) -> Si
     return None
 
 
+# Tags a rancher can put on a photo or report. Problem tags put the pasture on Watch / Act.
+PROBLEM_TAGS = {
+    "Water low": "concern", "Trough or tank problem": "concern", "Fence down": "concern", "Gate open": "watch",
+    "Sick or hurt animal": "concern", "Dead animal": "concern", "Short or overgrazed grass": "watch",
+    "Weeds or brush": "watch", "Erosion or washout": "watch",
+}
+GOOD_TAGS = {"Water OK", "Good grass"}
+FIELD_REPORT_DAYS = 14
+
+
+def field_report_signal(reports: list[dict], today: datetime | None = None) -> Signal | None:
+    """Most serious problem reported from the field (photos or reports) in the last FIELD_REPORT_DAYS."""
+    today = today or datetime.now(timezone.utc)
+    recent = []
+    for report in reports:
+        try:
+            when = datetime.fromisoformat(str(report.get("taken_at") or report.get("logged_at")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if (today - when).days <= FIELD_REPORT_DAYS:
+            recent.append((when, report))
+    if not recent:
+        return None
+    worst, worst_when, worst_tag, worst_by = None, None, None, None
+    rank = {"concern": 2, "watch": 1}
+    for when, report in sorted(recent, key=lambda r: r[0], reverse=True):
+        for tag in report.get("tags") or []:
+            level = PROBLEM_TAGS.get(tag)
+            if level and (worst is None or rank[level] > rank[worst]):
+                worst, worst_when, worst_tag, worst_by = level, when, tag, report.get("by")
+    if worst is None:
+        good = [t for _, r in recent for t in (r.get("tags") or []) if t in GOOD_TAGS]
+        if not good:
+            return None
+        return Signal("field", "From the field", "ok", f"Recent report: {good[0].lower()}.", "Your crew", recent[0][0].date().isoformat())
+    who = f" by {worst_by}" if worst_by else ""
+    return Signal("field", "From the field", worst, f"{worst_tag} reported{who}.", "Your crew", worst_when.date().isoformat())
+
+
 def combine(signals: list[Signal]) -> PastureStatus:
     usable = [s for s in signals if s.level != "unavailable"]
     if not usable:
         return PastureStatus("unknown", "Not enough data yet to judge this pasture.", signals)
     concerns = [s for s in usable if s.level == "concern"]
     watches = [s for s in usable if s.level == "watch"]
-    if len(concerns) >= 2:
+    field_concern = [s for s in concerns if s.key == "field"]
+    if field_concern:
+        concerns = field_concern + [s for s in concerns if s.key != "field"]
+    # A serious problem seen on the ground (dead animal, fence down, water low) is direct evidence, so it is
+    # enough on its own. Data from satellites and weather needs two things off before it says Act.
+    if len(concerns) >= 2 or field_concern:
         status = ACT
     elif concerns or len(watches) >= 2:
         status = WATCH if not (concerns and watches) else ACT
