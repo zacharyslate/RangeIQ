@@ -28,3 +28,4 @@ data/user/
 ZACH-venv/
 *.egg-info/
 data/photos/
+data/refresh/

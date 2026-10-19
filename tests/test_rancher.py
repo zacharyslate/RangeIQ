@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import io
+import json
 import subprocess
+from pathlib import Path
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -713,3 +716,54 @@ def test_sensor_places_keep_their_device_id(client):
     client.post("/api/places", headers=owner, json={"place_id": "s1", "kind": "sensor_water", "name": "Windmill tank level",
                                                     "lat": 30.3, "lon": -103.6, "device_id": " RIQ-0042 "})
     assert client.get("/api/places", headers=owner).json()[0]["device_id"] == "RIQ-0042"
+
+
+KML = b"""<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+<Placemark><name>North Flat</name><Polygon><outerBoundaryIs><LinearRing><coordinates>
+-103.70,30.30,0 -103.69,30.30,0 -103.69,30.31,0 -103.70,30.31,0 -103.70,30.30,0</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
+<Placemark><name>Windmill</name><Polygon><outerBoundaryIs><LinearRing><coordinates>
+-103.69,30.30,0 -103.68,30.30,0 -103.68,30.31,0 -103.69,30.31,0 -103.69,30.30,0</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
+<Placemark><name>Gate</name><Point><coordinates>-103.695,30.305,0</coordinates></Point></Placemark>
+</Document></kml>"""
+
+
+def test_ranch_setup_files_match_what_the_worker_reads(tmp_path):
+    import zipfile as _zip
+
+    from ranch_ai.rancher import setup as rs
+
+    out = rs.save_boundary("user-zach-1", "Caja Caliente.kml", KML, root=tmp_path)
+    assert out["pastures"] == 2 and out["names"] == ["North Flat", "Windmill"]
+    p = rs.paths("user-zach-1", tmp_path)
+    state = json.loads(p["state"].read_text())
+    assert state["saved_boundary"]["filename"] == "Caja Caliente.kml" and Path(state["saved_boundary"]["path"]).read_bytes() == KML
+    import yaml as _yaml
+    cfg = _yaml.safe_load(p["config"].read_text())
+    assert cfg["ranch"]["latitude"] == pytest.approx(30.305) and cfg["ranch"]["longitude"] == pytest.approx(-103.69)
+    assert p["refresh"].exists() and rs.take_refresh_requests(root=tmp_path) == ["user-zach-1"] and not p["refresh"].exists()
+    rs.set_ranch("user-zach-1", name="Caja Caliente", timezone="America/Chicago", root=tmp_path)
+    assert _yaml.safe_load(p["config"].read_text())["ranch"]["name"] == "Caja Caliente"
+    with pytest.raises(ValueError):
+        rs.set_ranch("user-zach-1", timezone="Mars/Olympus", root=tmp_path)
+    rs.set_pasture_names("user-zach-1", {"P1": "Big Flat", "P2": ""}, root=tmp_path)
+    assert rs.describe("user-zach-1", root=tmp_path)["pasture_names"] == {"P1": "Big Flat"}
+    # KMZ works; points-only, junk and huge files are refused with plain words
+    buf = io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        z.writestr("doc.kml", KML)
+    assert rs.save_boundary("user-zach-1", "ranch.kmz", buf.getvalue(), root=tmp_path)["pastures"] == 2
+    for name, data in (("pins.kml", KML.split(b"<Placemark>")[0] + b"<Placemark><Point><coordinates>1,1</coordinates></Point></Placemark></Document></kml>"),
+                       ("x.kml", b"not xml"), ("x.shp", b"..."), ("big.kml", b"x" * (rs.MAX_BOUNDARY_BYTES + 1))):
+        with pytest.raises(ValueError):
+            rs.check_boundary(name, data)
+
+
+def test_setup_api_is_owner_only(client):
+    owner = _login(client)
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    hand = {"Authorization": "Bearer " + client.post("/api/join", json={"code": code, "name": "Luis", "email": "luis@example.com",
+                                                                        "password": "HandPass123"}).json()["token"]}
+    client.cookies.clear()
+    assert client.get("/api/setup", headers=hand).status_code == 403
+    bad = client.post("/api/setup/boundary", headers=owner, files={"file": ("ranch.txt", b"hello", "text/plain")})
+    assert bad.status_code == 400 and "KML" in bad.json()["detail"]
