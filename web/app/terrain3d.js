@@ -60,6 +60,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   const NX = meta.nx, NY = meta.ny, W = meta.width_m, H = meta.height_m, CELL = meta.cell_m;
   const S = 1 / Math.max(W, H);
   const q = new Uint16Array(height);
+  if (q.length !== NX * NY) throw new Error(`3D files don't match (${q.length} heights for a ${NX}×${NY} grid)`);
   const elev = new Float32Array(NX * NY);
   let zmin = Infinity, zmax = -Infinity;
   for (let i = 0; i < elev.length; i++) { const z = meta.z0 + q[i] * meta.zscale; elev[i] = z; if (z < zmin) zmin = z; if (z > zmax) zmax = z; }

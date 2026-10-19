@@ -364,7 +364,15 @@ def create_app(
         if found is None:
             raise HTTPException(status_code=404, detail="3D terrain isn't ready yet.")
         blob, mime = found
-        return Response(blob, media_type=mime, headers={"Cache-Control": "private, max-age=3600"})
+        # The app asks for these by build date (?v=...), so a copy can be kept for a long time.
+        return Response(blob, media_type=mime, headers={"Cache-Control": "private, max-age=2592000"})
+
+    @app.post("/api/client-error")
+    async def client_error(request: Request) -> dict[str, bool]:
+        """Phones report a failed 3D load here so it shows up in the server log (no personal data is sent)."""
+        body = (await request.body())[:1000].decode("utf-8", "replace").replace("\n", " ")
+        print(f"[client-error] {body}", flush=True)
+        return {"ok": True}
 
     @app.get("/api/logs")
     def list_logs(sess: dict[str, str] = Depends(session)) -> list[dict[str, Any]]:

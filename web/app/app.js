@@ -159,7 +159,7 @@
   }
   // ---------------------------------------------------------------- map layers: everything on the ranch, switchable
   const PLACE_KINDS = {
-    water_tank: ["Water tank", "🛢️", "water"], trough: ["Trough", "💧", "water"], pond: ["Pond / dirt tank", "🌊", "water"],
+    water_tank: ["Water tank", "🛢️", "water"], trough: ["Trough", "💧", "water"], pond: ["Pond / dirt tank", "💧", "water"],
     windmill: ["Windmill / well", "🌀", "water"], water_other: ["Other water", "💧", "water"],
     deer_blind: ["Deer blind", "🛖", "hunting"], feeder: ["Feeder", "🌽", "hunting"], game_camera: ["Game camera", "📸", "hunting"],
     stand: ["Stand", "🪜", "hunting"],
@@ -192,7 +192,7 @@
     });
     places.forEach(pl => { const k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
       out.push({client_id: pl.place_id, lat: pl.lat, lon: pl.lon, icon: k[1], layer: k[2], place: true, title: pl.name}); });
-    const USGS_ICON = {tank: "💧", pond: "🌊", playa: "🏜️", marsh: "🌾", spring: "💦", well: "🚰", dam: "🧱"};
+    const USGS_ICON = {tank: "💧", pond: "💧", playa: "🏜️", marsh: "🌾", spring: "💦", well: "🚰", dam: "🧱"};
     (((snap && snap.water_map) || {}).features || []).forEach(w =>
       out.push({client_id: w.id, lat: w.lat, lon: w.lon, icon: USGS_ICON[w.kind] || "💧", layer: "usgs", usgs: true, title: w.name || w.label}));
     tasks.filter(t => !t.done_at && t.lat != null).forEach(t =>
@@ -463,7 +463,9 @@
     if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses(statusMap()); view3d.setPasturesVisible(layers.pastures); src3d(); return; }
     box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
     try {
-      const [meta, height, texture, mod] = await Promise.all([api("terrain/meta"), getBytes("terrain/height"), getBytes("terrain/texture"), import("./terrain3d.js")]);
+      // The height and photo files are cached by the phone, so ask for them by build date: a rebuilt terrain gets new files.
+      const meta = await api("terrain/meta"), v = encodeURIComponent(meta.updated_at || meta.asset_version || "1");
+      const [height, texture, mod] = await Promise.all([getBytes("terrain/height?v=" + v), getBytes("terrain/texture?v=" + v), import("./terrain3d.js")]);
       if ($("v-map").hidden || mapMode !== "3d") return;
       const namesById = {}, lonlatById = {};
       snap.pastures.forEach(p => { namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
@@ -475,7 +477,8 @@
       // No 3D yet (or no WebGL / no signal): fall back to the flat map so the console still works.
       const why = e.message === "notready" ? "The 3D terrain isn't ready yet, so here's the flat map." :
         navigator.onLine ? "The 3D view couldn't load, so here's the flat map." : "The 3D view needs signal the first time, so here's the flat map.";
-      mapMode = "2d"; await renderMap(); $("map-src").textContent = why;
+      mapMode = "2d"; await renderMap(); $("map-src").textContent = why + (e.message && e.message !== "notready" ? ` (${e.message.slice(0, 120)})` : "");
+      try { navigator.sendBeacon && navigator.sendBeacon(API + "client-error", JSON.stringify({where: "3d", error: String(e && (e.stack || e.message)).slice(0, 500)})); } catch (x) {}
     }
   }
   let mapPicker = null;
