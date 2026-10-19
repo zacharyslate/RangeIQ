@@ -1,16 +1,16 @@
 rangeiq.example.com {
     encode zstd gzip
 
-    # Phone app + its light API
-    handle /app* {
-        reverse_proxy 127.0.0.1:8502
-    }
+    # The RangeIQ app (phone and computer) and its server
     handle /api/* {
         reverse_proxy 127.0.0.1:8502
     }
-
-    # Desktop console (Streamlit)
-    handle {
+    # Desktop console: boundary upload and settings (Streamlit with STREAMLIT_SERVER_BASE_URL_PATH=console)
+    handle /console* {
         reverse_proxy 127.0.0.1:8501
+    }
+    # Everything else, including the front page, is the app
+    handle {
+        reverse_proxy 127.0.0.1:8502
     }
 }

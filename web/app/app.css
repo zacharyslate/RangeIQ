@@ -233,3 +233,54 @@ details.card summary::-webkit-details-marker{display:none}
 .linkbtn{background:none;border:0;color:var(--accent,#1f4f6e);font-weight:700;padding:8px 0;cursor:pointer}
 #v-todo h2{margin:18px 0 8px}
 .tabs button{font-size:.78rem}
+
+/* ===================================================================== Computer layout (rangeiq.org on a desktop or tablet)
+   Same app, same look; the tab bar becomes a sidebar, Home and Map use two columns, sheets open as centred dialogs. */
+@media (min-width: 960px){
+  body{padding-bottom:0}
+  .top{padding-left:24px;padding-right:24px}
+  .banner{margin:12px 24px 0 252px}
+  main{max-width:1240px;margin:0;padding:22px 32px 40px 252px}
+  .tabs{top:calc(env(safe-area-inset-top) + 62px);bottom:auto;left:0;right:auto;width:228px;display:flex;flex-direction:column;gap:4px;
+    padding:14px 12px;border-top:0;border-right:1px solid var(--rule);background:transparent;height:calc(100dvh - 62px)}
+  .tabs button{display:flex;align-items:center;justify-items:start;gap:12px;min-height:50px;padding:0 14px;border-radius:12px;font-size:1rem;text-align:left}
+  .tabs button span{font-size:1.25rem}
+  .tabs button:hover{background:var(--surface-2)}
+  .tabs button[aria-current="page"]{background:var(--surface);box-shadow:inset 0 0 0 1px var(--rule);color:var(--accent)}
+  h1{font-size:2.1rem}
+
+  /* Home: actions and jobs on the left, what needs attention and weather on the right */
+  #v-home{grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start;column-gap:22px}
+  #v-home > .hero{grid-column:1 / -1}
+  #v-home > .actions4{grid-column:1;grid-template-columns:repeat(4,minmax(0,1fr))}
+  #v-home > #h-todo{grid-column:1}
+  #v-home > #h-attention{grid-column:2;grid-row:2 / span 3}
+  #v-home > #h-weather{grid-column:1}
+  .actions4 .big{min-height:120px}
+
+  /* Map: big map with the pasture list beside it */
+  #v-map{grid-template-columns:minmax(0,1fr) 340px;align-items:start;column-gap:20px}
+  #v-map > *{grid-column:1}
+  #v-map > #m-list{grid-column:2;grid-row:1 / span 6;max-height:calc(100dvh - 120px);overflow:auto;padding-right:4px}
+  .map{height:calc(100dvh - 230px);min-height:420px}
+  .map3d{height:calc(100dvh - 260px);min-height:420px}
+
+  /* Pasture page: photos and status side by side */
+  #v-pasture{grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:22px;align-items:start}
+  #v-pasture > .back,#v-pasture > .hero,#v-pasture > .actions4{grid-column:1 / -1}
+  #v-pasture > .actions4{grid-template-columns:repeat(2,minmax(0,280px))}
+  .photogrid{grid-template-columns:repeat(4,minmax(0,1fr))}
+
+  #v-log,#v-todo,#v-more{max-width:860px}
+  #v-login{max-width:520px;margin:6vh auto 0}
+
+  /* Sheets become centred dialogs */
+  .sheet{top:7vh;bottom:auto;left:50%;right:auto;transform:translateX(-50%);width:min(620px,92vw);max-height:86dvh;border-radius:20px;
+    box-shadow:0 20px 60px rgba(0,0,0,.35)}
+  .sheet-grip{display:none}
+  .toast{bottom:28px}
+  .photoimg{max-height:52vh;object-fit:contain;background:var(--surface-2)}
+}
+/* when signed out there is no sidebar */
+@media (min-width: 960px){ body:has(#v-login:not([hidden])) main{padding-left:32px;margin:0 auto} }
+@media (min-width: 1400px){ main{max-width:1320px} }
