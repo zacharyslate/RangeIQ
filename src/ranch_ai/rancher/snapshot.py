@@ -31,6 +31,7 @@ from ranch_ai.rancher.status import (
 )
 
 LIVE_MODES = {"real", "cached", "stale-cache", "live", "live-cached"}
+NDVI_HISTORY_YEARS = 5
 SNAPSHOT_VERSION = 1
 
 
@@ -106,9 +107,11 @@ def friendly_provider(provider: str | None, mode: str | None, demo: bool) -> str
     return PROVIDER_NAMES.get(str(provider).lower(), str(provider))
 
 
-def _source_entry(name: str, mode: str | None, provider: str | None, as_of: str | None, demo: bool) -> dict[str, Any]:
+def _source_entry(name: str, mode: str | None, provider: str | None, as_of: str | None, demo: bool,
+                  note: str | None = None) -> dict[str, Any]:
     live = is_live(mode)
     return {
+        "note": None if live and mode != "stale-cache" else (str(note)[:300] if note else None),
         "name": name,
         "provider": friendly_provider(provider, mode, demo),
         "live": live,
@@ -231,24 +234,42 @@ def build_snapshot(
         fire = {"level": assessment.category, "drivers": drivers[:3], "actions": actions[:2]}
 
     # Rain, drought, greenness, range trend --------------------------------------------
+    # Rain history needs ~10 years (for normals); drought and soils ride along.
     bundle = PublicDataService(app_settings).load_public_data_bundle(
         pastures=pastures,
         start_date=today - pd.DateOffset(years=history_years) - pd.Timedelta(days=100),
         end_date=today,
         history_years=history_years,
+        include_vegetation=False,
     )
+    # Greenness gets its own window: the last 6 months plus NDVI_HISTORY_YEARS of monthly normals
+    # (Sentinel-2 starts in 2015). The end is rounded to the start of the week so the expensive
+    # satellite pull is cached and reused by every hourly run that week.
+    from ranch_ai.vegetation.vegetation_service import VegetationService
+
+    veg_end = (today - pd.Timedelta(days=int(today.weekday()))).normalize()
+    vegetation_artifacts, vegetation_statuses = VegetationService(app_settings).build_artifacts(
+        pastures,
+        start_date=veg_end - pd.DateOffset(months=6),
+        end_date=veg_end,
+        history_years=NDVI_HISTORY_YEARS,
+    )
+    bundle.vegetation_artifacts = vegetation_artifacts
+    bundle.source_status.extend(vegetation_statuses)
     modes = {status.component: status for status in bundle.source_status}
 
     hw = modes.get("Historical Weather")
     rain = rain_totals(bundle.historical_weather) if hw and usable(hw.mode) else {}
-    sources.append(_source_entry("Rain history", hw.mode if hw else None, hw.active_provider if hw else None, rain.get("as_of"), demo))
+    sources.append(_source_entry("Rain history", hw.mode if hw else None, hw.active_provider if hw else None, rain.get("as_of"), demo,
+                                 hw.status if hw else None))
 
     dr = modes.get("Drought")
     drought_cat, drought_asof = None, None
     if dr and usable(dr.mode) and not bundle.drought.empty:
         latest = bundle.drought.sort_values("week_start").iloc[-1]
         drought_cat, drought_asof = latest.get("public_usdm_category"), _date(latest.get("week_start"))
-    sources.append(_source_entry("U.S. Drought Monitor", dr.mode if dr else None, dr.active_provider if dr else None, drought_asof, demo))
+    sources.append(_source_entry("U.S. Drought Monitor", dr.mode if dr else None, dr.active_provider if dr else None, drought_asof, demo,
+                                 dr.status if dr else None))
 
     nd = modes.get("Vegetation NDVI")
     rp = modes.get("Vegetation RAP")
@@ -259,12 +280,12 @@ def build_snapshot(
         for pid, group in va.ndvi_series.groupby("pasture_id"):
             ndvi_asof[str(pid)] = _date(group["date"].max())
     sources.append(_source_entry("Satellite greenness (Sentinel-2)", nd.mode if nd else None, nd.active_provider if nd else None,
-                                 max((d for d in ndvi_asof.values() if d), default=None), demo))
+                                 max((d for d in ndvi_asof.values() if d), default=None), demo, nd.status if nd else None))
     rap_year = None
     if not summary.empty and "rap_latest_year" in summary:
         rap_year = summary["rap_latest_year"].dropna().max() if summary["rap_latest_year"].notna().any() else None
     sources.append(_source_entry("Rangeland Analysis Platform", rp.mode if rp else None, rp.active_provider if rp else None,
-                                 str(int(rap_year)) if rap_year is not None else None, demo))
+                                 str(int(rap_year)) if rap_year is not None else None, demo, rp.status if rp else None))
 
     # Terrain (cached lidar DEM) ---------------------------------------------------------
     terrain_by_pasture: dict[str, dict[str, Any]] = {}

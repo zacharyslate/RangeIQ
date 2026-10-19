@@ -221,6 +221,7 @@ class PublicDataService:
         start_date: str | pd.Timestamp,
         end_date: str | pd.Timestamp,
         history_years: int | None = None,
+        include_vegetation: bool = True,
     ) -> PublicDataBundle:
         lat = float(pastures["centroid_lat"].mean())
         lon = float(pastures["centroid_lon"].mean())
@@ -291,15 +292,18 @@ class PublicDataService:
         )
         source_status.append(drought_status)
 
-        vegetation_service = VegetationService(self.settings)
-        vegetation_artifacts, vegetation_statuses = vegetation_service.build_artifacts(
-            pastures,
-            start_date=start_date,
-            end_date=end_date,
-            history_years=history_years,
-        )
-        vegetation = vegetation_artifacts.monthly_features
-        source_status.extend(vegetation_statuses)
+        vegetation_artifacts = None
+        vegetation = pd.DataFrame()
+        if include_vegetation:
+            vegetation_service = VegetationService(self.settings)
+            vegetation_artifacts, vegetation_statuses = vegetation_service.build_artifacts(
+                pastures,
+                start_date=start_date,
+                end_date=end_date,
+                history_years=history_years,
+            )
+            vegetation = vegetation_artifacts.monthly_features
+            source_status.extend(vegetation_statuses)
 
         return PublicDataBundle(
             historical_weather=historical_weather,

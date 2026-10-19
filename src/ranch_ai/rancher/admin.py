@@ -81,6 +81,75 @@ def export(workspace_id: str, store: AppStore, directory: Path) -> list[Path]:
     return written
 
 
+def diagnose_greenness(workspace_id: str) -> int:
+    """Step through the Sentinel-2 greenness pull for one pasture and say exactly where it fails."""
+    import time
+
+    import pandas as pd
+    import requests
+
+    from ranch_ai.rancher.worker import workspace_inputs
+    from ranch_ai.vegetation.ndvi_client import EarthSearchSTACNDVIProvider, build_earth_search_query, select_sentinel_2_assets
+
+    app_settings, pastures, _ = workspace_inputs(workspace_id)
+    if pastures is None:
+        print("No pasture boundary uploaded for this account.")
+        return 1
+    cfg = app_settings.public_data.vegetation
+    record = pastures.iloc[0]
+    ring = record["geometry"] if not isinstance(record["geometry"], str) else json.loads(record["geometry"])
+    feature = {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [ring]}}
+    print(f"Pasture: {record['name']} ({float(record['acres']):.1f} ac); provider={cfg.provider}; STAC={cfg.earth_search_stac_url}; "
+          f"collection={cfg.ndvi_default_collection}; max cloud={cfg.ndvi_cloud_cover_max}%")
+    try:
+        import rasterio
+        print(f"1. rasterio {rasterio.__version__}, GDAL {rasterio.__gdal_version__}: OK")
+    except Exception as exc:  # noqa: BLE001
+        print(f"1. rasterio import FAILED: {exc}")
+        return 1
+    end = pd.Timestamp.now().normalize()
+    query = build_earth_search_query(feature, start_date=end - pd.Timedelta(days=90), end_date=end,
+                                     collection=cfg.ndvi_default_collection, cloud_cover_max=cfg.ndvi_cloud_cover_max, limit=20)
+    started = time.time()
+    try:
+        r = requests.post(f"{cfg.earth_search_stac_url.rstrip('/')}/search", json=query, timeout=30,
+                          headers={"Accept": "application/geo+json"})
+        print(f"2. STAC search: HTTP {r.status_code} in {time.time() - started:.1f}s")
+        if r.status_code >= 400:
+            print("   body:", r.text[:400])
+            return 1
+        items = r.json().get("features", [])
+        print(f"   {len(items)} scenes with <= {cfg.ndvi_cloud_cover_max}% cloud in the last 90 days")
+        if not items:
+            return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"2. STAC search FAILED: {exc}")
+        return 1
+    item = items[0]
+    try:
+        assets = select_sentinel_2_assets(item)
+        href = assets["red_asset"]["href"]
+        print(f"3. Newest scene {item.get('id')} ({item['properties'].get('datetime')}), red band: {href}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"3. Scene assets FAILED: {exc}")
+        return 1
+    try:
+        head = requests.get(href, headers={"Range": "bytes=0-1023"}, timeout=30)
+        print(f"4. Image download (first 1 KB): HTTP {head.status_code}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"4. Image download FAILED: {exc}")
+        return 1
+    provider = EarthSearchSTACNDVIProvider(stac_url=cfg.earth_search_stac_url)
+    started = time.time()
+    try:
+        stats = provider._scene_ndvi_stats(item, feature["geometry"], red_asset=assets["red_asset"], nir_asset=assets["nir_asset"])
+        print(f"5. NDVI over the pasture from that scene: {stats['ndvi_mean']:.3f} in {time.time() - started:.1f}s  -> pipeline works")
+    except Exception as exc:  # noqa: BLE001
+        print(f"5. Reading the image over the pasture FAILED after {time.time() - started:.1f}s: {type(exc).__name__}: {exc}")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="RangeIQ admin: run one account's ranch.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -91,9 +160,13 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--force-live", action="store_true", help="Use free live sources even where the account chose 'mock'.")
     b.add_argument("--export", type=Path, help="Also write the DEM GeoTIFF, terrain CSV, aerial photo and snapshot here.")
     b.add_argument("--db", help="App database path.")
+    d = sub.add_parser("diagnose", help="Test the satellite greenness pull step by step for an account.")
+    d.add_argument("email")
     args = parser.parse_args(argv)
 
     user = find_account(args.email)
+    if args.command == "diagnose":
+        return diagnose_greenness(normalize_workspace_id(user.workspace_id))
     info = describe(user)
     print(json.dumps(info, indent=2))
     if args.command == "find":
