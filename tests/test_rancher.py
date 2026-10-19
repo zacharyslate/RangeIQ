@@ -512,3 +512,16 @@ def test_worker_skips_crew_accounts(tmp_path):
     store = AppStore(tmp_path / "app.sqlite")
     store.add_member(hand.user_id, owner.workspace_id, "H")
     assert account_workspaces(tmp_path / "auth.sqlite", store) == [owner.workspace_id]
+
+
+def test_keyless_greenness_source_falls_back_to_free_sentinel2():
+    from ranch_ai.config import Settings
+    from ranch_ai.rancher.worker import usable_providers
+
+    s = Settings()
+    s.public_data.vegetation.provider = "climate_engine"
+    assert usable_providers(s, env={}) and s.public_data.vegetation.provider == "earth_search_stac"
+    s.public_data.vegetation.provider = "climate_engine"
+    assert usable_providers(s, env={"CLIMATE_ENGINE_API_KEY": "k"}) == [] and s.public_data.vegetation.provider == "climate_engine"
+    s.public_data.vegetation.provider = "mock"
+    assert usable_providers(s, env={}) == [] and s.public_data.vegetation.provider == "mock"
