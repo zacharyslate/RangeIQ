@@ -82,6 +82,25 @@ def usable_providers(app_settings: Settings, env: dict | None = None) -> list[st
     return []
 
 
+def ranch_greenness(workspace_id: str, pastures, *, budget_seconds: float | None = None, store=None) -> dict:
+    """Read new Sentinel-2 scenes for the whole ranch (time-limited), then work out each pasture's greenness."""
+    from datetime import date
+
+    from ranch_ai.vegetation.ranch_ndvi import RanchNDVIStore, greenness_anomalies, update_ranch_ndvi
+
+    store = store or RanchNDVIStore(default_settings.vegetation_cache_dir / "ranch_ndvi.sqlite")
+    budget = float(budget_seconds if budget_seconds is not None else os.getenv("RANGEIQ_NDVI_BUDGET_SECONDS", "300"))
+    try:
+        rep = update_ranch_ndvi(store, workspace_id, pastures, budget_seconds=budget)
+    except Exception as exc:  # noqa: BLE001 - greenness must never stop the weather update
+        return {"anomalies": {}, "error": f"Satellite greenness update failed: {type(exc).__name__}", "report": str(exc)[:200]}
+    anomalies = greenness_anomalies(store.history(workspace_id), date.today())
+    note = None
+    if rep.scenes_left:
+        note = f"Still loading satellite history: {rep.scenes_found - rep.scenes_left} of {rep.scenes_found} scenes so far."
+    return {"anomalies": anomalies, "note": note, "error": rep.error, "report": rep.text()}
+
+
 def workspace_inputs(workspace_id: str, base: Settings = default_settings):
     """Settings + pasture boundaries for a workspace, as saved from the desktop console.
 
@@ -139,9 +158,15 @@ def build_workspace(
         terrain_result = TerrainService(app_settings).load(pastures)
         report["terrain"] = {k: terrain_result.status.get(k) for k in ("mode", "resolution_m", "width_px", "height_px", "error")}
 
+    greenness = None
+    if not demo and str(app_settings.public_data.vegetation.provider).lower() == "earth_search_stac":
+        greenness = ranch_greenness(workspace_id, pastures)
+        report["greenness"] = greenness.get("report")
+
     snapshot = build_snapshot(
         app_settings,
         pastures,
+        greenness=greenness,
         logs=store.list_logs(workspace_id, limit=1000),
         photos=store.list_photos(workspace_id, limit=500),
         demo=demo,
@@ -180,7 +205,8 @@ def run(workspaces: list[str], *, store: AppStore, demo: bool = False, include_t
             sources = report.get("sources", {})
             live = sum(1 for v in sources.values() if v == "live")
             print(f"[rangeiq-worker] {workspace_id}: {report['status']}, {report.get('pastures', 0)} pastures, "
-                  f"{live}/{len(sources)} sources live, {time.time() - started:.1f}s")
+                  f"{live}/{len(sources)} sources live, {time.time() - started:.1f}s"
+                  + (f"; {report['greenness']}" if report.get("greenness") else ""))
         except Exception as exc:  # noqa: BLE001 - one bad ranch must not stop the others
             failures += 1
             print(f"[rangeiq-worker] {workspace_id}: FAILED: {exc}", file=sys.stderr)

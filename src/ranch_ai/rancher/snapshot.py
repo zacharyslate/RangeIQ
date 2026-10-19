@@ -12,6 +12,8 @@ Unless ``demo=True`` (a clearly labeled sample ranch), such inputs become
 
 from __future__ import annotations
 
+import copy
+
 import json
 import math
 from datetime import datetime, timezone
@@ -148,7 +150,11 @@ def build_snapshot(
     include_terrain: bool = True,
     terrain_result: Any = None,
     today: pd.Timestamp | None = None,
+    greenness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """`greenness` comes from the ranch-wide Sentinel-2 pull (ranch_ai.vegetation.ranch_ndvi), built by the
+    worker: {"anomalies": {pasture_id: {...}}, "note": str | None, "error": str | None}. When given, it
+    replaces the slow per-pasture NDVI pull (RAP range trends are still loaded as before)."""
     from ranch_ai.rancher.store import herd_days_by_pasture
     from ranch_ai.services.alert_service import AlertService
     from ranch_ai.services.fire_risk_service import assess_fire_risk
@@ -250,7 +256,11 @@ def build_snapshot(
     from ranch_ai.vegetation.vegetation_service import VegetationService
 
     veg_end = (today - pd.Timedelta(days=int(today.weekday()))).normalize()
-    vegetation_artifacts, vegetation_statuses = VegetationService(app_settings).build_artifacts(
+    veg_settings = app_settings
+    if greenness is not None:
+        veg_settings = copy.deepcopy(app_settings)
+        veg_settings.public_data.vegetation.provider = "external"   # NDVI comes from the ranch-wide pull
+    vegetation_artifacts, vegetation_statuses = VegetationService(veg_settings).build_artifacts(
         pastures,
         start_date=veg_end - pd.DateOffset(months=6),
         end_date=veg_end,
@@ -281,8 +291,19 @@ def build_snapshot(
     if va is not None and not va.ndvi_series.empty and "date" in va.ndvi_series:
         for pid, group in va.ndvi_series.groupby("pasture_id"):
             ndvi_asof[str(pid)] = _date(group["date"].max())
-    sources.append(_source_entry("Satellite greenness (Sentinel-2)", nd.mode if nd else None, nd.active_provider if nd else None,
-                                 max((d for d in ndvi_asof.values() if d), default=None), demo, nd.status if nd else None))
+    anomalies: dict[str, dict[str, Any]] = {}
+    if greenness is not None:
+        anomalies = greenness.get("anomalies") or {}
+        ndvi_asof = {pid: a.get("as_of") for pid, a in anomalies.items()}
+        have = [a for a in anomalies.values() if a.get("anomaly_pct") is not None]
+        g_mode = "real" if have else "unavailable"
+        g_note = greenness.get("error") or greenness.get("note") or (
+            None if have else "Building the satellite history: greenness shows once there are clear scenes from at least two earlier years.")
+        sources.append(_source_entry("Satellite greenness (Sentinel-2)", g_mode, "earth_search_stac",
+                                     max((d for d in ndvi_asof.values() if d), default=None), demo, g_note))
+    else:
+        sources.append(_source_entry("Satellite greenness (Sentinel-2)", nd.mode if nd else None, nd.active_provider if nd else None,
+                                     max((d for d in ndvi_asof.values() if d), default=None), demo, nd.status if nd else None))
     rap_year = None
     if not summary.empty and "rap_latest_year" in summary:
         rap_year = summary["rap_latest_year"].dropna().max() if summary["rap_latest_year"].notna().any() else None
@@ -324,8 +345,11 @@ def build_snapshot(
         signals = [
             rain_signal(rain.get("rain_90d_in"), rain.get("normal_90d_in"), rain.get("rain_30d_in"),
                         source=friendly_provider(hw.active_provider if hw else None, hw.mode if hw else None, demo), as_of=rain.get("as_of")),
-            grass_signal(_num(veg.get("ndvi_anomaly_percent"), 0) if veg is not None and nd and usable(nd.mode) else None,
-                         source=friendly_provider("earth_search_stac", nd.mode if nd else None, demo), as_of=ndvi_asof.get(pid)),
+            (grass_signal((anomalies.get(pid) or {}).get("anomaly_pct"), source=friendly_provider("earth_search_stac", "real", demo),
+                          as_of=ndvi_asof.get(pid))
+             if greenness is not None else
+             grass_signal(_num(veg.get("ndvi_anomaly_percent"), 0) if veg is not None and nd and usable(nd.mode) else None,
+                          source=friendly_provider("earth_search_stac", nd.mode if nd else None, demo), as_of=ndvi_asof.get(pid))),
             drought_signal(drought_cat, source=friendly_provider("usdm", dr.mode if dr else None, demo), as_of=drought_asof),
             range_trend_signal(
                 veg.get("rap_perennial_grass_trend") if veg is not None and rp and usable(rp.mode) else None,
