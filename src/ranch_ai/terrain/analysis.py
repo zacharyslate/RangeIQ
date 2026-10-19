@@ -250,13 +250,15 @@ def drape_ring(grid: TerrainGrid, ring_lonlat: list[list[float]], spacing_m: flo
     dense_x.append(xs[-1])
     dense_y.append(ys[-1])
 
-    inverse = ~grid.transform
+    # Map coordinates -> pixel (col, row) with the inverse affine's coefficients directly.
+    # (Avoids `*` / `@` on Affine, whose support differs between affine versions.)
+    inv = ~grid.transform
+    xs_arr, ys_arr = np.asarray(dense_x), np.asarray(dense_y)
+    cols = inv.a * xs_arr + inv.b * ys_arr + inv.c
+    rows = inv.d * xs_arr + inv.e * ys_arr + inv.f
     rows_n, cols_n = grid.elevation_m.shape
-    z: list[float] = []
-    for x, y in zip(dense_x, dense_y):
-        col, row = inverse @ (x, y)
-        r = int(np.clip(np.floor(row), 0, rows_n - 1))
-        c = int(np.clip(np.floor(col), 0, cols_n - 1))
-        z.append(float(grid.elevation_m[r, c]))
+    r = np.clip(np.floor(rows), 0, rows_n - 1).astype(int)
+    c = np.clip(np.floor(cols), 0, cols_n - 1).astype(int)
+    z = grid.elevation_m[r, c].astype(float).tolist()
     minx, miny, _, _ = grid.bounds
     return np.asarray(dense_x) - minx, np.asarray(dense_y) - miny, np.asarray(z)

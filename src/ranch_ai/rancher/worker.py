@@ -128,6 +128,9 @@ def build_workspace(
     report["pastures"] = len(snapshot["pastures"])
     report["acres"] = snapshot["ranch"]["acres"]
     report["sources"] = {s["name"]: ("live" if s.get("live") else "demo" if s.get("demo") else "NOT AVAILABLE") for s in snapshot["sources"]}
+    notes = {s["name"]: s["note"] for s in snapshot["sources"] if s.get("note")}
+    if notes:
+        report["why_not_live"] = notes
 
     if terrain_result is not None and terrain_result.grid is not None and (is_live(terrain_result.status.get("mode")) or demo):
         from ranch_ai.rancher.terrain3d import build_terrain_assets

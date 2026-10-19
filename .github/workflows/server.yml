@@ -1,0 +1,72 @@
+# Deploys RangeIQ to the server on every push to main, and runs safe checks on demand.
+#
+# The SSH key in DROPLET_SSH_PRIVATE_KEY is locked on the server to /usr/local/sbin/rangeiq-remote
+# (see deploy/ubuntu/setup_github_access.sh): it can only deploy / check / refresh / diagnose / show logs.
+# This repo is public, so the server scrubs emails, account ids and coordinates from all output.
+name: Server
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to run on the server"
+        type: choice
+        options: [check, deploy, refresh, diagnose, logs]
+        default: check
+      ref:
+        description: "deploy: branch or tag (default main). logs: rangeiq | rangeiq-api | rangeiq-worker"
+        required: false
+        default: ""
+
+concurrency:
+  group: rangeiq-server
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check the deploy secrets exist
+        env:
+          HOST: ${{ secrets.DROPLET_HOST }}
+          USER_: ${{ secrets.DROPLET_USER }}
+          KEY: ${{ secrets.DROPLET_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$USER_" ] || [ -z "$KEY" ]; then
+            echo "::error::Missing DROPLET_HOST / DROPLET_USER / DROPLET_SSH_PRIVATE_KEY. Run deploy/ubuntu/setup_github_access.sh on the server and add the secrets it prints."
+            exit 1
+          fi
+
+      - name: Prepare SSH
+        env:
+          HOST: ${{ secrets.DROPLET_HOST }}
+          PORT: ${{ secrets.DROPLET_SSH_PORT }}
+          KEY: ${{ secrets.DROPLET_SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${PORT:-22}" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run on the server
+        env:
+          HOST: ${{ secrets.DROPLET_HOST }}
+          PORT: ${{ secrets.DROPLET_SSH_PORT }}
+          USER_: ${{ secrets.DROPLET_USER }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ inputs.action }}
+          REF_INPUT: ${{ inputs.ref }}
+        run: |
+          if [ "$EVENT" = "push" ]; then CMD="deploy main"; else CMD="${ACTION:-check} ${REF_INPUT}"; fi
+          # Only the action words and a simple ref are passed; the server validates them again.
+          case "$CMD" in *[!A-Za-z0-9._/\ -]*) echo "::error::Unsafe input"; exit 2;; esac
+          echo "Requesting: $CMD"
+          ssh -p "${PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 "$USER_@$HOST" "$CMD"

@@ -3442,7 +3442,10 @@ with top_shell_cols[1]:
 
     if terrain_shell is not None:
         with terrain_shell:
-            render_terrain_tab(artifacts.pastures, runtime_settings, theme, field_mode=field_mode)
+            try:
+                render_terrain_tab(artifacts.pastures, runtime_settings, theme, field_mode=field_mode)
+            except Exception as exc:  # noqa: BLE001 - a terrain problem must never take down the dashboard
+                st.error(f"The 3D terrain view hit a problem and was skipped: {type(exc).__name__}: {exc}")
 
     if livestock_shell is not None:
         with livestock_shell:

@@ -219,3 +219,26 @@ def test_pasture_frame_with_string_geometry_is_supported(tmp_path):
     grid = TerrainService(Settings(), cache_dir=tmp_path).load(pastures, provider="mock").grid
     stats = pasture_terrain_stats(grid, pastures)
     assert stats.iloc[0]["dem_pixels"] > 0
+
+
+def test_drape_ring_samples_the_right_cells_without_affine_operators():
+    """drape_ring must match rasterio's own rowcol lookup and not depend on Affine `*`/`@` support."""
+    from rasterio.transform import rowcol
+
+    grid = _plane_grid(0.3, 0.1, size=40, res=2.0)  # tilted plane, 2 m cells
+    ring = [[-103.5, 29.6], [-103.5, 29.6], [-103.5, 29.6], [-103.5, 29.6]]
+    # Build a ring in grid coordinates via a tiny projected square, then compare heights.
+    from rasterio.warp import transform as warp
+    xs = [500010.0, 500050.0, 500050.0, 500010.0, 500010.0]
+    ys = [3000010.0, 3000010.0, 3000060.0, 3000060.0, 3000010.0]
+    lons, lats = warp(f"EPSG:{grid.crs_epsg}", "EPSG:4326", xs, ys)
+    ring = [[lo, la] for lo, la in zip(lons, lats)]
+    dx, dy, dz = drape_ring(grid, ring, spacing_m=4.0)
+    minx, miny, _, _ = grid.bounds
+    for x, y, z in zip(dx + minx, dy + miny, dz):
+        r, c = rowcol(grid.transform, x, y)
+        r = min(max(r, 0), 39); c = min(max(c, 0), 39)
+        assert z == pytest.approx(float(grid.elevation_m[r, c]), abs=1e-3)
+    import inspect
+    from ranch_ai.terrain import analysis
+    assert " @ (" not in inspect.getsource(analysis.drape_ring)

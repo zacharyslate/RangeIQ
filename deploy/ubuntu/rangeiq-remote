@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# RangeIQ remote operations: the ONLY thing the GitHub Actions deploy key may run.
+#
+# Installed by setup_github_access.sh to /usr/local/sbin/rangeiq-remote (root-owned) and
+# bound to the key with an authorized_keys forced command, so the key never gets a shell.
+# SSH passes the requested command in SSH_ORIGINAL_COMMAND; only these are accepted:
+#
+#   deploy [ref]     fetch + checkout ref (default main), reinstall, restart services, health check
+#   check            services, health endpoints, memory/disk, per-ranch status (no personal details)
+#   refresh          run the ranch worker now, then show per-ranch status
+#   diagnose         step through the satellite greenness pull for every ranch
+#   logs [service]   last lines of rangeiq | rangeiq-api | rangeiq-worker
+#
+# Output goes to PUBLIC GitHub Actions logs, so emails, account ids and coordinates are scrubbed.
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/opt/rangeiq}"
+APP_USER="${APP_USER:-rangeiq}"
+PY="${APP_DIR}/.venv/bin/python"
+
+redact() {
+  sed -E \
+    -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/<email>/g' \
+    -e 's/user-[a-z0-9-]{6,}/<ranch>/g' \
+    -e 's/-?[0-9]{1,3}\.[0-9]{4,}/<coord>/g' \
+    -e 's/(bbox|BBOX)=[^ &"]+/\1=<redacted>/g'
+}
+
+as_app() { sudo -u "${APP_USER}" -H "$@"; }
+
+health() {
+  echo "==> Health"
+  for unit in rangeiq rangeiq-api rangeiq-worker.timer; do
+    printf '  %-22s %s\n' "${unit}" "$(systemctl is-active "${unit}" 2>/dev/null || true)"
+  done
+  printf '  %-22s %s\n' "api /api/health" "$(curl -fsS --max-time 10 http://127.0.0.1:8502/api/health 2>/dev/null || echo FAILED)"
+  printf '  %-22s %s\n' "console /_stcore/health" "$(curl -fsS --max-time 10 http://127.0.0.1:8501/_stcore/health 2>/dev/null || echo FAILED)"
+  printf '  %-22s %s\n' "commit" "$(as_app git -C "${APP_DIR}" log -1 --format='%h %s' 2>/dev/null)"
+}
+
+read -r -a ARGS <<< "${SSH_ORIGINAL_COMMAND:-${*:-check}}"
+ACTION="${ARGS[0]:-check}"
+
+case "${ACTION}" in
+  deploy)
+    REF="${ARGS[1]:-main}"
+    [[ "${REF}" =~ ^[A-Za-z0-9._/-]{1,100}$ && "${REF}" != -* && "${REF}" != *..* ]] || { echo "Refusing ref: ${REF}"; exit 2; }
+    echo "==> Deploying ${REF}"
+    BRANCH="${REF}" APP_DIR="${APP_DIR}" APP_USER="${APP_USER}" bash "${APP_DIR}/deploy/ubuntu/update_rangeiq.sh" 2>&1 | redact
+    sleep 3
+    health
+    ;;
+  check)
+    health
+    echo "==> Memory / disk"
+    free -m | sed -n '1,2p'
+    df -h / | tail -1
+    echo "==> Ranches"
+    as_app "${PY}" -m ranch_ai.rancher.admin summary 2>&1 | redact
+    ;;
+  refresh)
+    echo "==> Running the ranch worker now"
+    systemctl start rangeiq-worker.service || true
+    journalctl -u rangeiq-worker.service -n 15 --no-pager -o cat 2>/dev/null | redact
+    echo "==> Ranches"
+    as_app "${PY}" -m ranch_ai.rancher.admin summary 2>&1 | redact
+    ;;
+  diagnose)
+    as_app "${PY}" -m ranch_ai.rancher.admin diagnose-all 2>&1 | redact
+    ;;
+  logs)
+    UNIT="${ARGS[1]:-rangeiq-worker}"
+    [[ "${UNIT}" =~ ^(rangeiq|rangeiq-api|rangeiq-worker)$ ]] || { echo "Unknown service: ${UNIT}"; exit 2; }
+    journalctl -u "${UNIT}" -n 80 --no-pager -o short-iso 2>/dev/null | redact
+    ;;
+  *)
+    echo "Unknown action '${ACTION}'. Allowed: deploy [ref] | check | refresh | diagnose | logs [service]"
+    exit 2
+    ;;
+esac

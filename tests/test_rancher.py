@@ -323,3 +323,81 @@ def test_sign_in_is_throttled_after_repeated_failures(pages_client):
     # Even the right password waits out the window, so guessing can't continue.
     good = pages_client.post("/api/login", json={"email": "zach@example.com", "password": "CorrectHorse9"})
     assert good.status_code == 429
+
+
+# --- satellite greenness: window, thinning, sort fallback ---------------------------------
+def _scene(day: str, cloud: float) -> dict:
+    return {"id": day, "properties": {"datetime": f"{day}T17:00:00Z", "eo:cloud_cover": cloud}}
+
+
+def test_thin_items_keeps_clearest_scenes_per_month():
+    from ranch_ai.vegetation.ndvi_client import thin_items_per_month
+
+    items = [_scene("2026-09-02", 25), _scene("2026-09-07", 1), _scene("2026-09-12", 9), _scene("2026-09-17", 4),
+             _scene("2026-10-02", 30), _scene("2026-10-07", 12)]
+    kept = thin_items_per_month(items, 2)
+    assert [i["id"] for i in kept] == ["2026-09-07", "2026-09-17", "2026-10-02", "2026-10-07"]
+
+
+def test_stac_query_is_newest_first_and_falls_back_without_sort(monkeypatch):
+    from ranch_ai.vegetation.ndvi_client import EarthSearchSTACNDVIProvider, build_earth_search_query
+
+    feature = {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[-103.5, 29.6], [-103.49, 29.6], [-103.49, 29.61], [-103.5, 29.6]]]}}
+    query = build_earth_search_query(feature, start_date="2026-01-01", end_date="2026-10-01")
+    assert query["sortby"] == [{"field": "properties.datetime", "direction": "desc"}]
+
+    sent = []
+
+    class Resp:
+        def __init__(self, code):
+            self.status_code = code
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(self.status_code)
+        def json(self):
+            return {"features": []}
+
+    provider = EarthSearchSTACNDVIProvider(retries=1, backoff_seconds=0)
+    monkeypatch.setattr(provider.session, "post", lambda url, json, **kw: (sent.append(json), Resp(400 if "sortby" in json else 200))[1])
+    assert provider._search_items(query) == {"features": []}
+    assert "sortby" in sent[0] and "sortby" not in sent[1]
+
+
+def test_status_job_gives_greenness_its_own_weekly_window(monkeypatch, tmp_path):
+    import pandas as pd
+    from ranch_ai.config import Settings
+    from ranch_ai.rancher import snapshot as snap_mod
+    from ranch_ai.utils.io import load_pastures
+    from ranch_ai.vegetation.vegetation_service import VegetationService
+
+    calls = {}
+    real = VegetationService.build_artifacts
+
+    def spy(self, pastures, *, start_date, end_date, history_years=None):
+        calls.update(start=pd.Timestamp(start_date), end=pd.Timestamp(end_date), years=history_years)
+        return real(self, pastures, start_date=start_date, end_date=end_date, history_years=history_years)
+
+    monkeypatch.setattr(VegetationService, "build_artifacts", spy)
+    s = Settings()
+    for name in ("historical_weather", "soils", "drought", "vegetation"):
+        getattr(s.public_data, name).provider = "mock"
+    s.weather.provider = s.alerts.provider = "mock"
+    snap_mod.build_snapshot(s, load_pastures(), include_terrain=False, today=pd.Timestamp("2026-10-15"))  # a Thursday
+    assert calls["end"] == pd.Timestamp("2026-10-12")          # Monday: same cache key all week
+    assert calls["start"] == pd.Timestamp("2026-04-12")
+    assert calls["years"] == snap_mod.NDVI_HISTORY_YEARS == 5   # ~5.5 years of Sentinel-2, not 20
+
+
+def test_public_bundle_can_skip_vegetation():
+    import pandas as pd
+    from ranch_ai.config import Settings
+    from ranch_ai.services.public_data_service import PublicDataService
+    from ranch_ai.utils.io import load_pastures
+
+    s = Settings()
+    for name in ("historical_weather", "soils", "drought", "vegetation"):
+        getattr(s.public_data, name).provider = "mock"
+    bundle = PublicDataService(s).load_public_data_bundle(load_pastures(), pd.Timestamp("2026-01-01"), pd.Timestamp("2026-03-01"),
+                                                          include_vegetation=False)
+    assert bundle.vegetation_artifacts is None and bundle.vegetation.empty
+    assert not any(st.component.startswith("Vegetation") for st in bundle.source_status)

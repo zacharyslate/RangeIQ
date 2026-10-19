@@ -112,7 +112,27 @@ def build_earth_search_query(
         "intersects": feature["geometry"],
         "limit": int(limit),
         "query": {"eo:cloud_cover": {"lte": float(cloud_cover_max)}},
+        # Newest first, so a capped result keeps the recent scenes the current status depends on.
+        "sortby": [{"field": "properties.datetime", "direction": "desc"}],
     }
+
+
+def thin_items_per_month(items: list[dict[str, Any]], per_month: int) -> list[dict[str, Any]]:
+    """Keep the `per_month` clearest scenes in each calendar month (ties: newest first)."""
+    if per_month <= 0:
+        return items
+    by_month: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        raw = item.get("properties", {}).get("datetime") or item.get("datetime") or ""
+        by_month.setdefault(str(raw)[:7], []).append(item)
+    kept: list[dict[str, Any]] = []
+    for month_items in by_month.values():
+        def key(it: dict[str, Any]) -> tuple[float, str]:
+            cc = pd.to_numeric(it.get("properties", {}).get("eo:cloud_cover"), errors="coerce")
+            return (float(cc) if pd.notna(cc) else 100.0, "")
+        ordered = sorted(month_items, key=lambda it: str(it.get("properties", {}).get("datetime", "")), reverse=True)
+        kept.extend(sorted(ordered, key=key)[:per_month])
+    return sorted(kept, key=lambda it: str(it.get("properties", {}).get("datetime", "")))
 
 
 def select_sentinel_2_assets(item: dict[str, Any]) -> dict[str, Any]:
@@ -405,7 +425,9 @@ class EarthSearchSTACNDVIProvider(NDVIProvider):
         timeout_seconds: int = 20,
         retries: int = 2,
         backoff_seconds: float = 0.5,
+        max_scenes_per_month: int = 2,
     ):
+        self.max_scenes_per_month = int(max_scenes_per_month)
         self.stac_url = stac_url.rstrip("/")
         self.default_collection = default_collection
         self.default_cloud_cover_max = float(default_cloud_cover_max)
@@ -435,6 +457,10 @@ class EarthSearchSTACNDVIProvider(NDVIProvider):
                     headers={"Accept": "application/geo+json"},
                     timeout=self.timeout_seconds,
                 )
+                if response.status_code == 400 and "sortby" in query:
+                    # Server without the STAC sort extension: retry once without sorting.
+                    query = {k: v for k, v in query.items() if k != "sortby"}
+                    continue
                 response.raise_for_status()
                 return response.json()
             except Exception as exc:
@@ -542,6 +568,9 @@ class EarthSearchSTACNDVIProvider(NDVIProvider):
         filtered_items = self._filter_items_by_cloud_cover(items, cloud_limit)
         if not filtered_items:
             raise ValueError("Earth Search STAC returned scenes, but all were above the allowed cloud-cover threshold.")
+        # Monthly NDVI needs a few clear scenes per month, not every overpass. Keeping the clearest
+        # ones bounds the number of remote reads (two image reads per scene).
+        filtered_items = thin_items_per_month(filtered_items, self.max_scenes_per_month)
 
         rows: list[dict[str, object]] = []
         warnings: list[str] = []
