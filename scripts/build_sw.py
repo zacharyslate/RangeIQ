@@ -54,12 +54,14 @@ const TILES = "rangeiq-tiles";
 const LAZY = VERSION + "-lazy";        // 3D library: fetched on first use, replaced with each release
 const TERRAIN = "rangeiq-terrain";     // last 3D terrain data, for opening 3D with no signal
 const TILE_MAX = 600;
+const PHOTOS = "rangeiq-photos";       // crew photos seen on this phone, for looking at them with no signal
+const PHOTO_MAX = 400;
 
 self.addEventListener("install", e => {{
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(PRECACHE.map(u => new Request(u, {{cache: "reload"}})))).then(() => self.skipWaiting()));
 }});
 self.addEventListener("activate", e => {{
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => ![VERSION, LAZY, TILES, TERRAIN].includes(k)).map(k => caches.delete(k))))
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => ![VERSION, LAZY, TILES, TERRAIN, PHOTOS].includes(k)).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 }});
 
@@ -77,6 +79,18 @@ self.addEventListener("fetch", e => {{
   if (url.pathname.includes("/api/terrain/")) {{
     e.respondWith(fetch(req).then(r => {{ if (r.ok) {{ const copy = r.clone(); caches.open(TERRAIN).then(c => c.put(req, copy)); }} return r; }})
       .catch(() => caches.match(req)));
+    return;
+  }}
+  // Ranch photos: signed links change, so keep them by photo and size, not by the full link.
+  if (url.pathname.includes("/api/photo-file/")) {{
+    const key = new Request(url.origin + url.pathname + "?kind=" + (url.searchParams.get("kind") || "image"));
+    e.respondWith(caches.open(PHOTOS).then(async c => {{
+      const hit = await c.match(key);
+      if (hit) return hit;
+      const r = await fetch(req);
+      if (r.ok || r.type === "opaque") {{ c.put(key, r.clone()); trim(c, PHOTO_MAX); }}
+      return r;
+    }}).catch(() => Response.error()));
     return;
   }}
   // Other ranch data and logs: always the network; the app keeps its own saved copy for offline use.

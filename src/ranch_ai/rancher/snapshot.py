@@ -23,6 +23,7 @@ import pandas as pd
 from ranch_ai.config import Settings
 from ranch_ai.rancher.status import (
     combine,
+    field_report_signal,
     drought_signal,
     grass_signal,
     occupancy_signal,
@@ -141,6 +142,7 @@ def build_snapshot(
     pastures: pd.DataFrame,
     *,
     logs: list[dict[str, Any]] | None = None,
+    photos: list[dict[str, Any]] | None = None,
     history_years: int = 10,
     demo: bool = False,
     include_terrain: bool = True,
@@ -335,6 +337,11 @@ def build_snapshot(
         occ = occupancy_signal(herd_info.get("days_in"), herd_info.get("days_rested"))
         if occ is not None:
             signals.append(occ)
+        reports = [p for p in (photos or []) if p.get("pasture_id") == pid] + \
+                  [l for l in (logs or []) if l.get("kind") == "note" and l.get("pasture_id") == pid and l.get("tags")]
+        field = field_report_signal(reports)
+        if field is not None:
+            signals.insert(0, field)
         status = combine(signals)
         out_pastures.append({
             "id": pid,

@@ -1,10 +1,9 @@
-/* RangeIQ phone app. Plain JavaScript, no build step (same approach as the Marfa Lights app).
-   Data flow: the nightly worker writes a ranch snapshot -> GET /api/snapshot -> cached on the phone.
-   Logs are saved on the phone first, then POSTed (idempotent by client_id) whenever there is signal. */
+/* RangeIQ phone app (ranch-hand edition). Plain JavaScript, no build step.
+   Server (rangeiq.org) does the processing; the app shows results, takes photos and logs work.
+   Everything a hand records is saved on the phone first and sent when there's signal. */
 (function () {
   "use strict";
   const $ = id => document.getElementById(id);
-  // Where the ranch data lives. config.js sets this when the app is hosted apart from the server (GitHub Pages).
   const API = new URL(window.RANGEIQ_API || "../api/", location.href).href;
   const store = {
     get(k, d) { try { const v = localStorage.getItem("riq." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -12,167 +11,231 @@
     del(k) { try { localStorage.removeItem("riq." + k); } catch (e) {} }
   };
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-  const STATUS = {
-    good: {word: "Good", icon: "✓"}, watch: {word: "Watch", icon: "!"}, act: {word: "Act", icon: "!!"}, unknown: {word: "No data", icon: "?"}
-  };
+  const STATUS = {good: {word: "Good", icon: "✓"}, watch: {word: "Watch", icon: "!"}, act: {word: "Act", icon: "!!"}, unknown: {word: "No data", icon: "?"}};
   const LEVEL = {ok: "✓", watch: "!", concern: "!!", unavailable: "–"};
-  let snap = store.get("snapshot", null);
-  let snapFetchedAt = store.get("snapshotAt", null);
-  let currentPasture = null;
-  let map = null, mapLayers = [];
-  let terrainView = null, terrainFocus = null, terrainReturn = "pastures", terrainExag = 2;
+  const PROBLEM_TAGS = ["Water low", "Trough or tank problem", "Fence down", "Gate open", "Sick or hurt animal", "Dead animal",
+    "Short or overgrazed grass", "Weeds or brush", "Erosion or washout"];
+  const GOOD_TAGS = ["Water OK", "Good grass"];
+  const COLOR = {good: "#2e9d55", watch: "#e0a21b", act: "#d63c2f", unknown: "#8a8f96"};
 
-  // ---------------------------------------------------------------- helpers
-  function uid() { return (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).slice(0, 36); }
+  let snap = store.get("snapshot", null), snapAt = store.get("snapshotAt", null);
+  let me = store.get("me", null);
+  let photos = store.get("photos", []), serverLogs = store.get("serverLogs", []);
+  let pending = [];                      // photos waiting to upload (from IndexedDB), with object URLs
+  let currentPasture = null, photoHere = null;
+  let map = null, mapLayers = [], view3d = null;
+  let mapMode = store.get("mapMode", "2d"), look = store.get("look", "photo"), exag = 2, showPhotos = true, logFilter = "all";
+
+  // ---------------------------------------------------------------- small helpers
+  const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9-]/g, "").slice(0, 36);
   function when(iso, withTime = true) {
     if (!iso) return "";
     if (/^\d{4}$/.test(String(iso))) return String(iso);
-    const d = new Date(iso.length === 10 ? iso + "T12:00:00" : iso); if (isNaN(d)) return iso;
-    const today = new Date(); const yday = new Date(Date.now() - 864e5);
-    const same = (a, b) => a.toDateString() === b.toDateString();
+    const d = new Date(String(iso).length === 10 ? iso + "T12:00:00" : iso); if (isNaN(d)) return iso;
+    const mins = (Date.now() - d) / 6e4;
+    if (withTime && mins >= 0 && mins < 1) return "just now";
+    if (withTime && mins >= 0 && mins < 60) return Math.round(mins) + " min ago";
+    const today = new Date(), yday = new Date(Date.now() - 864e5), same = (a, b) => a.toDateString() === b.toDateString();
     const t = d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
     if (same(d, today)) return withTime ? "today " + t : "today";
     if (same(d, yday)) return withTime ? "yesterday " + t : "yesterday";
     return d.toLocaleDateString([], {month: "short", day: "numeric", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric"}) + (withTime ? " " + t : "");
   }
-  function toast(msg) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
-  function authHeaders(extra = {}) {
-    const token = store.get("token", null);
-    return token ? {...extra, "Authorization": "Bearer " + token} : extra;
+  function toast(msg) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2800); }
+  const compass = h => h == null ? "" : ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(((h % 360) + 360) % 360 / 45) % 8];
+  function metres(a, b) {
+    const R = 6371000, r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+    const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(x));
   }
+  function pastureAt(lon, lat) {
+    for (const p of (snap && snap.pastures) || []) {
+      let inside = false; const ring = p.outline;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i], [xj, yj] = ring[j];
+        if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+      }
+      if (inside) return p.id;
+    }
+    return null;
+  }
+  const pastureName = id => { const p = ((snap && snap.pastures) || []).find(x => x.id === id); return p ? p.name : (id || ""); };
+  const isOwner = () => !me || me.role !== "crew";
+
+  // ---------------------------------------------------------------- API
+  function authHeaders(extra = {}) { const t = store.get("token", null); return t ? {...extra, Authorization: "Bearer " + t} : extra; }
   async function api(path, opts = {}) {
-    const res = await fetch(API + path, {credentials: "same-origin", ...opts, headers: authHeaders({"Content-Type": "application/json", ...(opts.headers || {})})});
-    if (res.status === 401 && path !== "login") { store.del("token"); const e = new Error("signin"); e.signin = true; throw e; }
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || ("HTTP " + res.status));
+    const headers = opts.body instanceof FormData ? authHeaders(opts.headers || {}) : authHeaders({"Content-Type": "application/json", ...(opts.headers || {})});
+    const res = await fetch(API + path, {credentials: "same-origin", ...opts, headers});
+    if (res.status === 401 && !["login", "join"].includes(path)) { store.del("token"); const e = new Error("signin"); e.signin = true; throw e; }
+    if (!res.ok) { const e = new Error((await res.json().catch(() => ({}))).detail || ("HTTP " + res.status)); e.status = res.status; throw e; }
     return res.json();
   }
-  function pastureName(id) { const p = (snap && snap.pastures || []).find(x => x.id === id); return p ? p.name : (id || ""); }
+  async function getBytes(path) {
+    const res = await fetch(API + path, {credentials: "same-origin", headers: authHeaders()});
+    if (res.status === 401) { const e = new Error("signin"); e.signin = true; throw e; }
+    if (!res.ok) throw new Error(res.status === 404 ? "notready" : "HTTP " + res.status);
+    return {bytes: await res.arrayBuffer(), mime: res.headers.get("Content-Type") || ""};
+  }
+  const fileUrl = rel => new URL(rel, API).href;
+
+  // ---------------------------------------------------------------- photo queue (IndexedDB: photos are too big for localStorage)
+  const idb = {
+    db: null,
+    open() {
+      if (this.db) return Promise.resolve(this.db);
+      return new Promise((ok, fail) => {
+        const r = indexedDB.open("rangeiq", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("photos", {keyPath: "client_id"});
+        r.onsuccess = () => { this.db = r.result; ok(this.db); };
+        r.onerror = () => fail(r.error);
+      });
+    },
+    async run(mode, fn) {
+      const db = await this.open();
+      return new Promise((ok, fail) => { const t = db.transaction("photos", mode); const req = fn(t.objectStore("photos")); t.oncomplete = () => ok(req && req.result); t.onerror = () => fail(t.error); });
+    },
+    put(rec) { return this.run("readwrite", s => s.put(rec)); },
+    del(id) { return this.run("readwrite", s => s.delete(id)); },
+    all() { return this.run("readonly", s => s.getAll()); }
+  };
+  async function loadPending() {
+    pending.forEach(p => { URL.revokeObjectURL(p.thumbUrl); URL.revokeObjectURL(p.imageUrl); });
+    try { pending = (await idb.all() || []).map(r => ({...r.meta, client_id: r.client_id, _pending: true,
+      thumbUrl: URL.createObjectURL(r.thumb), imageUrl: URL.createObjectURL(r.photo)})); } catch (e) { pending = []; }
+  }
+  const allPhotos = () => [...pending, ...photos.filter(p => !pending.some(q => q.client_id === p.client_id))]
+    .sort((a, b) => String(b.taken_at).localeCompare(String(a.taken_at)));
+  // Photos from the same spot (a "photo point") share one pin; the photo sheet shows that spot over time.
+  const SPOT_M = 15;
+  function spots(list) {
+    const out = [];
+    for (const p of list) {                    // newest first
+      if (p.lat == null) continue;
+      const s = out.find(x => metres(x, p) <= SPOT_M);
+      if (s) s.n++; else out.push({lat: p.lat, lon: p.lon, heading_deg: p.heading_deg, flagged: p.flagged, client_id: p.client_id, taken_at: p.taken_at, n: 1});
+    }
+    return out;
+  }
+  const sameSpot = p => p.lat == null ? [p] : allPhotos().filter(x => x.lat != null && metres(x, p) <= 35);
+  const thumbOf = p => p._pending ? p.thumbUrl : fileUrl(p.thumb_url);
+  const imageOf = p => p._pending ? p.imageUrl : fileUrl(p.image_url);
 
   // ---------------------------------------------------------------- views
-  const TABS = ["today", "pastures", "log", "more"];
+  const TABS = ["home", "map", "log", "more"];
+  const OLD = {today: "home", pastures: "map", terrain: "map"};
   function show(view) {
+    view = OLD[view] || view || "home";
+    if (view.startsWith("act-")) { setTimeout(() => act(view.slice(4)), 80); view = "home"; }
+    if (view.startsWith("log-")) { setTimeout(() => act(view.slice(4)), 80); view = "home"; }
     let tab = view;
-    if (view.startsWith("log-")) { tab = "log"; setTimeout(() => openLog(view.slice(4)), 50); }
     if (view.startsWith("pasture-")) { currentPasture = decodeURIComponent(view.slice(8)); tab = "pasture"; }
-    if (view === "terrain" || view.startsWith("terrain-")) {
-      terrainFocus = view.startsWith("terrain-") ? decodeURIComponent(view.slice(8)) : null;
-      terrainReturn = terrainFocus ? "pasture-" + encodeURIComponent(terrainFocus) : "pastures"; tab = "terrain";
-    }
-    if (tab !== "terrain" && terrainView) { terrainView.dispose(); terrainView = null; }
-    if (!["login", "pasture", "terrain", ...TABS].includes(tab)) tab = "today";
+    if (!["login", "pasture", ...TABS].includes(tab)) tab = "home";
+    if (tab !== "map" && view3d) { view3d.dispose(); view3d = null; }
     document.querySelectorAll(".view").forEach(v => { v.hidden = v.id !== "v-" + tab; });
-    document.querySelectorAll(".tabs [data-tab]").forEach(b => b.toggleAttribute("aria-current", b.dataset.tab === (["pasture", "terrain"].includes(tab) ? "pastures" : tab)));
-    document.querySelectorAll(".tabs [data-tab]").forEach(b => { if (b.hasAttribute("aria-current")) b.setAttribute("aria-current", "page"); });
+    document.querySelectorAll(".tabs [data-tab]").forEach(b => {
+      const on = b.dataset.tab === (tab === "pasture" ? "map" : tab);
+      if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    });
     document.querySelector(".tabs").hidden = tab === "login";
-    const hash = tab === "pasture" ? "pasture-" + encodeURIComponent(currentPasture)
-      : tab === "terrain" ? (terrainFocus ? "terrain-" + encodeURIComponent(terrainFocus) : "terrain") : tab;
-    if (location.hash !== "#" + hash && !view.startsWith("log-")) history.replaceState(null, "", "#" + hash);
-    if (tab === "pastures") renderPastures();
-    if (tab === "pasture") renderPasture();
-    if (tab === "log") renderLog();
-    if (tab === "more") renderMore();
-    if (tab === "terrain") renderTerrain();
+    const hash = tab === "pasture" ? "pasture-" + encodeURIComponent(currentPasture) : tab;
+    if (location.hash !== "#" + hash) history.replaceState(null, "", "#" + hash);
+    ({home: renderHome, map: renderMap, pasture: renderPasture, log: renderLog, more: renderMore}[tab] || (() => {}))();
     window.scrollTo(0, 0);
   }
   document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => show(b.dataset.tab));
   document.addEventListener("click", e => {
     const go = e.target.closest("[data-go]"); if (go) { show(go.dataset.go); return; }
     const p = e.target.closest("[data-pasture]"); if (p) { show("pasture-" + encodeURIComponent(p.dataset.pasture)); return; }
-    const lg = e.target.closest("[data-log]"); if (lg) openLog(lg.dataset.log, lg.dataset.here ? currentPasture : null);
+    const ph = e.target.closest("[data-photo]"); if (ph) { openPhoto(ph.dataset.photo); return; }
+    const a = e.target.closest("[data-act]"); if (a) act(a.dataset.act, a.dataset.here ? currentPasture : null);
   });
   window.addEventListener("hashchange", () => show(location.hash.slice(1)));
 
-  // ---------------------------------------------------------------- banner (offline / demo / stale)
   function setBanner() {
-    const b = $("banner"); const parts = []; let demo = false;
-    if (snap && snap.demo) { demo = true; parts.push("Demo data: RangeIQ couldn't reach its data sources, so these numbers are examples, not your ranch."); }
-    if (!navigator.onLine) parts.push("No signal. Showing what was saved " + (snapFetchedAt ? when(snapFetchedAt) : "earlier") + ".");
-    b.hidden = !parts.length; b.textContent = parts.join(" "); b.classList.toggle("demo", demo && navigator.onLine);
+    const b = $("banner"), parts = [];
+    if (snap && snap.demo) parts.push("Demo data: these numbers are examples, not your ranch.");
+    if (!navigator.onLine) parts.push("No signal. Showing what was saved " + (snapAt ? when(snapAt) : "earlier") + ". Photos and logs will send later.");
+    b.hidden = !parts.length; b.textContent = parts.join(" "); b.classList.toggle("demo", !!(snap && snap.demo) && navigator.onLine);
   }
-  window.addEventListener("online", () => { setBanner(); refresh(); sync(); });
+  window.addEventListener("online", () => { setBanner(); refresh(); syncAll(); });
   window.addEventListener("offline", setBanner);
 
   // ---------------------------------------------------------------- data
   async function refresh() {
     try {
       const data = await api("snapshot");
-      if (data.pending || data.setup_needed) {
-        snap = null; store.del("snapshot"); renderToday(); $("t-sum").textContent = data.message;
-        $("t-weather").innerHTML = "<h2>Getting started</h2><p class='dim'>" + esc(data.message) + "</p>"; return;
-      }
-      snap = data; snapFetchedAt = new Date().toISOString();
-      store.set("snapshot", snap); store.set("snapshotAt", snapFetchedAt);
-      renderToday();
-      api("logs").then(rows => { store.set("serverLogs", rows); if (!$("v-log").hidden) renderLog(); if (!$("v-pasture").hidden) renderPasture(); }).catch(() => {});
+      if (data.pending || data.setup_needed) { snap = null; store.del("snapshot"); store.set("setupMsg", data.message); }
+      else { snap = data; snapAt = new Date().toISOString(); store.set("snapshot", snap); store.set("snapshotAt", snapAt); store.del("setupMsg"); }
+      const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs)]);
+      me = m; photos = ph; serverLogs = lg;
+      store.set("me", me); store.set("photos", photos); store.set("serverLogs", serverLogs);
     } catch (e) {
       if (e.signin) { show("login"); return; }
-      renderToday();  // offline or server down: keep showing the saved snapshot
-    } finally { setBanner(); }
+    } finally { setBanner(); rerender(); }
+  }
+  function rerender() {
+    const v = [...document.querySelectorAll(".view")].find(x => !x.hidden);
+    if (!v) return;
+    ({"v-home": renderHome, "v-pasture": renderPasture, "v-log": renderLog, "v-more": renderMore}[v.id] || (() => {}))();
+    if (v.id === "v-map" && mapMode === "2d") renderMap();
+    updateSyncPill();
   }
 
-  // ---------------------------------------------------------------- TODAY
-  function prow(p) {
-    const s = STATUS[p.status] || STATUS.unknown;
-    return `<li><button type="button" class="prow ${esc(p.status)}" data-pasture="${esc(p.id)}">
-      <span class="badge" aria-hidden="true">${s.icon}</span><b>${esc(p.name)} <span class="chip ${esc(p.status)}">${s.word}</span></b>
-      <span class="go" aria-hidden="true">›</span><span class="why">${esc(p.headline)}</span></button></li>`;
-  }
-  function renderToday() {
-    if (!snap) { $("t-pastures").innerHTML = ""; $("t-counts").innerHTML = ""; $("t-weather").innerHTML = "<p class='dim'>Waiting for the first nightly update…</p>"; $("t-rain").hidden = true; return; }
-    $("brandName").textContent = snap.ranch.name || "RangeIQ";
-    $("t-updated").textContent = "Updated " + when(snap.generated_at);
-    $("t-h").textContent = snap.ranch.name;
-    const c = snap.counts || {};
-    const n = snap.pastures.length;
-    $("t-sum").textContent = c.act ? `${c.act} of ${n} pasture${n > 1 ? "s" : ""} need${c.act === 1 ? "s" : ""} action.` :
-      c.watch ? `${c.watch} of ${n} pasture${n > 1 ? "s" : ""} to watch.` :
-      c.good === n ? "No warning signs in any pasture." : "Not enough data yet to judge every pasture.";
-    $("t-counts").innerHTML = ["act", "watch", "good", "unknown"].filter(k => c[k]).map(k => `<span class="chip ${k}">${STATUS[k].icon} ${c[k]} ${STATUS[k].word}</span>`).join("");
-    $("t-pastures").innerHTML = snap.pastures.map(prow).join("");
-
-    // alerts
-    const al = snap.alerts || [];
-    $("t-alerts").hidden = !al.length;
-    $("t-alerts").innerHTML = "<h2>Weather alerts</h2>" + al.map(a => `<div class="alert ${/severe|extreme/i.test(a.severity) ? "" : "minor"}">
-      <b>${esc(a.event)}</b><span class="dim">${esc(a.headline)}</span>${a.what_it_means ? `<span>${esc(a.what_it_means)}</span>` : ""}
-      ${a.expires ? `<span class="src">Until ${esc(when(a.expires))}</span>` : ""}</div>`).join("");
-
-    // weather
-    const w = snap.weather;
-    if (!w) { $("t-weather").innerHTML = "<h2>Weather</h2><p class='dim'>Forecast not available right now.</p>"; }
-    else {
-      const fc = (w.forecast || []).slice(0, innerWidth < 560 ? 5 : 7).map(d => {
-        const day = new Date(d.date + "T12:00:00").toLocaleDateString([], {weekday: "short"});
-        return `<div><span>${esc(day)}</span><b>${d.high_f ?? "–"}°</b><span class="dim">${d.low_f ?? "–"}°</span><span class="src">${d.rain_chance_pct != null ? d.rain_chance_pct + "%" : ""}</span></div>`;
-      }).join("");
-      $("t-weather").innerHTML = `<h2>Weather</h2><div class="tiles">
-        <div class="tile"><span>Now</span><b>${w.temp_f ?? "–"}°F</b><span>${esc(w.label || "")}</span></div>
-        <div class="tile"><span>Wind</span><b>${w.wind_mph ?? "–"} mph</b><span>${w.gust_mph ? "gusts " + w.gust_mph + " mph" : ""} ${esc(w.wind_dir || "")}</span></div></div>
-        <div class="fc" aria-label="Seven day forecast: day, high, low, chance of rain">${fc}</div>`;
+  // ---------------------------------------------------------------- HOME
+  function renderHome() {
+    $("brandName").textContent = (snap && snap.ranch.name) || (me && me.ranch) || "RangeIQ";
+    $("h-h").textContent = (snap && snap.ranch.name) || "Today";
+    $("h-updated").textContent = snap ? "Updated " + when(snap.generated_at) : "";
+    const box = $("h-attention");
+    if (!snap) {
+      box.innerHTML = `<h2>Getting started</h2><p class="dim">${esc(store.get("setupMsg", "") || "Waiting for the first ranch update…")}</p>`;
+      $("h-weather").hidden = true; return;
     }
-
-    // rain vs normal
-    const r = snap.rain;
-    $("t-rain").hidden = false;
-    if (!r || r.rain_90d_in == null) { $("t-rain").innerHTML = "<h2>Rain</h2><p class='dim'>Rain history not available right now.</p>"; }
-    else {
-      const pct = r.normal_90d_in ? Math.round(100 * r.rain_90d_in / r.normal_90d_in) : null;
-      const fill = pct == null ? 0 : Math.min(100, pct / 1.5);
-      $("t-rain").innerHTML = `<h2>Rain, last 90 days</h2>
-        <p><b style="font-size:1.4rem">${r.rain_90d_in.toFixed(1)} in</b> ${pct != null ? `· <b>${pct}%</b> of normal (${r.normal_90d_in.toFixed(1)} in)` : ""}</p>
-        ${pct != null ? `<div class="meter" role="img" aria-label="${pct} percent of normal"><i style="width:${fill}%"></i><s style="left:${100 / 1.5}%"></s></div>` : ""}
-        <p class="dim">Last 30 days: ${r.rain_30d_in != null ? r.rain_30d_in.toFixed(2) + " in" : "–"}.</p>
-        <p class="src">Gridded rain estimate through ${esc(when(r.as_of, false))}, compared with the same 90 days in the past ${r.normal_years} years. Your own gauge readings are in the Log.</p>`;
+    const items = [];
+    (snap.alerts || []).forEach(a => items.push({cls: "alert", lead: "⚡", title: a.event, why: a.what_it_means || a.headline}));
+    if (snap.fire && !/low/i.test(snap.fire.level)) items.push({cls: "watch", lead: "🔥", title: "Fire danger: " + snap.fire.level, why: (snap.fire.drivers || []).join(" · ")});
+    const cutoff = Date.now() - 3 * 864e5;
+    allPhotos().filter(p => p.flagged && new Date(p.taken_at) > cutoff).slice(0, 3).forEach(p => items.push({
+      cls: "act", lead: "📷", title: (p.tags || []).filter(t => PROBLEM_TAGS.includes(t)).join(", ") || "Flagged photo",
+      why: `${p.pasture_id ? pastureName(p.pasture_id) + " · " : ""}${p.by ? p.by + " · " : ""}${when(p.taken_at)}`, photo: p.client_id}));
+    // Problems the crew reported in the last 3 days, before the server's next update folds them into pasture status.
+    const seen = new Set(items.filter(i => i.photo).map(i => i.photo));
+    logItems().filter(i => i.type === "problem" && new Date(i.at) > cutoff && (i.l.tags || []).some(t => PROBLEM_TAGS.includes(t)) && !seen.has(i.l.client_id))
+      .slice(0, 3).forEach(i => items.push({cls: "act", lead: "⚠️", title: i.l.tags.filter(t => PROBLEM_TAGS.includes(t)).join(", "),
+        why: `${i.l.pasture_id ? pastureName(i.l.pasture_id) + " · " : ""}${i.l.by ? i.l.by + " · " : ""}${when(i.at)}${i.l.text ? " · " + i.l.text : ""}`,
+        pasture: i.l.pasture_id || null, go: "log"}));
+    // Pastures: worst first; pastures with the same reason are grouped so the list stays short.
+    const groups = new Map();
+    snap.pastures.filter(p => p.status === "act" || p.status === "watch")
+      .sort((a, b) => (a.status === "act" ? 0 : 1) - (b.status === "act" ? 0 : 1))
+      .forEach(p => { const why = p.headline.replace(/^(Act|Watch):\s*/, ""), k = p.status + "|" + why;
+        if (!groups.has(k)) groups.set(k, {status: p.status, why, list: []}); groups.get(k).list.push(p); });
+    for (const g of groups.values()) {
+      if (g.list.length === 1) items.push({cls: g.status, lead: STATUS[g.status].icon, title: g.list[0].name, why: g.why, pasture: g.list[0].id});
+      else items.push({cls: g.status, lead: STATUS[g.status].icon, title: `${g.list.length === snap.pastures.length ? "All" : g.list.length} pastures: ${STATUS[g.status].word}`,
+        why: `${g.why} (${g.list.map(p => p.name).join(", ")})`, go: "map"});
     }
-
-    // fire
-    const f = snap.fire;
-    $("t-fire").hidden = !f;
-    if (f) $("t-fire").innerHTML = `<h2>Fire danger: ${esc(f.level)}</h2>${(f.drivers || []).length ? `<p>${f.drivers.map(esc).join(" · ")}</p>` : "<p class='dim'>No fire-weather triggers in the forecast data.</p>"}
-      ${(f.actions || []).map(a => `<p class="dim">${esc(a)}</p>`).join("")}<p class="src">Follow official burn bans and fire warnings.</p>`;
+    if (!items.length) {
+      box.innerHTML = `<div class="allclear"><span class="big-ok" aria-hidden="true">✓</span><span>All clear. Nothing needs attention.</span></div>`;
+    } else {
+      box.innerHTML = `<h2>Needs attention</h2><ul class="attn">${items.slice(0, 7).map(i => `<li><button type="button" class="${i.cls}"
+        ${i.pasture ? `data-pasture="${esc(i.pasture)}"` : i.photo ? `data-photo="${esc(i.photo)}"` : `data-go="${i.go || "map"}"`}>
+        <span class="lead" aria-hidden="true">${i.lead}</span><b>${esc(i.title)}</b><span class="go" aria-hidden="true">›</span>
+        <span class="why">${esc(i.why || "")}</span></button></li>`).join("")}</ul>`;
+    }
+    const w = snap.weather, r = snap.rain, wx = $("h-weather"); wx.hidden = false;
+    if (!w) { wx.innerHTML = "<h2>Weather</h2><p class='dim'>Forecast not available right now.</p>"; return; }
+    const today = (w.forecast || [])[0] || {};
+    const pct = r && r.normal_90d_in ? Math.round(100 * r.rain_90d_in / r.normal_90d_in) : null;
+    wx.innerHTML = `<div class="wx"><span class="now">${w.temp_f ?? "–"}°</span><span><b>${esc(w.label || "")}</b><br>
+        <span class="dim">Wind ${w.wind_mph ?? "–"} mph${w.gust_mph ? ", gusts " + w.gust_mph : ""} · Rain ${today.rain_chance_pct ?? "–"}%</span></span></div>
+      <div class="wx3">${(w.forecast || []).slice(1, 4).map(d => `<div><span>${esc(new Date(d.date + "T12:00:00").toLocaleDateString([], {weekday: "short"}))}</span>
+        <b>${d.high_f ?? "–"}° / ${d.low_f ?? "–"}°</b><span class="dim">${d.rain_chance_pct ?? "–"}% rain</span></div>`).join("")}</div>
+      ${pct != null ? `<p class="dim">Rain last 90 days: <b>${r.rain_90d_in.toFixed(1)} in</b>, ${pct}% of normal.</p>` : ""}`;
   }
 
-  // ---------------------------------------------------------------- PASTURES (map loads only when needed)
+  // ---------------------------------------------------------------- MAP (2D Leaflet / 3D three.js)
   function loadLeaflet() {
     if (window.L) return Promise.resolve();
     return new Promise((ok, fail) => {
@@ -180,216 +243,442 @@
       const s = document.createElement("script"); s.src = "vendor/leaflet/leaflet.js"; s.onload = ok; s.onerror = fail; document.head.appendChild(s);
     });
   }
-  const COLOR = {good: "#1f6b3a", watch: "#c98a00", act: "#c0392b", unknown: "#777"};
-  async function renderPastures() {
-    $("p-list").innerHTML = snap ? snap.pastures.map(prow).join("") : "<li class='dim'>No pastures yet.</li>";
-    if (!snap || !snap.pastures.length) return;
+  function prow(p) {
+    const s = STATUS[p.status] || STATUS.unknown;
+    return `<li><button type="button" class="prow ${esc(p.status)}" data-pasture="${esc(p.id)}">
+      <span class="badge" aria-hidden="true">${s.icon}</span><b>${esc(p.name)} <span class="chip ${esc(p.status)}">${s.word}</span></b>
+      <span class="go" aria-hidden="true">›</span><span class="why">${esc(p.headline)}</span></button></li>`;
+  }
+  function setPressed(sel, attr, val) { document.querySelectorAll(sel).forEach(b => b.setAttribute("aria-pressed", String(b.dataset[attr] === String(val)))); }
+  async function renderMap() {
+    setPressed("[data-mapmode]", "mapmode", mapMode); setPressed("[data-look]", "look", look);
+    $("photosToggle").setAttribute("aria-pressed", String(showPhotos));
+    $("lookSeg").hidden = $("exagRow").hidden = mapMode !== "3d";
+    $("map").hidden = mapMode !== "2d"; $("map3d").hidden = mapMode !== "3d";
+    $("m-list").innerHTML = snap ? snap.pastures.map(prow).join("") : "";
+    if (!snap) { $("map-src").textContent = "No ranch data yet."; return; }
+    if (mapMode === "3d") return render3d();
+    if (view3d) { view3d.dispose(); view3d = null; }
+    $("map-src").textContent = "Imagery: USGS The National Map. Tap a pasture or a photo.";
     try { await loadLeaflet(); } catch (e) { $("map").innerHTML = "<p class='dim' style='padding:16px'>Map couldn't load. The list below still works.</p>"; return; }
     if (!map) {
-      map = L.map("map", {zoomControl: true, attributionControl: true});
+      map = L.map("map", {zoomControl: true});
       L.tileLayer("https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
         {maxZoom: 19, maxNativeZoom: 16, attribution: "USGS The National Map"}).addTo(map);
     }
     mapLayers.forEach(l => l.remove()); mapLayers = [];
     const all = [];
     snap.pastures.forEach(p => {
-      const latlngs = p.outline.map(([lon, lat]) => [lat, lon]); all.push(...latlngs);
-      const poly = L.polygon(latlngs, {color: "#fff", weight: 2, fillColor: COLOR[p.status] || "#777", fillOpacity: .45})
-        .on("click", () => show("pasture-" + encodeURIComponent(p.id)));
+      const ll = p.outline.map(([lon, lat]) => [lat, lon]); all.push(...ll);
+      const poly = L.polygon(ll, {color: "#fff", weight: 2, fillColor: COLOR[p.status] || "#888", fillOpacity: .4})
+        .on("click", () => openPastureSheet(p.id));
       poly.bindTooltip(esc(p.name), {permanent: snap.pastures.length <= 8, direction: "center", className: "maplabel"});
       poly.addTo(map); mapLayers.push(poly);
     });
+    if (showPhotos) spots(allPhotos()).forEach(p => {
+      const icon = L.divIcon({className: "", iconSize: [34, 34], iconAnchor: [17, 17], html:
+        `<div class="photo-pin${p.flagged ? " flag" : ""}">${p.heading_deg != null ? `<i class="cone" style="transform:rotate(${p.heading_deg}deg)"></i>` : ""}📷${p.n > 1 ? `<span class="n">${p.n}</span>` : ""}</div>`});
+      const m = L.marker([p.lat, p.lon], {icon, title: (p.n > 1 ? p.n + " photos here, newest " : "Photo ") + when(p.taken_at)}).on("click", () => openPhoto(p.client_id));
+      m.addTo(map); mapLayers.push(m);
+    });
     map.invalidateSize(); map.fitBounds(all, {padding: [20, 20]});
   }
-
-  // ---------------------------------------------------------------- PASTURE DETAIL
-  function logLine(l) {
-    const what = l.kind === "move" ? `Moved cattle${l.from_pasture_id ? " from " + esc(pastureName(l.from_pasture_id)) : ""} to ${esc(pastureName(l.pasture_id))}${l.head ? " (" + esc(l.head) + " head)" : ""}`
-      : l.kind === "rain" ? `Rain gauge: <b>${Number(l.inches).toFixed(2)} in</b>${l.pasture_id ? " at " + esc(pastureName(l.pasture_id)) : ""}`
-      : `${esc(l.text)}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}`;
-    return `<li><span>${what}${l._pending ? ' <span class="pending">waiting to send</span>' : ""}</span><span class="when">${esc(when(l.logged_at))}</span></li>`;
+  function src3d() {
+    const meta = view3d && view3d.meta; if (!meta) return;
+    const ground = meta.dem_source === "usgs_3dep" ? `USGS lidar (${meta.dem_resolution_m} m)` : "EXAMPLE terrain, not your land";
+    const skin = look === "topo" ? "Topo: elevation colors, contour lines" + (view3d.contourFt ? ` every ${view3d.contourFt()} ft` : "") + "."
+      : meta.texture_source === "naip" ? "Aerial photo: USDA NAIP." : "Aerial photo unavailable; showing relief.";
+    $("map-src").textContent = `Ground: ${ground}. ${skin} Glowing walls are pasture lines, colored by status. Drag to turn, pinch to zoom.`;
   }
-  function allLogs() {
-    const q = store.get("queue", []).map(l => ({...l, _pending: true}));
-    const s = store.get("serverLogs", []).filter(l => !q.some(x => x.client_id === l.client_id));
-    return [...q, ...s].sort((a, b) => (b.logged_at || "").localeCompare(a.logged_at || ""));
-  }
-  function renderPasture() {
-    const p = snap && snap.pastures.find(x => x.id === currentPasture);
-    if (!p) { show("pastures"); return; }
-    const s = STATUS[p.status] || STATUS.unknown;
-    $("d-h").textContent = p.name;
-    $("d-acres").textContent = p.acres != null ? p.acres + " acres" : "";
-    $("d-status").innerHTML = `<span class="chip ${esc(p.status)}">${s.icon} ${s.word}</span> <span class="dim">${esc(p.headline)}</span>`;
-    $("d-signals").innerHTML = "<h2>What the data says</h2>" + p.signals.map(g => `<div class="sig"><span class="lv ${esc(g.level)}" aria-label="${esc(g.level)}">${LEVEL[g.level] || "?"}</span>
-      <b>${esc(g.label)}</b><span>${esc(g.text)}</span><span class="src">${g.source ? esc(g.source) : ""}${g.as_of ? " · " + esc(when(g.as_of, false)) : ""}</span></div>`).join("");
-    const t = p.terrain;
-    $("d-terrain").innerHTML = "<h2>Lay of the land</h2>" + (t ? `<div class="tiles">
-      <div class="tile"><span>Elevation</span><b>${t.elev_min_ft}–${t.elev_max_ft} ft</b><span>${t.relief_ft} ft of relief</span></div>
-      <div class="tile"><span>Average slope</span><b>${t.mean_slope_pct}%</b><span>${t.steep_share_pct ? t.steep_share_pct + "% steeper than 30%" : "no steep ground"}</span></div>
-      <div class="tile"><span>Mostly faces</span><b>${esc(t.faces || "–")}</b><span>direction of slope</span></div>
-      <div class="tile"><span>Easy grazing</span><b>${t.slope_adjusted_acres ?? "–"} ac</b><span>after slope (Holechek)</span></div></div>
-      <p class="src">From USGS lidar (3DEP). Slope adjustment is a rule of thumb; check it against where cattle actually graze.</p>
-      <button type="button" class="secondary" data-go="terrain-${encodeURIComponent(p.id)}"><span aria-hidden="true">⛰</span> See this pasture in 3D</button>`
-      : "<p class='dim'>Terrain not available right now.</p>");
-    const logs = allLogs().filter(l => l.pasture_id === p.id || l.from_pasture_id === p.id).slice(0, 8);
-    $("d-logs").innerHTML = "<h2>Recent log</h2>" + (logs.length ? `<ul class="loglist">${logs.map(logLine).join("")}</ul>` : "<p class='dim'>Nothing logged here yet.</p>");
-  }
-
-  // ---------------------------------------------------------------- 3D TERRAIN (three.js loads only here)
-  async function getBytes(path) {
-    const res = await fetch(API + path, {credentials: "same-origin", headers: authHeaders()});
-    if (res.status === 401) { const e = new Error("signin"); e.signin = true; throw e; }
-    if (!res.ok) throw new Error(res.status === 404 ? "notready" : "HTTP " + res.status);
-    return {bytes: await res.arrayBuffer(), mime: res.headers.get("Content-Type") || ""};
-  }
-  async function renderTerrain() {
-    const box = $("terrain3d");
-    if (terrainView) { terrainView.dispose(); terrainView = null; }
-    box.innerHTML = "<p class='dim'>Loading the lidar terrain…</p>";
-    document.querySelectorAll("[data-exag]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.exag) === terrainExag)));
+  async function render3d() {
+    const box = $("map3d");
+    if (view3d) { view3d.setLook(look); view3d.setPhotos(showPhotos ? spots(allPhotos()) : []); src3d(); return; }
+    box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
     try {
       const [meta, height, texture, mod] = await Promise.all([api("terrain/meta"), getBytes("terrain/height"), getBytes("terrain/texture"), import("./terrain3d.js")]);
-      if ($("v-terrain").hidden) return;  // user left while loading
+      if ($("v-map").hidden || mapMode !== "3d") return;
       const statusById = {}, namesById = {};
-      (snap && snap.pastures || []).forEach(p => { statusById[p.id] = p.status; namesById[p.id] = p.name; });
-      terrainView = mod.mount(box, {meta, height: height.bytes, texture, statusById, namesById, focusId: terrainFocus, exaggeration: terrainExag});
-      const photo = meta.texture_source === "naip" ? "USDA NAIP aerial photo" : "shaded relief (aerial photo unavailable)";
-      const ground = meta.dem_source === "usgs_3dep" ? `USGS 3DEP lidar, ${meta.dem_resolution_m} m grid (shown at ${meta.cell_m.toFixed(1)} m)`
-        : "EXAMPLE terrain, not your land (USGS lidar couldn't be reached)";
-      $("td-src").textContent = `Ground shape: ${ground}. Surface: ${photo}. ` +
-        `Elevation ${Math.round(meta.z_min_m * 3.28084)}–${Math.round(meta.z_max_m * 3.28084)} ft. Outline colors match pasture status. Updated ${when(meta.updated_at)}.`;
+      const lonlatById = {};
+      snap.pastures.forEach(p => { statusById[p.id] = p.status; namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
+      view3d = mod.mount(box, {meta, height: height.bytes, texture, statusById, namesById, lonlatById, look, exaggeration: exag,
+        photos: showPhotos ? spots(allPhotos()) : [], onPhoto: openPhoto, onPasture: openPastureSheet});
+      view3d.meta = meta; src3d();
     } catch (e) {
       if (e.signin) { show("login"); return; }
-      box.innerHTML = `<p class="dim" style="padding:16px">${e.message === "notready" ? "The 3D terrain isn't ready yet. It's built with the next ranch update." :
-        navigator.onLine ? "The 3D terrain couldn't load. Try again in a moment." : "The 3D terrain needs signal the first time you open it."}</p>`;
+      box.innerHTML = `<div class="busy">${e.message === "notready" ? "The 3D terrain isn't ready yet. It's built with the next ranch update." :
+        navigator.onLine ? "The 3D view couldn't load. Try again in a moment." : "The 3D view needs signal the first time."}</div>`;
     }
   }
-  $("terrainBack").onclick = () => show(terrainReturn);
-  $("terrainReset").onclick = () => { if (terrainView) terrainView.reset(); };
-  document.querySelectorAll("[data-exag]").forEach(b => b.onclick = () => {
-    terrainExag = Number(b.dataset.exag);
-    document.querySelectorAll("[data-exag]").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
-    if (terrainView) terrainView.setExaggeration(terrainExag);
-  });
+  document.querySelectorAll("[data-mapmode]").forEach(b => b.onclick = () => { mapMode = b.dataset.mapmode; store.set("mapMode", mapMode); renderMap(); });
+  document.querySelectorAll("[data-look]").forEach(b => b.onclick = () => { look = b.dataset.look; store.set("look", look); setPressed("[data-look]", "look", look); if (view3d) view3d.setLook(look); renderMap(); });
+  document.querySelectorAll("[data-exag]").forEach(b => b.onclick = () => { exag = Number(b.dataset.exag); setPressed("[data-exag]", "exag", exag); if (view3d) view3d.setExaggeration(exag); });
+  $("resetView").onclick = () => view3d && view3d.reset();
+  $("photosToggle").onclick = () => { showPhotos = !showPhotos; if (view3d) view3d.setPhotos(showPhotos ? spots(allPhotos()) : []); renderMap(); };
 
-  // ---------------------------------------------------------------- LOG (offline-first queue)
-  function pastureOptions(selected, blank) {
-    const opts = (snap && snap.pastures || []).map(p => `<option value="${esc(p.id)}" ${p.id === selected ? "selected" : ""}>${esc(p.name)}</option>`).join("");
-    return (blank ? `<option value="">${esc(blank)}</option>` : "") + opts;
+  function openPastureSheet(id) {
+    const p = snap && snap.pastures.find(x => x.id === id); if (!p) return;
+    const s = STATUS[p.status] || STATUS.unknown;
+    const n = allPhotos().filter(x => x.pasture_id === id).length;
+    openSheet(p.name, `<p><span class="chip ${esc(p.status)}">${s.icon} ${s.word}</span> ${esc(p.headline.replace(/^(Act|Watch):\s*/, ""))}</p>
+      <p class="dim">${p.acres != null ? p.acres + " acres · " : ""}${n} photo${n === 1 ? "" : "s"}</p>
+      <div class="row"><button type="button" class="primary" data-pasture="${esc(id)}">Open pasture</button>
+      <button type="button" class="secondary" data-act="photo" data-here="1">📷 Photo here</button></div>`);
+    currentPasture = id;
   }
-  function closeSheet() { $("sheet").hidden = true; $("sheetBack").hidden = true; }
-  $("sheetBack").onclick = closeSheet;
-  function openLog(kind, here) {
-    const f = $("sheetForm");
-    const now = new Date(); const local = new Date(now - now.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
-    const whenField = `<label>When<input type="datetime-local" name="logged_at" value="${local}"></label>`;
-    if (kind === "move") {
-      $("sheetTitle").textContent = "Moved cattle";
-      f.innerHTML = `<label>Moved into<select name="pasture_id" required>${pastureOptions(here, "Choose pasture")}</select></label>
-        <label>Moved out of<select name="from_pasture_id">${pastureOptions(null, "— not from a pasture —")}</select></label>
-        <label>Head (optional)<input type="number" name="head" inputmode="numeric" min="0" step="1"></label>${whenField}`;
-    } else if (kind === "rain") {
-      $("sheetTitle").textContent = "Rain gauge reading";
-      f.innerHTML = `<label>Inches<input type="number" name="inches" inputmode="decimal" min="0" max="20" step="0.01" required></label>
-        <div class="quick">${[0.1, 0.25, 0.5, 1].map(v => `<button type="button" data-in="${v}">${v.toFixed(2)}</button>`).join("")}</div>
-        <label>Gauge location (optional)<select name="pasture_id">${pastureOptions(here, "— ranch gauge —")}</select></label>${whenField}`;
-      f.querySelectorAll("[data-in]").forEach(b => b.onclick = () => { f.inches.value = b.dataset.in; });
-    } else {
-      kind = "note";
-      $("sheetTitle").textContent = "Note";
-      f.innerHTML = `<label>What did you see?<textarea name="text" required maxlength="2000" placeholder="Trough float stuck, grass grazed short by the gate, gap in the fence…"></textarea></label>
-        <label>Pasture (optional)<select name="pasture_id">${pastureOptions(here, "— whole ranch —")}</select></label>${whenField}`;
+
+  // ---------------------------------------------------------------- PASTURE
+  function renderPasture() {
+    const p = snap && snap.pastures.find(x => x.id === currentPasture);
+    if (!p) { show("map"); return; }
+    closeSheet();
+    const s = STATUS[p.status] || STATUS.unknown;
+    $("d-h").textContent = p.name; $("d-acres").textContent = p.acres != null ? p.acres + " acres" : "";
+    $("d-status").innerHTML = `<span class="chip ${esc(p.status)}">${s.icon} ${s.word}</span> <span class="dim">${esc(p.headline.replace(/^(Act|Watch):\s*/, ""))}</span>`;
+    const ph = allPhotos().filter(x => x.pasture_id === p.id).slice(0, 9);
+    $("d-photos").innerHTML = "<h2>Photos</h2>" + (ph.length ? `<div class="photogrid">${ph.map(x => `<button type="button" data-photo="${esc(x.client_id)}"
+      aria-label="Photo ${esc(when(x.taken_at))}"><img src="${esc(thumbOf(x))}" alt="" loading="lazy"></button>`).join("")}</div>` : "<p class='dim'>No photos here yet.</p>");
+    $("d-signals").innerHTML = "<h2>Why</h2>" + p.signals.map(g => `<div class="sig"><span class="lv ${esc(g.level)}" aria-label="${esc(g.level)}">${LEVEL[g.level] || "?"}</span>
+      <b>${esc(g.label)}</b><span>${esc(g.text)}</span><span class="src">${g.source ? esc(g.source) : ""}${g.as_of ? " · " + esc(when(g.as_of, false)) : ""}</span></div>`).join("");
+    const t = p.terrain;
+    $("d-land").innerHTML = "<h2>Lay of the land</h2>" + (t ? `<div class="stat">
+      <div><span class="dim">Elevation</span><b>${t.elev_min_ft}–${t.elev_max_ft} ft</b></div>
+      <div><span class="dim">Average slope</span><b>${t.mean_slope_pct}%</b></div>
+      <div><span class="dim">Faces</span><b>${esc(t.faces || "–")}</b></div></div>
+      <button type="button" class="secondary" id="see3d">⛰ See it in 3D</button>` : "<p class='dim'>Terrain not available yet.</p>");
+    if ($("see3d")) $("see3d").onclick = () => { mapMode = "3d"; store.set("mapMode", mapMode); show("map"); };
+  }
+
+  // ---------------------------------------------------------------- LOG
+  function logItems() {
+    const q = store.get("queue", []).map(l => ({...l, _pending: true}));
+    const logs = [...q, ...serverLogs.filter(l => !q.some(x => x.client_id === l.client_id))].map(l => ({type: l.kind === "note" ? "problem" : l.kind, at: l.logged_at, l}));
+    const ph = allPhotos().map(p => ({type: "photo", at: p.taken_at, p}));
+    return [...logs, ...ph].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  }
+  function itemHtml(it) {
+    const by = x => x.by ? " · " + esc(x.by) : "";
+    if (it.type === "photo") {
+      const p = it.p, a = p.analysis || {};
+      const tags = (p.tags || []).map(t => `<span class="tag${GOOD_TAGS.includes(t) ? " ok" : ""}">${esc(t)}</span>`).join("");
+      return `<li class="clickable" data-photo="${esc(p.client_id)}"><img src="${esc(thumbOf(p))}" alt="" loading="lazy">
+        <b>Photo${p.pasture_id ? " · " + esc(pastureName(p.pasture_id)) : ""}${p.heading_deg != null ? " · facing " + compass(p.heading_deg) : ""}</b>
+        <span>${tags}${a.green_pct != null ? ` <span class="dim">${a.green_pct}% green</span>` : ""}</span>
+        <span class="meta">${esc(when(p.taken_at))}${by(p)}${p._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
     }
-    f.insertAdjacentHTML("beforeend", `<div class="row"><button type="submit" class="primary">Save</button><button type="button" class="secondary" id="sheetCancel">Cancel</button></div>`);
-    $("sheetCancel").onclick = closeSheet;
-    f.onsubmit = e => {
-      e.preventDefault();
-      const data = Object.fromEntries(new FormData(f).entries());
-      const entry = {client_id: uid(), kind, logged_at: new Date(data.logged_at || Date.now()).toISOString()};
-      if (data.pasture_id) entry.pasture_id = data.pasture_id;
-      if (kind === "move") { if (data.from_pasture_id && data.from_pasture_id !== data.pasture_id) entry.from_pasture_id = data.from_pasture_id; if (data.head) entry.head = Number(data.head); }
-      if (kind === "rain") entry.inches = Number(data.inches);
-      if (kind === "note") entry.text = data.text.trim();
-      const q = store.get("queue", []); q.push(entry); store.set("queue", q);
-      closeSheet(); toast(navigator.onLine ? "Saved. Sending…" : "Saved on this phone. It will send when there's signal.");
-      updateSyncPill(); renderLog(); if (!$("v-pasture").hidden) renderPasture();
-      sync();
-    };
-    $("sheet").hidden = false; $("sheetBack").hidden = false;
-    setTimeout(() => { const first = f.querySelector("select,input,textarea"); if (first) first.focus(); }, 60);
+    const l = it.l;
+    const ico = {move: "🐄", rain: "🌧", problem: "⚠️"}[it.type] || "•";
+    const what = it.type === "move" ? `Moved cattle${l.from_pasture_id ? " from " + esc(pastureName(l.from_pasture_id)) : ""} to <b>${esc(pastureName(l.pasture_id))}</b>${l.head ? " (" + esc(l.head) + " head)" : ""}`
+      : it.type === "rain" ? `Rain gauge: <b>${Number(l.inches).toFixed(2)} in</b>${l.pasture_id ? " at " + esc(pastureName(l.pasture_id)) : ""}`
+      : `${(l.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}`;
+    return `<li><span class="ico" aria-hidden="true">${ico}</span><span>${what}</span><span></span>
+      <span class="meta">${esc(when(l.logged_at))}${by(l)}${l._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
   }
-  let syncing = false;
-  async function sync() {
-    const q = store.get("queue", []);
-    if (!q.length || syncing || !navigator.onLine) { updateSyncPill(); return; }
-    syncing = true;
-    try {
-      const res = await api("logs", {method: "POST", body: JSON.stringify(q)});
-      const done = new Set([...res.saved, ...res.errors.map(e => e.client_id)]);  // rejected entries won't succeed on retry
-      store.set("queue", store.get("queue", []).filter(e => !done.has(e.client_id)));
-      if (res.errors.length) toast("Some entries couldn't be saved: " + res.errors[0].error);
-      store.set("serverLogs", await api("logs"));
-    } catch (e) { if (e.signin) show("login"); }
-    finally { syncing = false; updateSyncPill(); if (!$("v-log").hidden) renderLog(); }
-  }
-  function updateSyncPill() {
-    const n = store.get("queue", []).length; const p = $("syncPill");
-    p.hidden = !n; p.textContent = n + " waiting to send"; p.classList.add("warn");
-  }
-  $("syncPill").onclick = () => { sync(); toast(navigator.onLine ? "Sending…" : "No signal yet. Your entries are safe on this phone."); };
   function renderLog() {
-    const q = store.get("queue", []);
-    $("g-queue").hidden = !q.length;
-    $("g-queue").innerHTML = `<p><b>${q.length} entr${q.length === 1 ? "y" : "ies"} waiting to send.</b> They're safe on this phone and will send automatically when there's signal.</p><button type="button" class="secondary" id="syncNow">Send now</button>`;
-    if ($("syncNow")) $("syncNow").onclick = sync;
-    const logs = allLogs().slice(0, 40);
-    $("g-list").innerHTML = logs.length ? logs.map(logLine).join("") : "<li class='dim'>Nothing logged yet. Use the buttons above.</li>";
+    setPressed("[data-filter]", "filter", logFilter);
+    const n = store.get("queue", []).length + pending.length;
+    $("g-queue").hidden = !n;
+    $("g-queue").innerHTML = `<p><b>${n} waiting to send.</b> Safe on this phone; they'll send by themselves when there's signal.</p>
+      <button type="button" class="secondary" id="syncNow">Send now</button>`;
+    if ($("syncNow")) $("syncNow").onclick = () => syncAll(true);
+    const items = logItems().filter(i => logFilter === "all" || i.type === logFilter || (logFilter === "problem" && i.type === "photo" && i.p.flagged)).slice(0, 80);
+    $("g-list").innerHTML = items.length ? items.map(itemHtml).join("") : "<li class='dim'>Nothing yet. Use the buttons on Home.</li>";
   }
+  document.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => { logFilter = b.dataset.filter; renderLog(); });
 
-  // ---------------------------------------------------------------- MORE
-  function renderMore() {
-    const src = (snap && snap.sources) || [];
-    $("m-sources").innerHTML = src.length ? src.map(s => `<li><span><b>${esc(s.name)}</b><br><span class="${s.live ? "ok-txt" : "no-txt"}">${s.live ? (s.stale ? "Working (older copy)" : "Working") : s.demo ? "Demo values" : "Not available"}</span></span>
-      <span class="when">${s.as_of ? "data through<br>" + esc(when(s.as_of, false)) : ""}</span></li>`).join("") : "<li class='dim'>No data yet.</li>";
-    api("me").then(m => { $("m-account").textContent = `Signed in as ${m.name} (${m.email}) for ${m.ranch}.`; }).catch(() => {
-      $("m-account").textContent = navigator.onLine ? "" : "Account details need signal.";
-    });
+  // ---------------------------------------------------------------- MORE (crew, settings)
+  async function renderMore() {
+    $("o-who").textContent = me ? `${me.name}${me.role === "crew" ? " · crew" : ""} · ${me.ranch}` : "";
+    $("o-console").hidden = !isOwner();
+    $("o-sources").innerHTML = ((snap && snap.sources) || []).map(s => `<li><span><b>${esc(s.name)}</b><br><span class="${s.live ? "ok-txt" : "no-txt"}">${s.live ? "Working" : s.demo ? "Demo values" : "Not available"}</span></span>
+      <span class="when">${s.as_of ? esc(when(s.as_of, false)) : ""}</span></li>`).join("") || "<li class='dim'>No data yet.</li>";
+    const crew = $("o-crew");
+    crew.hidden = !(me && me.role === "owner");
+    if (crew.hidden) return;
+    crew.innerHTML = "<h2>Your crew</h2><p class='dim'>Loading…</p>";
+    try {
+      const c = await api("crew");
+      crew.innerHTML = `<h2>Your crew</h2>
+        <p class="dim">Give a ranch hand a crew code. They tap <b>Join a ranch crew</b> when they open RangeIQ. Hands can see the ranch, take photos and log work, but can't change settings.</p>
+        ${c.invites.map(i => `<div class="row" style="align-items:center"><b style="font-size:1.5rem;letter-spacing:.08em">${esc(i.code)}</b>
+          <span class="dim small">until ${esc(when(i.expires_at, false))} · used ${i.uses}/${i.max_uses}</span>
+          <button type="button" class="pill" data-revoke="${esc(i.code)}">Stop code</button></div>`).join("")}
+        <button type="button" class="primary" id="newCode">Make a crew code</button>
+        ${c.members.length ? `<h3>Crew members</h3><ul class="srclist">${c.members.map(m => `<li><span><b>${esc(m.name)}</b><br><span class="dim small">joined ${esc(when(m.joined_at, false))}</span></span>
+          <button type="button" class="pill" data-remove="${esc(m.user_id)}">Remove</button></li>`).join("")}</ul>` : ""}`;
+      $("newCode").onclick = async () => { try { await api("crew/invites", {method: "POST"}); renderMore(); } catch (e) { toast(e.message); } };
+      crew.querySelectorAll("[data-revoke]").forEach(b => b.onclick = async () => { await api("crew/invites/" + encodeURIComponent(b.dataset.revoke), {method: "DELETE"}); renderMore(); });
+      crew.querySelectorAll("[data-remove]").forEach(b => b.onclick = async () => {
+        if (!confirm("Remove this person from your crew? They'll be signed out.")) return;
+        await api("crew/members/" + encodeURIComponent(b.dataset.remove), {method: "DELETE"}); renderMore(); });
+    } catch (e) { crew.innerHTML = "<h2>Your crew</h2><p class='dim'>Crew settings need signal.</p>"; }
   }
-  $("logoutBtn").onclick = async () => {
-    if (store.get("queue", []).length && !confirm("You have entries that haven't been sent yet. Sign out anyway? They stay on this phone.")) return;
-    try { await api("logout", {method: "POST"}); } catch (e) {}
-    store.del("token"); store.del("snapshot"); store.del("snapshotAt"); store.del("serverLogs"); snap = null; show("login");
-  };
-  function setSize(v) { document.documentElement.style.setProperty("--scale", v); store.set("scale", v);
-    document.querySelectorAll("[data-size]").forEach(b => b.setAttribute("aria-pressed", b.dataset.size === String(v))); }
+  function setSize(v) { document.documentElement.style.setProperty("--scale", v); store.set("scale", v); setPressed("[data-size]", "size", v); }
   document.querySelectorAll("[data-size]").forEach(b => b.onclick = () => setSize(b.dataset.size));
   setSize(store.get("scale", "1"));
-
-  // ---------------------------------------------------------------- sign in
-  $("loginForm").onsubmit = async e => {
-    e.preventDefault(); $("loginError").hidden = true;
-    try {
-      const who = await api("login", {method: "POST", body: JSON.stringify({email: $("loginEmail").value.trim(), password: $("loginPassword").value})});
-      if (who.token) store.set("token", who.token);
-      $("loginPassword").value = ""; show("today"); await refresh(); sync();
-    } catch (err) { $("loginError").textContent = navigator.onLine ? (err.message === "signin" ? "That email and password don't match." : err.message) : "Signing in needs signal."; $("loginError").hidden = false; }
+  $("logoutBtn").onclick = async () => {
+    if ((store.get("queue", []).length || pending.length) && !confirm("Some photos or entries haven't been sent yet. Sign out anyway? They stay on this phone.")) return;
+    try { await api("logout", {method: "POST"}); } catch (e) {}
+    ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me"].forEach(k => store.del(k)); snap = null; me = null; photos = []; show("login");
   };
 
-  // ---------------------------------------------------------------- install / offline
+  // ---------------------------------------------------------------- sheets
+  function openSheet(title, html) { $("sheetTitle").textContent = title; $("sheetBody").innerHTML = html; $("sheet").hidden = false; $("sheetBack").hidden = false; }
+  function closeSheet() { $("sheet").hidden = true; $("sheetBack").hidden = true; $("sheetBody").innerHTML = ""; }
+  $("sheetBack").onclick = closeSheet;
+  function pastureOptions(selected, blank) {
+    return (blank ? `<option value="">${esc(blank)}</option>` : "") + ((snap && snap.pastures) || [])
+      .map(p => `<option value="${esc(p.id)}" ${p.id === selected ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+  }
+  function tagChips(selected = []) {
+    return `<div class="tagchips" role="group" aria-label="What did you see?">${PROBLEM_TAGS.map(t => `<button type="button" data-tag="${esc(t)}" aria-pressed="${selected.includes(t)}">${esc(t)}</button>`).join("")}
+      ${GOOD_TAGS.map(t => `<button type="button" class="goodtag" data-tag="${esc(t)}" aria-pressed="${selected.includes(t)}">${esc(t)}</button>`).join("")}</div>`;
+  }
+  function wireChips(root) { root.querySelectorAll("[data-tag]").forEach(b => b.onclick = () => b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"))); }
+  const chosenTags = root => [...root.querySelectorAll("[data-tag][aria-pressed='true']")].map(b => b.dataset.tag);
+
+  // ---------------------------------------------------------------- quick logs (rain, move, report)
+  function act(kind, here) {
+    if (kind === "photo") return takePhoto(here);
+    const now = new Date(), local = new Date(now - now.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
+    let html, title;
+    if (kind === "rain") {
+      title = "Rain gauge";
+      html = `<label>Inches<input type="number" name="inches" inputmode="decimal" min="0" max="20" step="0.01" required></label>
+        <div class="quick">${[0.1, 0.25, 0.5, 1].map(v => `<button type="button" data-in="${v}">${v.toFixed(2)}</button>`).join("")}</div>
+        <label>Which gauge? (optional)<select name="pasture_id">${pastureOptions(here, "Ranch gauge")}</select></label>`;
+    } else if (kind === "move") {
+      title = "Moved cattle";
+      html = `<label>Into<select name="pasture_id" required>${pastureOptions(here, "Choose pasture")}</select></label>
+        <label>Out of (optional)<select name="from_pasture_id">${pastureOptions(null, "—")}</select></label>
+        <label>Head (optional)<input type="number" name="head" inputmode="numeric" min="0" step="1"></label>`;
+    } else {
+      kind = "report"; title = "Report a problem";
+      html = `<p class="dim">Tap what you saw. A photo helps: use <b>Take photo</b> instead if you can.</p>${tagChips()}
+        <label>Where?<select name="pasture_id">${pastureOptions(here, "Whole ranch / not sure")}</select></label>
+        <label>Anything else? (optional)<textarea name="text" maxlength="2000" placeholder="Which trough, how many head, which gate…"></textarea></label>`;
+    }
+    openSheet(title, `<form class="form" id="actForm">${html}<label>When<input type="datetime-local" name="logged_at" value="${local}"></label>
+      <div class="row"><button type="submit" class="primary">Save</button><button type="button" class="secondary" id="actCancel">Cancel</button></div></form>`);
+    const f = $("actForm"); wireChips(f);
+    f.querySelectorAll("[data-in]").forEach(b => b.onclick = () => { f.inches.value = b.dataset.in; });
+    $("actCancel").onclick = closeSheet;
+    f.onsubmit = e => {
+      e.preventDefault();
+      const d = Object.fromEntries(new FormData(f).entries());
+      const entry = {client_id: uid(), kind: kind === "report" ? "note" : kind, logged_at: new Date(d.logged_at || Date.now()).toISOString(), by: me && me.name};
+      if (d.pasture_id) entry.pasture_id = d.pasture_id;
+      if (kind === "move") { if (d.from_pasture_id && d.from_pasture_id !== d.pasture_id) entry.from_pasture_id = d.from_pasture_id; if (d.head) entry.head = Number(d.head); }
+      if (kind === "rain") entry.inches = Number(d.inches);
+      if (kind === "report") { entry.tags = chosenTags(f); entry.text = (d.text || "").trim(); if (!entry.tags.length && !entry.text) { toast("Tap what you saw, or write a note."); return; } }
+      const q = store.get("queue", []); q.push(entry); store.set("queue", q);
+      closeSheet(); toast(navigator.onLine ? "Saved." : "Saved on this phone. It'll send when there's signal.");
+      rerender(); syncAll();
+    };
+  }
+
+  // ---------------------------------------------------------------- CAMERA: photo + GPS + direction + on-phone analysis
+  const cam = {heading: null, headingAt: 0, fix: null, watchId: null, listening: false};
+  function onOrient(e) {
+    let h = null;
+    if (typeof e.webkitCompassHeading === "number") h = e.webkitCompassHeading;                // iPhone
+    else if ((e.absolute || e.type === "deviceorientationabsolute") && e.alpha != null) h = (360 - e.alpha) % 360;  // Android
+    if (h != null) { cam.heading = h; cam.headingAt = Date.now(); }
+  }
+  function startSensors() {
+    if (!cam.listening) {
+      const add = () => { addEventListener("deviceorientationabsolute", onOrient, true); addEventListener("deviceorientation", onOrient, true); cam.listening = true; };
+      if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function")
+        DeviceOrientationEvent.requestPermission().then(r => { if (r === "granted") add(); }).catch(() => {});   // iPhone asks once
+      else add();
+    }
+    if (navigator.geolocation && cam.watchId == null) cam.watchId = navigator.geolocation.watchPosition(p => {
+      const f = {lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy), at: Date.now()};
+      if (!cam.fix || f.acc <= cam.fix.acc || Date.now() - cam.fix.at > 30000) cam.fix = f;
+    }, () => {}, {enableHighAccuracy: true, maximumAge: 15000, timeout: 30000});
+  }
+  function stopSensors() { if (cam.watchId != null) { navigator.geolocation.clearWatch(cam.watchId); cam.watchId = null; } }
+  function waitForFix(ms) {
+    return new Promise(ok => { const t0 = Date.now(); (function poll() {
+      if ((cam.fix && cam.fix.acc <= 30 && Date.now() - cam.fix.at < 60000) || Date.now() - t0 > ms) return ok(cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null);
+      setTimeout(poll, 250); })(); });
+  }
+  function takePhoto(here) {
+    photoHere = here || null;
+    startSensors();                       // must start inside the tap so the phone allows GPS/compass
+    cam.fix = cam.fix && Date.now() - cam.fix.at < 60000 ? cam.fix : null;
+    const input = $("camInput"); input.value = ""; input.click();
+  }
+  $("camInput").onchange = e => { const file = e.target.files && e.target.files[0]; if (file) processPhoto(file); };
+
+  function loadImage(file) {
+    return new Promise((ok, fail) => { const url = URL.createObjectURL(file), img = new Image();
+      img.onload = () => ok(img); img.onerror = () => { URL.revokeObjectURL(url); fail(new Error("That file isn't a photo the phone can read.")); }; img.src = url; });
+  }
+  function toJpeg(img, maxSide, quality) {
+    const s = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement("canvas"); c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    return new Promise(ok => c.toBlob(b => ok(b), "image/jpeg", quality));
+  }
+  // Green cover with the Canopeo rule (Patrignani & Ochsner 2015): R/G < 0.95, B/G < 0.95, 2G-R-B > 20.
+  // Sky is left out; tan/brown pixels are "brown or bare" (dry grass and bare soil look alike in a photo).
+  function analyze(img) {
+    const W = 200, H = Math.max(1, Math.round(img.naturalHeight / img.naturalWidth * W));
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const g = c.getContext("2d", {willReadFrequently: true}); g.drawImage(img, 0, 0, W, H);
+    const d = g.getImageData(0, 0, W, H).data;
+    let ground = 0, green = 0, brown = 0, sky = 0;
+    for (let i = 0, px = 0; i < d.length; i += 4, px++) {
+      const r = d[i], gg = d[i + 1], b = d[i + 2], y = Math.floor(px / W), bright = (r + gg + b) / 3;
+      if ((b > r + 12 && b >= gg && bright > 100) || (bright > 220 && y < H * 0.55)) { sky++; continue; }
+      ground++;
+      if (gg > 0 && r / gg < 0.95 && b / gg < 0.95 && 2 * gg - r - b > 20) green++;
+      else if (r > b + 15 && r >= gg - 8 && bright > 60) brown++;
+    }
+    const pct = n => ground ? Math.round(100 * n / ground) : null;
+    return {green_pct: pct(green), brown_bare_pct: pct(brown), sky_pct: Math.round(100 * sky / (W * H)), method: "canopeo-rgb"};
+  }
+  function previousAtSpot(fix, heading) {
+    return allPhotos().filter(p => p.lat != null && p.analysis && p.analysis.green_pct != null && metres(fix, p) <= 35 &&
+      (heading == null || p.heading_deg == null || Math.abs(((heading - p.heading_deg + 540) % 360) - 180) <= 45))[0] || null;
+  }
+  async function processPhoto(file) {
+    openSheet("New photo", "<div class='busy'><div class='spinner'></div>Getting the photo, location and direction…</div>");
+    let img;
+    try { img = await loadImage(file); } catch (e) { closeSheet(); toast(e.message); return; }
+    const [photo, thumb] = await Promise.all([toJpeg(img, 1600, 0.82), toJpeg(img, 360, 0.7)]);
+    const analysis = analyze(img); URL.revokeObjectURL(img.src);
+    const fix = await waitForFix(6000);
+    const heading = cam.heading != null && Date.now() - cam.headingAt < 90000 ? Math.round(cam.heading) : null;
+    stopSensors();
+    const guess = photoHere || (fix ? pastureAt(fix.lon, fix.lat) : null);
+    const prev = fix ? previousAtSpot(fix, heading) : null;
+    const delta = prev ? analysis.green_pct - prev.analysis.green_pct : null;
+    const previewUrl = URL.createObjectURL(photo);
+    const where = fix ? `${guess ? "📍 " + esc(pastureName(guess)) : "📍 Outside your pastures"} · ±${fix.acc} m` : "📍 No GPS fix. Pick the pasture below.";
+    openSheet("New photo", `<img class="photoimg" src="${previewUrl}" alt="The photo you just took">
+      <p>${where}${heading != null ? ` · 🧭 facing <b>${compass(heading)}</b>` : ""}</p>
+      <div class="stat"><div><span class="dim">Green</span><b>${analysis.green_pct ?? "–"}%</b></div>
+        <div><span class="dim">Brown or bare</span><b>${analysis.brown_bare_pct ?? "–"}%</b></div>
+        ${prev ? `<div><span class="dim">Same spot, ${esc(when(prev.taken_at, false))}</span><b>${delta > 0 ? "+" : ""}${delta} pts</b></div>` : ""}</div>
+      ${prev && delta <= -15 ? `<p class="error">Much less green than the last photo from this spot.</p>` : ""}
+      <form class="form" id="photoForm"><p><b>What does it show?</b> (optional)</p>${tagChips()}
+        <label>Pasture<select name="pasture_id">${pastureOptions(guess, "Not in a pasture")}</select></label>
+        <label>Note (optional)<textarea name="note" maxlength="2000" placeholder="Tank about a quarter full, fence down by the north gate…"></textarea></label>
+        <div class="row"><button type="submit" class="primary">Save photo</button><button type="button" class="secondary" id="photoCancel">Discard</button></div></form>
+      <p class="src">Green is measured from the colors in the photo (Canopeo method). It's most useful comparing photos from the same spot over time.</p>`);
+    const f = $("photoForm"); wireChips(f);
+    $("photoCancel").onclick = () => { URL.revokeObjectURL(previewUrl); closeSheet(); };
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const tags = chosenTags(f), d = Object.fromEntries(new FormData(f).entries());
+      const client_id = uid();
+      const meta = {client_id, taken_at: new Date().toISOString(), lat: fix ? fix.lat : null, lon: fix ? fix.lon : null, accuracy_m: fix ? fix.acc : null,
+        heading_deg: heading, pasture_id: d.pasture_id || null, tags, note: (d.note || "").trim() || null, by: me && me.name,
+        analysis: {...analysis, compared_to: prev ? prev.client_id : null, green_change_pts: delta},
+        flagged: tags.some(t => PROBLEM_TAGS.includes(t)) || (delta != null && delta <= -15)};
+      try { await idb.put({client_id, meta, photo, thumb}); }
+      catch (err) { toast("Couldn't save the photo on this phone: " + err.message); return; }
+      URL.revokeObjectURL(previewUrl); closeSheet();
+      toast(navigator.onLine ? "Photo saved. Sending…" : "Photo saved on this phone. It'll send when there's signal.");
+      await loadPending(); rerender(); syncAll();
+    };
+  }
+
+  function openPhoto(id) {
+    const p = allPhotos().find(x => x.client_id === id); if (!p) return;
+    const a = p.analysis || {}, spot = sameSpot(p);
+    const canDelete = p._pending || isOwner() || (me && me.user_id && p.user_id === me.user_id);
+    openSheet(p.pasture_id ? pastureName(p.pasture_id) : "Photo", `<img class="photoimg" src="${esc(imageOf(p))}" alt="Photo taken ${esc(when(p.taken_at))}">
+      <p>${esc(when(p.taken_at))}${p.by ? " · " + esc(p.by) : ""}${p.heading_deg != null ? " · facing " + compass(p.heading_deg) : ""}${p.accuracy_m ? " · ±" + p.accuracy_m + " m" : ""}</p>
+      <p>${(p.tags || []).map(t => `<span class="tag${GOOD_TAGS.includes(t) ? " ok" : ""}">${esc(t)}</span>`).join("")}</p>
+      ${p.note ? `<p>${esc(p.note)}</p>` : ""}
+      <div class="stat"><div><span class="dim">Green</span><b>${a.green_pct ?? "–"}%</b></div><div><span class="dim">Brown or bare</span><b>${a.brown_bare_pct ?? "–"}%</b></div>
+      ${a.green_change_pts != null ? `<div><span class="dim">vs. last photo here</span><b>${a.green_change_pts > 0 ? "+" : ""}${a.green_change_pts} pts</b></div>` : ""}</div>
+      ${p._pending ? "<p class='pending'>Waiting to send.</p>" : ""}
+      ${spot.length > 1 ? `<h3>This spot over time</h3><div class="spotrow">${spot.map(x => `<button type="button" data-photo="${esc(x.client_id)}"
+        ${x.client_id === p.client_id ? 'aria-current="true"' : ""}><img src="${esc(thumbOf(x))}" alt="" loading="lazy"><span>${esc(when(x.taken_at, false))}<br>
+        <b>${(x.analysis || {}).green_pct ?? "–"}% green</b></span></button>`).join("")}</div>` : ""}
+      <div class="row">${p.lat != null ? `<button type="button" class="secondary" id="phMap">Show on map</button>` : ""}
+      ${canDelete ? `<button type="button" class="secondary" id="phDel">Delete</button>` : ""}</div>`);
+    if ($("phMap")) $("phMap").onclick = () => { closeSheet(); mapMode = "2d"; show("map"); setTimeout(() => map && map.setView([p.lat, p.lon], 17), 400); };
+    if ($("phDel")) $("phDel").onclick = async () => {
+      if (!confirm("Delete this photo?")) return;
+      try {
+        if (p._pending) await idb.del(p.client_id); else await api("photos/" + encodeURIComponent(p.client_id), {method: "DELETE"});
+        photos = photos.filter(x => x.client_id !== p.client_id); store.set("photos", photos); await loadPending(); closeSheet(); rerender();
+      } catch (e) { toast(e.message); }
+    };
+  }
+
+  // ---------------------------------------------------------------- sync (logs + photos)
+  let syncing = false;
+  async function syncAll(manual) {
+    if (syncing) return;
+    if (!navigator.onLine) { updateSyncPill(); if (manual) toast("No signal yet. Everything is safe on this phone."); return; }
+    syncing = true;
+    try {
+      const q = store.get("queue", []);
+      if (q.length) {
+        const res = await api("logs", {method: "POST", body: JSON.stringify(q)});
+        const done = new Set([...res.saved, ...res.errors.map(e => e.client_id)]);
+        store.set("queue", store.get("queue", []).filter(e => !done.has(e.client_id)));
+      }
+      for (const rec of (await idb.all()) || []) {
+        const fd = new FormData();
+        fd.append("meta", JSON.stringify(rec.meta)); fd.append("photo", rec.photo, rec.client_id + ".jpg"); fd.append("thumb", rec.thumb, rec.client_id + "_t.jpg");
+        try { await api("photos", {method: "POST", body: fd}); await idb.del(rec.client_id); }
+        catch (e) { if (e.signin) throw e; if (e.status === 400 || e.status === 413) await idb.del(rec.client_id); else break; }
+      }
+      await loadPending();
+      const [ph, lg] = await Promise.all([api("photos"), api("logs")]);
+      photos = ph; serverLogs = lg; store.set("photos", photos); store.set("serverLogs", serverLogs);
+    } catch (e) { if (e.signin) show("login"); }
+    finally { syncing = false; rerender(); }
+  }
+  function updateSyncPill() {
+    const n = store.get("queue", []).length + pending.length, p = $("syncPill");
+    p.hidden = !n; p.textContent = n + " waiting to send";
+  }
+  $("syncPill").onclick = () => syncAll(true);
+
+  // ---------------------------------------------------------------- sign in / join a crew
+  document.querySelectorAll("[data-auth]").forEach(b => b.onclick = () => {
+    document.querySelectorAll("[data-auth]").forEach(x => x.setAttribute("aria-selected", String(x === b)));
+    $("loginForm").hidden = b.dataset.auth !== "signin"; $("joinForm").hidden = b.dataset.auth !== "join";
+  });
+  async function signedIn(who) {
+    if (who.token) store.set("token", who.token);
+    me = {name: who.name, ranch: who.ranch, role: who.role || "owner"}; store.set("me", me);
+    show("home"); await refresh(); syncAll();
+  }
+  $("loginForm").onsubmit = async e => {
+    e.preventDefault(); $("loginError").hidden = true;
+    try { await signedIn(await api("login", {method: "POST", body: JSON.stringify({email: $("loginEmail").value.trim(), password: $("loginPassword").value})})); $("loginPassword").value = ""; }
+    catch (err) { $("loginError").textContent = navigator.onLine ? err.message : "Signing in needs signal."; $("loginError").hidden = false; }
+  };
+  $("joinForm").onsubmit = async e => {
+    e.preventDefault(); $("joinError").hidden = true;
+    try { await signedIn(await api("join", {method: "POST", body: JSON.stringify({code: $("joinCode").value, name: $("joinName").value.trim(),
+      email: $("joinEmail").value.trim(), password: $("joinPassword").value})})); $("joinPassword").value = ""; }
+    catch (err) { $("joinError").textContent = navigator.onLine ? err.message : "Joining needs signal."; $("joinError").hidden = false; }
+  };
+
+  // ---------------------------------------------------------------- install / offline / start
   let deferred = null;
-  window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); deferred = e; $("installBtn").hidden = false; });
+  addEventListener("beforeinstallprompt", e => { e.preventDefault(); deferred = e; $("installBtn").hidden = false; });
   $("installBtn").onclick = async () => { if (!deferred) return; deferred.prompt(); await deferred.userChoice; deferred = null; $("installBtn").hidden = true; };
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
-  $("m-install").innerHTML = standalone ? "RangeIQ is installed on this phone." : ios
-    ? "On iPhone: open this page in <b>Safari</b>, tap the <b>Share</b> button, then <b>Add to Home Screen</b>."
-    : "On Android: tap <b>Install</b> at the top, or open the browser menu and choose <b>Install app</b> / <b>Add to Home screen</b>.";
+  $("o-install").innerHTML = matchMedia("(display-mode: standalone)").matches || navigator.standalone ? "RangeIQ is on your home screen." : ios
+    ? "In <b>Safari</b>, tap the <b>Share</b> button, then <b>Add to Home Screen</b>."
+    : "Tap <b>Install</b> at the top, or the browser menu → <b>Install app</b>.";
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { refresh(); sync(); } });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { refresh(); syncAll(); } });
 
-  // ---------------------------------------------------------------- start
-  updateSyncPill(); renderToday(); setBanner();
-  show(location.hash.slice(1) || "today");
-  refresh().then(sync);
+  (async function start() {
+    await loadPending();
+    updateSyncPill(); setBanner();
+    show(store.get("token", null) || snap ? (location.hash.slice(1) || "home") : "login");
+    refresh().then(() => syncAll());
+  })();
 })();

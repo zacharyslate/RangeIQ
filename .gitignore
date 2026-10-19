@@ -27,3 +27,4 @@ data/user/
 # Local tooling
 ZACH-venv/
 *.egg-info/
+data/photos/

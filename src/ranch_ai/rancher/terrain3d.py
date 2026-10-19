@@ -165,6 +165,9 @@ def build_terrain_assets(
         "z_min_m": round(float(finite.min()), 2) if finite.size else None,
         "z_max_m": round(float(finite.max()), 2) if finite.size else None,
         "crs_epsg": grid.crs_epsg,
+        # South-west corner of the mesh in the grid's UTM metres, so the app can place GPS points (photos).
+        "origin_x": round(grid.bounds[0], 2),
+        "origin_y": round(grid.bounds[3] - ny * cell_m, 2),
         "dem_resolution_m": round(grid.resolution_m, 2),
         "dem_source": grid.source,
         "texture_source": texture_source,
