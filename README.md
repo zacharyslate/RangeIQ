@@ -155,6 +155,18 @@ cd /opt/rangeiq
 bash deploy/ubuntu/update_rangeiq.sh
 ```
 
+## 3D Terrain (USGS 3DEP lidar)
+
+The `3D Terrain` tab builds an orbitable 3D surface of the saved ranch boundary from the USGS 3D Elevation Program bare-earth DEM. Where USGS lidar exists, this is the 1 m lidar-derived DEM; the default Caja Caliente parcel is covered by the QL2 project `TX_WestTexas_B7_2018`.
+
+- Color by elevation, slope, Holechek grazing slope class, or hillshade
+- The boundary is draped on the terrain, with adjustable vertical exaggeration and context buffer
+- Per-unit relief, slope, dominant aspect, slope-class shares, and slope-adjusted acres
+- Download the DEM (GeoTIFF) and the terrain stats (CSV)
+- DEMs are cached under `data/cache/terrain`. If the service is unreachable, the tab shows clearly labeled synthetic terrain.
+
+Settings: `TERRAIN_PROVIDER` (`usgs_3dep` or `mock`) and `TERRAIN_3DEP_IMAGESERVER_URL`. See `docs/DATA_UPGRADE_PLAN.md` for the data roadmap and its caveats.
+
 ## Vegetation History
 
 RangeIQ now combines two different vegetation signals:
