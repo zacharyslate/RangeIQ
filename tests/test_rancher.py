@@ -641,3 +641,75 @@ def test_one_login_for_two_ranches_with_partner_code_and_switching(client):
     # Signing in again goes to the ranch the phone asks for.
     again = client.post("/api/login", json={"email": "zach@example.com", "password": "CorrectHorse9", "ranch": justin.workspace_id}).json()
     assert again["ranch"] == "Clear Creek Ranch"
+
+
+def test_places_on_the_map(client):
+    owner = _login(client)
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    hand = {"Authorization": "Bearer " + client.post("/api/join", json={"code": code, "name": "Luis", "email": "luis@example.com",
+                                                                        "password": "HandPass123"}).json()["token"]}
+    client.cookies.clear()
+    blind = {"place_id": "pl1", "kind": "deer_blind", "name": "North blind", "lat": 30.31, "lon": -103.69, "photo_id": "ph9",
+             "updated_at": "2026-10-19T10:00:00Z"}
+    res = client.post("/api/places", headers=hand, json=[blind, {"place_id": "pl2", "kind": "spaceship", "name": "x", "lat": 1, "lon": 1},
+                                                         {"place_id": "pl3", "kind": "pond", "name": "Big tank"}]).json()
+    assert res["saved"] == ["pl1"] and len(res["errors"]) == 2
+    tank = {"place_id": "pl4", "kind": "water_tank", "name": "Windmill tank", "lat": 30.30, "lon": -103.70}
+    client.post("/api/places", headers=owner, json=tank)
+    assert {p["name"] for p in client.get("/api/places", headers=hand).json()} == {"North blind", "Windmill tank"}
+    # A late, older edit doesn't overwrite a newer one; hands can't change the owner's places.
+    client.post("/api/places", headers=hand, json={**blind, "name": "Old name", "updated_at": "2026-10-18T10:00:00Z"})
+    assert next(p for p in client.get("/api/places", headers=owner).json() if p["place_id"] == "pl1")["name"] == "North blind"
+    assert client.post("/api/places", headers=hand, json={**tank, "name": "Mine now"}).json()["errors"]
+    assert client.post("/api/places", headers=hand, json={"place_id": "pl4", "deleted": True}).json()["errors"]
+    assert client.post("/api/places", headers=owner, json={"place_id": "pl4", "deleted": True}).json()["saved"] == ["pl4"]
+    assert [p["place_id"] for p in client.get("/api/places", headers=owner).json()] == ["pl1"]
+
+
+def test_photo_keeps_its_place(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("RANGEIQ_PHOTO_DIR", str(tmp_path / "photos"))
+    owner = _login(client)
+    assert _upload(client, owner, "pp1", place_id="pl1", lat=30.3, lon=-103.6).status_code == 200
+    assert client.get("/api/photos", headers=owner).json()[0]["place_id"] == "pl1"
+
+
+def test_usgs_water_map_turns_ponds_and_springs_into_pins(tmp_path):
+    from ranch_ai.rancher.water_map import water_features
+
+    pastures = pd.DataFrame({"pasture_id": ["A"], "geometry": [[[-103.70, 30.30], [-103.68, 30.30], [-103.68, 30.32], [-103.70, 30.32]]]})
+    calls = []
+
+    class Resp:
+        def __init__(self, payload): self.payload = payload
+        def raise_for_status(self): pass
+        def json(self): return self.payload
+
+    def fake_get(url, params, timeout):
+        calls.append(url)
+        if url.endswith("/12/query"):
+            square = [[-103.691, 30.311], [-103.689, 30.311], [-103.689, 30.313], [-103.691, 30.313], [-103.691, 30.311]]
+            return Resp({"features": [
+                {"properties": {"FTYPE": 436, "FCODE": 43614, "AREASQKM": 0.004, "PERMANENT_IDENTIFIER": "w1", "GNIS_NAME": None},
+                 "geometry": {"type": "Polygon", "coordinates": [square]}},
+                {"properties": {"FTYPE": 493, "FCODE": 49300, "PERMANENT_IDENTIFIER": "est"}, "geometry": {"type": "Polygon", "coordinates": [square]}}]})
+        return Resp({"features": [{"properties": {"FTYPE": 458, "FCODE": 45800, "PERMANENT_IDENTIFIER": "s1", "GNIS_NAME": "Cottonwood Spring"},
+                                   "geometry": {"type": "Point", "coordinates": [-103.695, 30.305]}}]})
+
+    out = water_features("ws", pastures, tmp_path, get=fake_get)
+    kinds = {f["kind"]: f for f in out["features"]}
+    assert set(kinds) == {"tank", "spring"} and kinds["tank"]["intermittent"] and kinds["tank"]["acres"] == pytest.approx(0.99, abs=0.01)
+    assert kinds["tank"]["lat"] == pytest.approx(30.312, abs=1e-4) and kinds["spring"]["name"] == "Cottonwood Spring"
+    assert len(calls) == 2
+    water_features("ws", pastures, tmp_path, get=fake_get)                 # cached: no new requests
+    assert len(calls) == 2
+
+    def down(*a, **k):
+        raise ConnectionError("no route")
+    assert water_features("other", pastures, tmp_path, get=down)["error"]
+
+
+def test_sensor_places_keep_their_device_id(client):
+    owner = _login(client)
+    client.post("/api/places", headers=owner, json={"place_id": "s1", "kind": "sensor_water", "name": "Windmill tank level",
+                                                    "lat": 30.3, "lon": -103.6, "device_id": " RIQ-0042 "})
+    assert client.get("/api/places", headers=owner).json()[0]["device_id"] == "RIQ-0042"

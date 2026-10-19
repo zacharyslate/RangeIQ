@@ -25,8 +25,11 @@ from ranch_ai.terrain.analysis import block_mean, compute_derivatives
 from ranch_ai.terrain.dem_client import TerrainGrid
 
 NAIP_EXPORT_URL = "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage"
-MAX_VERTICES_PER_SIDE = 256
-TEXTURE_MAX_PX = 1024
+# v2: twice the terrain detail and 3x the photo detail. 512 x 512 vertices is ~0.5 M triangles (fine on phones);
+# a 3072 px NAIP photo is ~2.4 m per pixel on a 7 km ranch (the NAIP service allows up to 4000 px per request).
+MAX_VERTICES_PER_SIDE = 512
+TEXTURE_MAX_PX = 3072
+ASSET_VERSION = 2
 
 
 def _fill_nan(z: np.ndarray) -> np.ndarray:
@@ -170,6 +173,7 @@ def build_terrain_assets(
         "origin_y": round(grid.bounds[3] - ny * cell_m, 2),
         "dem_resolution_m": round(grid.resolution_m, 2),
         "dem_source": grid.source,
+        "asset_version": ASSET_VERSION,
         "texture_source": texture_source,
         "texture_note": texture_note,
         "outlines": local_outlines(grid, pastures, mesh_height_m=ny * cell_m),

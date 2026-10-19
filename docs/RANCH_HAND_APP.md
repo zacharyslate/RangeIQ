@@ -103,3 +103,45 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - Results are stored, so each hourly run only reads new scenes, within a 5-minute budget, newest first.
 - On Clear Creek Ranch (29 pastures, 4 years, 98 scenes) the first full load took 220 s, against hours for the old per-pasture pull.
 - Greenness compares the last 30 days with the same ±20-day window in earlier years (needs at least 2 earlier years).
+
+## The map as a console
+
+- **Opens in 3D every time.** If the 3D terrain isn't ready, or the phone can't draw 3D, it falls back to the flat map.
+- **🗂 Layers** turns things on and off. The choices are kept on the phone.
+  - Pastures, and **Warning colors**: off gives neutral boundary lines.
+  - Water, Hunting, Ranch places and Sensors (the ranch's own places).
+  - **USGS water map**: mapped ponds, stock tanks, springs, wells and dams.
+  - Wildlife & sightings, Problems, other Photos, and Jobs that have a location.
+- **＋ Place** adds a fixed place to the map.
+  - Water: water tank, trough, pond or dirt tank, windmill or well.
+  - Hunting: deer blind, feeder, game camera, stand.
+  - Ranch: gate, cattle guard, pens, building, mineral or salt.
+  - Sensors: rain gauge, water level, soil moisture, weather station.
+  - Each place has a name, an optional photo and notes, and its location comes from the phone's GPS or a tap on the 2D or 3D map. Taps on the 3D ground are turned back into GPS coordinates; the UTM math round-trips to under a millimetre.
+  - Places can be edited and deleted by the owner or whoever added them. They work offline.
+- **Sensors** carry an optional device ID (from the sensor's label), so readings can be attached to the pin once sensors are connected.
+- **USGS water map:** from the National Hydrography Dataset (Waterbody and Point layers of `hydro.nationalmap.gov/.../nhd/MapServer`), refreshed every 30 days. NHD was mapped from older imagery, so it misses some dirt tanks and shows some that are dry. Each one has **Save as our place**.
+
+## Warnings
+
+- **Ignore drought & low rain in pasture status** (in More, or in the map's Layers panel). Drought and rain are the same for every pasture and often "normal" out here.
+- With it on, status comes from each pasture's own evidence: greenness, long-term trend, grazing days and crew reports.
+- Home then shows one line saying what was left out. Severe-weather alerts and crew reports always show.
+
+## Sun, moon and forecast
+
+- Home shows the 7-day forecast with weather icons.
+- It also shows sunrise and sunset, first and last light, the moon phase (% lit, next full and new moon), and moonrise and moonset, for the middle of the ranch in ranch time.
+- The sun and moon are worked out on the phone (`web/app/sky.js`, low-precision Meeus formulas), so they work with no signal.
+- Checked against PyEphem: sun times within 2 minutes; moonrise and moonset within about 4 minutes; % lit within 0.6 points; next full and new moon within about 5 hours. Only the date is shown for those.
+
+## 3D detail
+
+- **Terrain:** 512 × 512 vertices (was 256) from the USGS 3DEP lidar elevation.
+- **Aerial photo:** 3072 px USDA NAIP (was 1024), about 2.4 m per pixel on a 7 km ranch. The NAIP service allows up to 4000 px per request.
+- Both are rebuilt only when the format, the boundary or the month changes.
+- **Possible next step:** zoom-in detail tiles that load 1 m lidar and 0.6 m NAIP around where you're looking.
+- **Google Photorealistic 3D Tiles were considered and not used:**
+  - They are not available to Google Maps Platform projects billed to an EEA address (HTTP 403 since 8 July 2025).
+  - Their terms prohibit offline caching.
+  - They require Google attribution on screen.

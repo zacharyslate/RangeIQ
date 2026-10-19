@@ -39,13 +39,32 @@
   const tagSpan = t => `<span class="tag${tagClass(t)}">${TAG[t] ? TAG[t].icon + " " : ""}${esc(t)}</span>`;
   const COLOR = {good: "#2e9d55", watch: "#e0a21b", act: "#d63c2f", unknown: "#8a8f96"};
 
-  let snap = store.get("snapshot", null), snapAt = store.get("snapshotAt", null);
+  // Drought and rain are the same for every pasture and are "pretty normal out there", so the crew can switch them off.
+  // Then a pasture's status comes from its own evidence: greenness, long-term trend, grazing days and crew reports.
+  const EVERYDAY = ["drought", "rain"];
+  function combineSignals(signals) {            // same rules as status.combine() on the server
+    const usable = signals.filter(g => g.level !== "unavailable");
+    if (!usable.length) return {status: "unknown", headline: "Not enough data yet to judge this pasture."};
+    const field = usable.filter(g => g.level === "concern" && g.key === "field");
+    const concerns = [...field, ...usable.filter(g => g.level === "concern" && g.key !== "field")], watches = usable.filter(g => g.level === "watch");
+    const status = concerns.length >= 2 || field.length || (concerns.length && watches.length) ? "act" : concerns.length || watches.length ? "watch" : "good";
+    const lead = (concerns[0] || watches[0] || usable[0]);
+    return {status, headline: status === "act" ? "Act: " + lead.text : status === "watch" ? "Watch: " + lead.text
+      : "Looks good. " + (["grass", "rain"].includes(lead.key) ? lead.text : "No warning signs in the data.")};
+  }
+  function viewOf(raw) {
+    if (!raw || !raw.pastures || !store.get("hideEveryday", false)) return raw;
+    return {...raw, pastures: raw.pastures.map(p => ({...p, ...combineSignals((p.signals || []).filter(g => !EVERYDAY.includes(g.key))),
+      signals: p.signals}))};
+  }
+  let rawSnap = store.get("snapshot", null), snap = viewOf(rawSnap), snapAt = store.get("snapshotAt", null);
+  function setHideEveryday(on) { store.set("hideEveryday", !!on); snap = viewOf(rawSnap); if (view3d) view3d.setStatuses(statusMap()); rerender(); }
   let me = store.get("me", null);
   let photos = store.get("photos", []), serverLogs = store.get("serverLogs", []);
   let pending = [];                      // photos waiting to upload (from IndexedDB), with object URLs
   let currentPasture = null, photoHere = null;
   let map = null, mapLayers = [], view3d = null;
-  let mapMode = store.get("mapMode", "2d"), look = store.get("look", "photo"), exag = 2, showPhotos = true, logFilter = "all";
+  let mapMode = "3d", look = store.get("look", "photo"), exag = 2, logFilter = "all";   // the map always opens in 3D
 
   // ---------------------------------------------------------------- small helpers
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9-]/g, "").slice(0, 36);
@@ -138,13 +157,71 @@
     }
     return out;
   }
-  // Reports (problems and sightings) saved with a GPS location also go on both maps.
-  const reportsWithPlace = () => logItems().filter(i => i.type === "problem" && i.l.lat != null).map(i => {
-    const top = topTag(i.l.tags);
-    return {client_id: i.l.client_id, lat: i.l.lat, lon: i.l.lon, icon: top ? TAG[top].icon : "📝", taken_at: i.at, report: true,
-      flagged: tagsAt(i.l.tags, HEADS_UP).length > 0, title: (i.l.tags || []).join(", ") || i.l.text || "Report"};
-  });
-  const mapPins = () => [...spots(allPhotos()), ...reportsWithPlace()];
+  // ---------------------------------------------------------------- map layers: everything on the ranch, switchable
+  const PLACE_KINDS = {
+    water_tank: ["Water tank", "🛢️", "water"], trough: ["Trough", "💧", "water"], pond: ["Pond / dirt tank", "🌊", "water"],
+    windmill: ["Windmill / well", "🌀", "water"], water_other: ["Other water", "💧", "water"],
+    deer_blind: ["Deer blind", "🛖", "hunting"], feeder: ["Feeder", "🌽", "hunting"], game_camera: ["Game camera", "📸", "hunting"],
+    stand: ["Stand", "🪜", "hunting"],
+    gate: ["Gate", "🚪", "ranch"], cattle_guard: ["Cattle guard", "🚧", "ranch"], pens: ["Pens / corral", "🐂", "ranch"],
+    building: ["Building / barn", "🏠", "ranch"], mineral: ["Mineral / salt", "🧂", "ranch"], other: ["Other", "📍", "ranch"],
+    sensor_rain: ["Rain gauge sensor", "📡", "sensors"], sensor_water: ["Water-level sensor", "📡", "sensors"],
+    sensor_soil: ["Soil moisture sensor", "📡", "sensors"], sensor_weather: ["Weather station", "📡", "sensors"], sensor_other: ["Other sensor", "📡", "sensors"]};
+  const LAYERS = [["pastures", "Pastures", "🟫"], ["colors", "Warning colors", "🚦"], ["water", "Water", "💧"], ["hunting", "Hunting", "🛖"],
+    ["ranch", "Ranch places", "🏠"], ["usgs", "USGS water map", "🗺️"], ["sensors", "Sensors", "📡"], ["wildlife", "Wildlife & sightings", "🦌"], ["problems", "Problems", "⚠️"], ["photos", "Other photos", "📷"],
+    ["jobs", "Jobs", "✅"]];
+  let layers = {...Object.fromEntries(LAYERS.map(([k]) => [k, true])), ...store.get("layers", {})};
+  let places = store.get("places", []);
+  function layerOfTags(tags) {
+    if (tagsAt(tags, HEADS_UP).length) return "problems";
+    if ((tags || []).some(t => TAG[t] && (TAG[t].group === "Wildlife" || TAG[t].level === "info"))) return "wildlife";
+    return null;
+  }
+  function mapItems() {                         // every pin, with the layer it belongs to
+    const out = [];
+    const loose = allPhotos().filter(p => !p.place_id);
+    for (const sp of spots(loose)) {
+      const newest = loose.find(p => p.client_id === sp.client_id) || {};
+      const lay = layerOfTags(newest.tags) || "photos", top = topTag(newest.tags);
+      out.push({...sp, layer: lay, icon: lay === "photos" ? "📷" : (top ? TAG[top].icon : "📷"), title: (newest.tags || []).join(", ") || "Photo"});
+    }
+    logItems().filter(i => i.type === "problem" && i.l.lat != null).forEach(i => {
+      const top = topTag(i.l.tags);
+      out.push({client_id: i.l.client_id, lat: i.l.lat, lon: i.l.lon, icon: top ? TAG[top].icon : "📝", taken_at: i.at, report: true,
+        layer: layerOfTags(i.l.tags) || "problems", flagged: tagsAt(i.l.tags, HEADS_UP).length > 0, title: (i.l.tags || []).join(", ") || i.l.text || "Report"});
+    });
+    places.forEach(pl => { const k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
+      out.push({client_id: pl.place_id, lat: pl.lat, lon: pl.lon, icon: k[1], layer: k[2], place: true, title: pl.name}); });
+    const USGS_ICON = {tank: "💧", pond: "🌊", playa: "🏜️", marsh: "🌾", spring: "💦", well: "🚰", dam: "🧱"};
+    (((snap && snap.water_map) || {}).features || []).forEach(w =>
+      out.push({client_id: w.id, lat: w.lat, lon: w.lon, icon: USGS_ICON[w.kind] || "💧", layer: "usgs", usgs: true, title: w.name || w.label}));
+    tasks.filter(t => !t.done_at && t.lat != null).forEach(t =>
+      out.push({client_id: t.task_id, lat: t.lat, lon: t.lon, icon: "✅", layer: "jobs", task: true, title: t.title, flagged: taskBucket(t) === "late"}));
+    return out.filter(x => layers[x.layer]);
+  }
+  function openWater(id) {
+    const w = (((snap && snap.water_map) || {}).features || []).find(x => x.id === id); if (!w) return;
+    const kind = {tank: "water_tank", pond: "pond", playa: "pond", marsh: "water_other", spring: "water_other", well: "windmill", dam: "pond"}[w.kind] || "water_other";
+    openSheet(w.name || w.label, `<p><b>${esc(w.label)}</b>${w.acres ? ` · ${w.acres < 1 ? w.acres.toFixed(2) : w.acres.toFixed(1)} acres` : ""}${w.intermittent ? " · holds water only part of the year" : ""}</p>
+      <p class="dim small">From the USGS National Hydrography Dataset (${esc(((snap.water_map || {}).as_of) || "")}). It was mapped from older aerial photos, so some tanks are missing, moved or dry. Save the real ones as your own places.</p>
+      <div class="row"><button type="button" class="primary" id="wSave">Save as our place</button><button type="button" class="secondary" id="wMap">Show on map</button></div>`);
+    $("wSave").onclick = () => addPlace({kind, name: w.name || PLACE_KINDS[kind][0], lat: w.lat, lon: w.lon});
+    $("wMap").onclick = () => showOnMap(w.lat, w.lon);
+  }
+  function openItem(id) {
+    if (String(id).startsWith("nhd-")) return openWater(id);
+    if (places.some(p => p.place_id === id)) return openPlace(id);
+    if (tasks.some(t => t.task_id === id)) return openTask(id);
+    return openPhoto(id);
+  }
+  function statusMap() {
+    const m = {}; ((snap && snap.pastures) || []).forEach(p => { m[p.id] = layers.colors ? p.status : "unknown"; }); return m;
+  }
+  function showOnMap(lat, lon) {
+    closeSheet(); show("map");
+    const go = () => { if (view3d && view3d.focus(lat, lon)) return; mapMode = "2d"; renderMap().then(() => map && map.setView([lat, lon], 17)); };
+    setTimeout(go, view3d ? 50 : 1500);
+  }
   const sameSpot = p => p.lat == null ? [p] : allPhotos().filter(x => x.lat != null && metres(x, p) <= 35);
   const thumbOf = p => p._pending ? p.thumbUrl : fileUrl(p.thumb_url);
   const imageOf = p => p._pending ? p.imageUrl : fileUrl(p.image_url);
@@ -171,7 +248,7 @@
     ({home: renderHome, todo: renderTodo, map: renderMap, pasture: renderPasture, log: renderLog, more: renderMore}[tab] || (() => {}))();
     window.scrollTo(0, 0);
   }
-  document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => show(b.dataset.tab));
+  document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => { if (b.dataset.tab === "map") mapMode = "3d"; show(b.dataset.tab); });
   document.addEventListener("click", e => {
     const go = e.target.closest("[data-go]"); if (go) { show(go.dataset.go); return; }
     const p = e.target.closest("[data-pasture]"); if (p) { show("pasture-" + encodeURIComponent(p.dataset.pasture)); return; }
@@ -193,9 +270,9 @@
   async function refresh() {
     try {
       const data = await api("snapshot");
-      if (data.pending || data.setup_needed) { snap = null; store.del("snapshot"); store.set("setupMsg", data.message); }
-      else { snap = data; snapAt = new Date().toISOString(); store.set("snapshot", snap); store.set("snapshotAt", snapAt); store.del("setupMsg"); }
-      const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs), loadTasks()]);
+      if (data.pending || data.setup_needed) { rawSnap = snap = null; store.del("snapshot"); store.set("setupMsg", data.message); }
+      else { rawSnap = data; snap = viewOf(data); snapAt = new Date().toISOString(); store.set("snapshot", data); store.set("snapshotAt", snapAt); store.del("setupMsg"); }
+      const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs), loadTasks(), loadPlaces()]);
       me = m; photos = ph; serverLogs = lg; if (m.workspace_id) store.set("lastRanch", m.workspace_id);
       store.set("me", me); store.set("photos", photos); store.set("serverLogs", serverLogs);
     } catch (e) {
@@ -256,15 +333,70 @@
         <span class="lead" aria-hidden="true">${i.lead}</span><b>${esc(i.title)}</b><span class="go" aria-hidden="true">›</span>
         <span class="why">${esc(i.why || "")}</span></button></li>`).join("")}</ul>`;
     }
+    if (store.get("hideEveryday", false)) {
+      const sig = ((rawSnap && rawSnap.pastures && rawSnap.pastures[0] && rawSnap.pastures[0].signals) || []).filter(g => EVERYDAY.includes(g.key) && g.level !== "ok" && g.level !== "unavailable");
+      if (sig.length) box.insertAdjacentHTML("beforeend", `<p class="dim small">Not counted in pasture status (same for the whole ranch): ${sig.map(g => esc(g.text)).join(" ")}
+        <button type="button" class="linkbtn" id="showEveryday">Count them again</button></p>`);
+      if ($("showEveryday")) $("showEveryday").onclick = () => setHideEveryday(false);
+    }
+    renderSky();
     const w = snap.weather, r = snap.rain, wx = $("h-weather"); wx.hidden = false;
     if (!w) { wx.innerHTML = "<h2>Weather</h2><p class='dim'>Forecast not available right now.</p>"; return; }
     const today = (w.forecast || [])[0] || {};
     const pct = r && r.normal_90d_in ? Math.round(100 * r.rain_90d_in / r.normal_90d_in) : null;
-    wx.innerHTML = `<div class="wx"><span class="now">${w.temp_f ?? "–"}°</span><span><b>${esc(w.label || "")}</b><br>
+    const day = d => new Date(d + "T12:00:00").toLocaleDateString([], {weekday: "short"});
+    let tzw = snap.ranch && snap.ranch.timezone; try { new Intl.DateTimeFormat([], {timeZone: tzw}); } catch (e) { tzw = undefined; }
+    const sunT = window.RangeSky && snap.ranch && snap.ranch.center ? window.RangeSky.sunTimes(new Date(), snap.ranch.center[1], snap.ranch.center[0]) : null;
+    const isNight = sunT && sunT.sunrise && sunT.sunset ? (Date.now() < sunT.sunrise || Date.now() > sunT.sunset)
+      : (h => h < 7 || h >= 20)(Number(new Intl.DateTimeFormat("en-US", {hour: "numeric", hour12: false, timeZone: tzw}).format(new Date())));
+    wx.innerHTML = `<h2>Weather</h2><div class="wx"><span class="wxic" aria-hidden="true">${wxIcon(w.label, isNight)}</span><span class="now">${w.temp_f ?? "–"}°</span><span><b>${esc(w.label || "")}</b><br>
         <span class="dim">Wind ${w.wind_mph ?? "–"} mph${w.gust_mph ? ", gusts " + w.gust_mph : ""} · Rain ${today.rain_chance_pct ?? "–"}%</span></span></div>
-      <div class="wx3">${(w.forecast || []).slice(1, 4).map(d => `<div><span>${esc(new Date(d.date + "T12:00:00").toLocaleDateString([], {weekday: "short"}))}</span>
-        <b>${d.high_f ?? "–"}° / ${d.low_f ?? "–"}°</b><span class="dim">${d.rain_chance_pct ?? "–"}% rain</span></div>`).join("")}</div>
+      <div class="wx7" role="list" aria-label="Next 7 days">${(w.forecast || []).map((d, i) => `<div role="listitem" title="${esc(d.label || "")}"><span>${i === 0 ? "Today" : esc(day(d.date))}</span>
+        <span class="wxic sm" aria-label="${esc(d.label || "")}">${wxIcon(d.label, false)}</span><b>${d.high_f ?? "–"}°</b><span class="dim">${d.low_f ?? "–"}°</span><span class="rain${(d.rain_chance_pct || 0) >= 50 ? " wet" : ""}">💧${d.rain_chance_pct ?? "–"}%</span>
+        <span class="dim small">${d.gust_mph ? "💨" + d.gust_mph : d.wind_mph ? "💨" + d.wind_mph : ""}</span></div>`).join("")}</div>
       ${pct != null ? `<p class="dim">Rain last 90 days: <b>${r.rain_90d_in.toFixed(1)} in</b>, ${pct}% of normal.</p>` : ""}`;
+  }
+
+  // Weather picture from the forecast words (NWS / Open-Meteo labels)
+  function wxIcon(label, night) {
+    const l = String(label || "").toLowerCase();
+    if (/thunder|t-storm|tstorm/.test(l)) return "⛈️";
+    if (/snow|sleet|flurr|ice|freez/.test(l)) return "🌨️";
+    if (/rain|shower|drizzle/.test(l)) return /chance|slight|isolated|scattered/.test(l) ? "🌦️" : "🌧️";
+    if (/fog|haze|smoke|dust/.test(l)) return "🌫️";
+    if (/wind|breez|blustery/.test(l)) return "💨";
+    if (/overcast|^cloudy|mostly cloudy/.test(l)) return "☁️";
+    if (/mostly clear|few clouds/.test(l)) return night ? "🌙" : "🌤️";
+    if (/partly|mostly sunny/.test(l)) return night ? "☁️" : "⛅";
+    if (/sun|clear|fair/.test(l)) return night ? "🌙" : "☀️";
+    return "🌡️";
+  }
+
+  // ---------------------------------------------------------------- SKY: sun and moon for the ranch (worked out on the phone)
+  function renderSky() {
+    const box = $("h-sky"), c = snap && snap.ranch && snap.ranch.center;
+    if (!c || !window.RangeSky) { box.hidden = true; return; }
+    const [lon, lat] = c, S = window.RangeSky, now = new Date();
+    let tz = snap.ranch.timezone || undefined;
+    try { new Intl.DateTimeFormat([], {timeZone: tz}); } catch (e) { tz = undefined; }
+    const t = d => d ? d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit", timeZone: tz}) : "—";
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {timeZone: tz, hour12: false, hour: "numeric", minute: "numeric", second: "numeric"})
+      .formatToParts(now).map(p => [p.type, Number(p.value)]));
+    const midnight = new Date(now - (((parts.hour % 24) * 60 + parts.minute) * 60 + parts.second) * 1000);
+    const sun = S.sunTimes(new Date(midnight.valueOf() + 12 * 36e5), lat, lon), moon = S.moonTimes(midnight, lat, lon);
+    const ill = S.moonIllumination(now), ph = S.phaseName(ill.phase);
+    const full = S.nextPhase(now, 0.5), nw = S.nextPhase(now, 0);
+    const dateOf = d => d ? d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric", timeZone: tz}) : "—";
+    const daylight = sun.sunrise && sun.sunset ? Math.round((sun.sunset - sun.sunrise) / 6e4) : null;
+    box.hidden = false;
+    box.innerHTML = `<h2>Sun &amp; moon</h2>
+      <div class="sky"><div><span class="ic" aria-hidden="true">🌅</span><span class="dim">Sunrise</span><b>${t(sun.sunrise)}</b><span class="dim small">first light ${t(sun.dawn)}</span></div>
+        <div><span class="ic" aria-hidden="true">🌇</span><span class="dim">Sunset</span><b>${t(sun.sunset)}</b><span class="dim small">last light ${t(sun.dusk)}</span></div>
+        <div><span class="ic" aria-hidden="true">${ph.icon}</span><span class="dim">${esc(ph.name)}</span><b>${Math.round(ill.fraction * 100)}% lit</b>
+          <span class="dim small">full ${dateOf(full)}</span></div>
+        <div><span class="ic" aria-hidden="true">🌙</span><span class="dim">Moonrise</span><b>${moon.alwaysUp ? "up all day" : moon.alwaysDown ? "doesn't rise" : t(moon.rise)}</b>
+          <span class="dim small">moonset ${moon.set ? t(moon.set) : "—"}</span></div></div>
+      <p class="dim small">${daylight ? `${Math.floor(daylight / 60)} h ${daylight % 60} min of daylight. ` : ""}New moon ${dateOf(nw)}. Times for the middle of the ranch${tz ? ", ranch time" : ""}.</p>`;
   }
 
   // ---------------------------------------------------------------- MAP (2D Leaflet / 3D three.js)
@@ -284,69 +416,96 @@
   function setPressed(sel, attr, val) { document.querySelectorAll(sel).forEach(b => b.setAttribute("aria-pressed", String(b.dataset[attr] === String(val)))); }
   async function renderMap() {
     setPressed("[data-mapmode]", "mapmode", mapMode); setPressed("[data-look]", "look", look);
-    $("photosToggle").setAttribute("aria-pressed", String(showPhotos));
     $("lookSeg").hidden = $("exagRow").hidden = mapMode !== "3d";
     $("map").hidden = mapMode !== "2d"; $("map3d").hidden = mapMode !== "3d";
     $("m-list").innerHTML = snap ? snap.pastures.map(prow).join("") : "";
+    renderLayerCard();
     if (!snap) { $("map-src").textContent = "No ranch data yet."; return; }
     if (mapMode === "3d") return render3d();
     if (view3d) { view3d.dispose(); view3d = null; }
-    $("map-src").textContent = "Imagery: USGS The National Map. Tap a pasture or a photo.";
+    $("map-src").textContent = "Imagery: USGS The National Map. Tap a pasture or a pin.";
     try { await loadLeaflet(); } catch (e) { $("map").innerHTML = "<p class='dim' style='padding:16px'>Map couldn't load. The list below still works.</p>"; return; }
     if (!map) {
       map = L.map("map", {zoomControl: true});
       L.tileLayer("https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
         {maxZoom: 19, maxNativeZoom: 16, attribution: "USGS The National Map"}).addTo(map);
+      map.on("click", e => { if (mapPicker) { const cb = mapPicker; mapPicker = null; $("map").style.cursor = ""; cb(e.latlng.lat, e.latlng.lng); } });
     }
+    const first = !mapLayers.length;
     mapLayers.forEach(l => l.remove()); mapLayers = [];
     const all = [];
     snap.pastures.forEach(p => {
       const ll = p.outline.map(([lon, lat]) => [lat, lon]); all.push(...ll);
-      const poly = L.polygon(ll, {color: "#fff", weight: 2, fillColor: COLOR[p.status] || "#888", fillOpacity: .4})
-        .on("click", () => openPastureSheet(p.id));
+      if (!layers.pastures) return;
+      const poly = L.polygon(ll, {color: "#fff", weight: 2, fillColor: layers.colors ? (COLOR[p.status] || "#888") : "#ffffff",
+        fillOpacity: layers.colors ? .4 : .12}).on("click", () => { if (!mapPicker) openPastureSheet(p.id); });
       poly.bindTooltip(esc(p.name), {permanent: snap.pastures.length <= 8, direction: "center", className: "maplabel"});
       poly.addTo(map); mapLayers.push(poly);
     });
-    if (showPhotos) mapPins().forEach(p => {
+    mapItems().forEach(p => {
       const icon = L.divIcon({className: "", iconSize: [34, 34], iconAnchor: [17, 17], html:
-        `<div class="photo-pin${p.flagged ? " flag" : ""}${p.report ? " report" : ""}">${p.heading_deg != null ? `<i class="cone" style="transform:rotate(${p.heading_deg}deg)"></i>` : ""}${p.icon || "📷"}${p.n > 1 ? `<span class="n">${p.n}</span>` : ""}</div>`});
-      const m = L.marker([p.lat, p.lon], {icon, title: p.report ? p.title + ", " + when(p.taken_at) : (p.n > 1 ? p.n + " photos here, newest " : "Photo ") + when(p.taken_at)})
-        .on("click", () => openPhoto(p.client_id));
+        `<div class="photo-pin${p.flagged ? " flag" : ""}${p.place ? " place" : p.usgs ? " usgs" : p.report || p.task ? " report" : ""}">${p.heading_deg != null ? `<i class="cone" style="transform:rotate(${p.heading_deg}deg)"></i>` : ""}${p.icon}${p.n > 1 ? `<span class="n">${p.n}</span>` : ""}</div>`});
+      const m = L.marker([p.lat, p.lon], {icon, title: p.title + (p.taken_at ? ", " + when(p.taken_at) : "")}).on("click", () => openItem(p.client_id));
       m.addTo(map); mapLayers.push(m);
     });
-    map.invalidateSize(); map.fitBounds(all, {padding: [20, 20]});
+    map.invalidateSize(); if (first) map.fitBounds(all, {padding: [20, 20]});
   }
   function src3d() {
     const meta = view3d && view3d.meta; if (!meta) return;
     const ground = meta.dem_source === "usgs_3dep" ? `USGS lidar (${meta.dem_resolution_m} m)` : "EXAMPLE terrain, not your land";
     const skin = look === "topo" ? "Topo: elevation colors, contour lines" + (view3d.contourFt ? ` every ${view3d.contourFt()} ft` : "") + "."
       : meta.texture_source === "naip" ? "Aerial photo: USDA NAIP." : "Aerial photo unavailable; showing relief.";
-    $("map-src").textContent = `Ground: ${ground}. ${skin} Glowing walls are pasture lines, colored by status. Drag to turn, pinch to zoom.`;
+    $("map-src").textContent = `Ground: ${ground}. ${skin} ${layers.colors ? "Glowing walls are pasture lines, colored by status." : "Pasture lines without warning colors."} Drag to turn, pinch to zoom.`;
   }
   async function render3d() {
     const box = $("map3d");
-    if (view3d) { view3d.setLook(look); view3d.setPhotos(showPhotos ? mapPins() : []); src3d(); return; }
+    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses(statusMap()); view3d.setPasturesVisible(layers.pastures); src3d(); return; }
     box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
     try {
       const [meta, height, texture, mod] = await Promise.all([api("terrain/meta"), getBytes("terrain/height"), getBytes("terrain/texture"), import("./terrain3d.js")]);
       if ($("v-map").hidden || mapMode !== "3d") return;
-      const statusById = {}, namesById = {};
-      const lonlatById = {};
-      snap.pastures.forEach(p => { statusById[p.id] = p.status; namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
-      view3d = mod.mount(box, {meta, height: height.bytes, texture, statusById, namesById, lonlatById, look, exaggeration: exag,
-        photos: showPhotos ? mapPins() : [], onPhoto: openPhoto, onPasture: openPastureSheet});
-      view3d.meta = meta; src3d();
+      const namesById = {}, lonlatById = {};
+      snap.pastures.forEach(p => { namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
+      view3d = mod.mount(box, {meta, height: height.bytes, texture, statusById: statusMap(), namesById, lonlatById, look, exaggeration: exag,
+        photos: mapItems(), onPhoto: id => { if (!picking()) openItem(id); }, onPasture: id => { if (!picking()) openPastureSheet(id); }});
+      view3d.meta = meta; view3d.setPasturesVisible(layers.pastures); src3d();
     } catch (e) {
       if (e.signin) { show("login"); return; }
-      box.innerHTML = `<div class="busy">${e.message === "notready" ? "The 3D terrain isn't ready yet. It's built with the next ranch update." :
-        navigator.onLine ? "The 3D view couldn't load. Try again in a moment." : "The 3D view needs signal the first time."}</div>`;
+      // No 3D yet (or no WebGL / no signal): fall back to the flat map so the console still works.
+      const why = e.message === "notready" ? "The 3D terrain isn't ready yet, so here's the flat map." :
+        navigator.onLine ? "The 3D view couldn't load, so here's the flat map." : "The 3D view needs signal the first time, so here's the flat map.";
+      mapMode = "2d"; await renderMap(); $("map-src").textContent = why;
     }
   }
-  document.querySelectorAll("[data-mapmode]").forEach(b => b.onclick = () => { mapMode = b.dataset.mapmode; store.set("mapMode", mapMode); renderMap(); });
+  let mapPicker = null;
+  const picking = () => !!mapPicker || (view3d && view3d._picking);
+  function pickOnMap(cb) {                       // "tap the map where it is"
+    show("map");
+    const done = (lat, lon) => { if (view3d) view3d._picking = false; $("pickBar").hidden = true; cb(lat, lon); };
+    $("pickBar").hidden = false;
+    $("pickCancel").onclick = () => { mapPicker = null; if (view3d) { view3d.cancelPick(); view3d._picking = false; } $("pickBar").hidden = true; cb(null, null); };
+    setTimeout(() => {
+      if (mapMode === "3d" && view3d) { view3d._picking = true; view3d.pickOnce(done); }
+      else { mapPicker = done; $("map").style.cursor = "crosshair"; }
+    }, 300);
+  }
+  function renderLayerCard() {
+    const all = (() => { const keep = layers; layers = Object.fromEntries(LAYERS.map(([k]) => [k, true])); const x = mapItems(); layers = keep; return x; })();
+    const count = k => all.filter(x => x.layer === k).length;
+    $("layerCard").innerHTML = `<h2>Show on the map</h2><div class="layers">${LAYERS.map(([k, label, ic]) => `<button type="button" class="layer" data-layer="${k}"
+      aria-pressed="${!!layers[k]}"><span aria-hidden="true">${ic}</span>${esc(label)}${["pastures", "colors"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
+      <label class="switchrow"><input type="checkbox" id="hideEverydayMap" ${store.get("hideEveryday", false) ? "checked" : ""}>
+        <span>Ignore drought &amp; rain in pasture status <span class="dim small">(they're the same everywhere)</span></span></label>`;
+    $("layerCard").querySelectorAll("[data-layer]").forEach(b => b.onclick = () => {
+      layers[b.dataset.layer] = !layers[b.dataset.layer]; store.set("layers", layers); renderMap(); });
+    $("hideEverydayMap").onchange = e => setHideEveryday(e.target.checked);
+  }
+  document.querySelectorAll("[data-mapmode]").forEach(b => b.onclick = () => { mapMode = b.dataset.mapmode; renderMap(); });
   document.querySelectorAll("[data-look]").forEach(b => b.onclick = () => { look = b.dataset.look; store.set("look", look); setPressed("[data-look]", "look", look); if (view3d) view3d.setLook(look); renderMap(); });
   document.querySelectorAll("[data-exag]").forEach(b => b.onclick = () => { exag = Number(b.dataset.exag); setPressed("[data-exag]", "exag", exag); if (view3d) view3d.setExaggeration(exag); });
   $("resetView").onclick = () => view3d && view3d.reset();
-  $("photosToggle").onclick = () => { showPhotos = !showPhotos; if (view3d) view3d.setPhotos(showPhotos ? mapPins() : []); renderMap(); };
+  $("layersBtn").onclick = () => { $("layerCard").hidden = !$("layerCard").hidden; $("layersBtn").setAttribute("aria-pressed", String(!$("layerCard").hidden)); };
+  $("addPlaceBtn").onclick = () => addPlace();
 
   function openPastureSheet(id) {
     const p = snap && snap.pastures.find(x => x.id === id); if (!p) return;
@@ -378,7 +537,7 @@
       <div><span class="dim">Average slope</span><b>${t.mean_slope_pct}%</b></div>
       <div><span class="dim">Faces</span><b>${esc(t.faces || "–")}</b></div></div>
       <button type="button" class="secondary" id="see3d">⛰ See it in 3D</button>` : "<p class='dim'>Terrain not available yet.</p>");
-    if ($("see3d")) $("see3d").onclick = () => { mapMode = "3d"; store.set("mapMode", mapMode); show("map"); };
+    if ($("see3d")) $("see3d").onclick = () => { mapMode = "3d"; show("map"); };
   }
 
   // ---------------------------------------------------------------- LOG
@@ -424,6 +583,8 @@
   // ---------------------------------------------------------------- MORE (crew, settings)
   async function renderMore() {
     $("o-who").textContent = me ? `${me.name}${me.role === "crew" ? " · crew" : ""} · ${me.ranch}` : "";
+    $("o-everyday").checked = store.get("hideEveryday", false);
+    $("o-everyday").onchange = e => setHideEveryday(e.target.checked);
     const rs = (me && me.ranches) || [];
     $("o-ranch").hidden = rs.length < 2;
     $("o-ranch").innerHTML = `<h2>Your ranches</h2><div class="row">${rs.map(r => `<button type="button" class="${r.workspace_id === me.workspace_id ? "primary" : "secondary"}"
@@ -461,7 +622,7 @@
   $("logoutBtn").onclick = async () => {
     if ((store.get("queue", []).length || pending.length) && !confirm("Some photos or entries haven't been sent yet. Sign out anyway? They stay on this phone.")) return;
     try { await api("logout", {method: "POST"}); } catch (e) {}
-    ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me", "tasks", "people"].forEach(k => store.del(k)); snap = null; me = null; photos = []; show("login");
+    ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me", "tasks", "people", "places"].forEach(k => store.del(k)); rawSnap = snap = null; me = null; photos = []; show("login");
   };
 
   // ---------------------------------------------------------------- sheets
@@ -577,9 +738,10 @@
     photoHere = here || null;
     startSensors();                       // must start inside the tap so the phone allows GPS/compass
     cam.fix = cam.fix && Date.now() - cam.fix.at < 60000 ? cam.fix : null;
-    const input = $("camInput"); input.value = ""; input.click();
+    const input = $("camInput"); input.value = ""; input.onchange = onCam; input.click();
   }
-  $("camInput").onchange = e => { const file = e.target.files && e.target.files[0]; if (file) processPhoto(file); };
+  const onCam = e => { const file = e.target.files && e.target.files[0]; if (file) processPhoto(file); };
+  $("camInput").onchange = onCam;
 
   function loadImage(file) {
     return new Promise((ok, fail) => { const url = URL.createObjectURL(file), img = new Image();
@@ -666,7 +828,7 @@
       <div class="row"><button type="button" class="primary" id="rpJob">＋ Make it a job</button>${l.lat != null ? `<button type="button" class="secondary" id="rpMap">Show on map</button>` : ""}
       ${l._pending || isOwner() || mine ? `<button type="button" class="secondary" id="rpDel">Delete</button>` : ""}</div>`);
     $("rpJob").onclick = () => window.__rangeiqMakeJob(l, false);
-    if ($("rpMap")) $("rpMap").onclick = () => { closeSheet(); mapMode = "2d"; show("map"); setTimeout(() => map && map.setView([l.lat, l.lon], 17), 400); };
+    if ($("rpMap")) $("rpMap").onclick = () => showOnMap(l.lat, l.lon);
     if ($("rpDel")) $("rpDel").onclick = async () => {
       if (!confirm("Delete this report?")) return;
       try {
@@ -693,7 +855,7 @@
       <div class="row"><button type="button" class="primary" id="phJob">＋ Make it a job</button>${p.lat != null ? `<button type="button" class="secondary" id="phMap">Show on map</button>` : ""}
       ${canDelete ? `<button type="button" class="secondary" id="phDel">Delete</button>` : ""}</div>`);
     $("phJob").onclick = () => window.__rangeiqMakeJob(p, true);
-    if ($("phMap")) $("phMap").onclick = () => { closeSheet(); mapMode = "2d"; show("map"); setTimeout(() => map && map.setView([p.lat, p.lon], 17), 400); };
+    if ($("phMap")) $("phMap").onclick = () => showOnMap(p.lat, p.lon);
     if ($("phDel")) $("phDel").onclick = async () => {
       if (!confirm("Delete this photo?")) return;
       try {
@@ -813,7 +975,7 @@
       ${t.source_id ? `<button type="button" class="secondary" data-photo="${esc(t.source_id)}">See the report</button>` : ""}
       ${canDelete ? `<button type="button" class="secondary" id="tkDel">Delete</button>` : ""}</div>`);
     $("sheetBody").querySelector("[data-check]").addEventListener("click", () => setTimeout(closeSheet, 50));
-    if ($("tkMap")) $("tkMap").onclick = () => { closeSheet(); mapMode = "2d"; show("map"); setTimeout(() => map && map.setView([t.lat, t.lon], 17), 400); };
+    if ($("tkMap")) $("tkMap").onclick = () => showOnMap(t.lat, t.lon);
     if ($("tkDel")) $("tkDel").onclick = () => { if (confirm("Delete this job?")) { taskOp({op: "delete", task_id: t.task_id}); closeSheet(); } };
   }
   function addTask(pre = {}) {
@@ -849,7 +1011,118 @@
       pasture_id: x.pasture_id, note: x.text || x.note || "", lat: x.lat, lon: x.lon, source_id: x.client_id});
   };
 
-  // ---------------------------------------------------------------- sync (logs + photos + jobs)
+
+  // ---------------------------------------------------------------- PLACES: tanks, ponds, blinds, feeders, gates... on the map
+  async function loadPlaces() {
+    try { setPlacesFromServer(await api("places")); } catch (e) { if (e.signin) throw e; }
+  }
+  function setPlacesFromServer(list) {
+    places = list || [];
+    for (const q of store.get("placeq", [])) {   // keep unsent changes on top
+      places = places.filter(p => p.place_id !== q.place_id);
+      if (!q.deleted) places.push(q);
+    }
+    store.set("places", places);
+  }
+  function placeChange(item) {
+    item = {...item, updated_at: new Date().toISOString()};
+    const q = store.get("placeq", []).filter(x => x.place_id !== item.place_id); q.push(item); store.set("placeq", q);
+    places = places.filter(p => p.place_id !== item.place_id); if (!item.deleted) places.push({...item, created_by: item.created_by || (me && me.user_id),
+      created_by_name: item.created_by_name || (me && me.name)});
+    store.set("places", places); rerender(); syncAll();
+  }
+  function kindPicker(selected) {
+    const groups = [["water", "💧 Water"], ["hunting", "🛖 Hunting"], ["ranch", "🏠 Ranch"], ["sensors", "📡 Sensors"]];
+    return groups.map(([g, label]) => `<p class="dim small" style="margin-top:4px">${label}</p><div class="tagchips">${Object.entries(PLACE_KINDS)
+      .filter(([, v]) => v[2] === g).map(([k, v]) => `<button type="button" data-kind="${k}" aria-pressed="${k === selected}">${v[1]} ${esc(v[0])}</button>`).join("")}</div>`).join("");
+  }
+  async function placePhoto() {                 // returns the queued photo's id, or null
+    return new Promise(ok => {
+      const input = $("camInput"); input.value = "";
+      input.onchange = async e => {
+        input.onchange = onCam;                    // back to the normal camera
+        const file = e.target.files && e.target.files[0]; if (!file) return ok(null);
+        try {
+          const img = await loadImage(file);
+          const [photo, thumb] = await Promise.all([toJpeg(img, 1600, 0.82), toJpeg(img, 360, 0.7)]); URL.revokeObjectURL(img.src);
+          const client_id = uid(), fix = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
+          await idb.put({client_id, photo, thumb, meta: {client_id, taken_at: new Date().toISOString(), lat: fix ? fix.lat : null, lon: fix ? fix.lon : null,
+            accuracy_m: fix ? fix.acc : null, heading_deg: null, pasture_id: null, tags: [], note: null, by: me && me.name, analysis: {}, flagged: false,
+            place_id: placeDraft && placeDraft.place_id}});
+          await loadPending(); ok(client_id);
+        } catch (err) { toast("Couldn't use that photo: " + err.message); ok(null); }
+      };
+      input.click();
+    });
+  }
+  let placeDraft = null;
+  function addPlace(pre = {}) {
+    startSensors();
+    placeDraft = {place_id: uid(), kind: "water_tank", name: "", note: "", lat: null, lon: null, photo_id: null, ...pre};
+    placeForm();
+  }
+  function placeForm() {
+    const d = placeDraft, isNew = !places.some(p => p.place_id === d.place_id);
+    const ph = d.photo_id && allPhotos().find(x => x.client_id === d.photo_id);
+    openSheet(isNew ? "Add a place" : "Edit place", `<form class="form" id="placeForm"><div>${kindPicker(d.kind)}</div>
+      <label>Name<input name="name" maxlength="80" required value="${esc(d.name)}" placeholder="${esc(PLACE_KINDS[d.kind][0])} by the north gate"></label>
+      <div><p><b>Where</b></p><p class="dim" id="plWhere"></p>
+        <div class="row"><button type="button" class="secondary" id="plGps">📍 Use where I'm standing</button>
+        <button type="button" class="secondary" id="plTap">👆 Tap it on the map</button></div></div>
+      <div class="row" style="align-items:center">${ph ? `<img class="placethumb" src="${esc(thumbOf(ph))}" alt="">` : ""}<button type="button" class="secondary" id="plPhoto">📷 ${ph ? "Change photo" : "Add a photo"}</button></div>
+      <label id="plDevice" ${d.kind.startsWith("sensor_") ? "" : "hidden"}>Device ID (optional; on the sensor's label)<input name="device_id" maxlength="64" value="${esc(d.device_id || "")}" autocapitalize="characters"></label>
+      <label>Notes (optional)<textarea name="note" maxlength="1000" placeholder="Holds about 2,000 gal · feeder set to 7 am">${esc(d.note || "")}</textarea></label>
+      <div class="row"><button type="submit" class="primary">Save place</button><button type="button" class="secondary" id="plCancel">Cancel</button></div></form>`);
+    const f = $("placeForm");
+    const where = () => {
+      const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
+      $("plWhere").textContent = d.lat != null ? `Set: ${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}${d.acc ? ` (±${d.acc} m)` : " (from the map)"}`
+        : fx ? `Not set yet. Your phone is at ±${fx.acc} m.` : "Not set yet. Getting your location…";
+    };
+    where(); const t = setInterval(() => { if (!$("plWhere")) return clearInterval(t); where(); }, 1000);
+    f.querySelectorAll("[data-kind]").forEach(b => b.onclick = () => {
+      const was = PLACE_KINDS[d.kind][0]; d.kind = b.dataset.kind;
+      f.querySelectorAll("[data-kind]").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+      if (!f.name.value || f.name.value === was) f.name.value = PLACE_KINDS[d.kind][0];
+      $("plDevice").hidden = !d.kind.startsWith("sensor_");
+    });
+    const keep = () => { d.name = f.name.value; d.note = f.note.value; d.device_id = f.device_id.value; };
+    $("plGps").onclick = () => { const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
+      if (!fx) { toast("No GPS fix yet. Try again in a moment, or tap it on the map."); return; } d.lat = fx.lat; d.lon = fx.lon; d.acc = fx.acc; where(); };
+    $("plTap").onclick = () => { keep(); clearInterval(t); closeSheet();
+      pickOnMap((lat, lon) => { if (lat != null) { d.lat = lat; d.lon = lon; d.acc = null; } placeForm(); }); };
+    $("plPhoto").onclick = async () => { keep(); const id = await placePhoto(); if (id) { d.photo_id = id; if (d.lat == null && cam.fix) { d.lat = cam.fix.lat; d.lon = cam.fix.lon; d.acc = cam.fix.acc; } } placeForm(); };
+    $("plCancel").onclick = () => { clearInterval(t); placeDraft = null; stopSensors(); closeSheet(); };
+    f.onsubmit = e => {
+      e.preventDefault(); keep();
+      if (d.lat == null) { toast("Set where it is: use your location or tap it on the map."); return; }
+      clearInterval(t); stopSensors();
+      placeChange({place_id: d.place_id, kind: d.kind, name: d.name.trim() || PLACE_KINDS[d.kind][0], note: d.note.trim() || null,
+        lat: d.lat, lon: d.lon, photo_id: d.photo_id || null, device_id: d.kind.startsWith("sensor_") ? (d.device_id || "").trim() || null : null});
+      closeSheet(); toast("Place saved."); placeDraft = null;
+    };
+  }
+  function openPlace(id) {
+    const pl = places.find(x => x.place_id === id); if (!pl) return;
+    const k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other, ph = pl.photo_id && allPhotos().find(x => x.client_id === pl.photo_id);
+    const canEdit = isOwner() || (me && pl.created_by === me.user_id);
+    openSheet(`${k[1]} ${pl.name}`, `<p class="dim">${esc(k[0])}${pl.created_by_name ? " · added by " + esc(pl.created_by_name) : ""}</p>
+      ${ph ? `<img class="photoimg" src="${esc(imageOf(ph))}" alt="Photo of ${esc(pl.name)}">` : ""}
+      ${pl.note ? `<p>${esc(pl.note)}</p>` : ""}
+      ${pl.kind.startsWith("sensor_") ? `<p class="dim small">${pl.device_id ? "Device " + esc(pl.device_id) + ". " : ""}Live readings will show here once sensors are connected to RangeIQ.</p>` : ""}
+      <div class="row"><button type="button" class="secondary" id="plMap">Show on map</button>
+        <button type="button" class="secondary" id="plJob">＋ Make it a job</button>
+        ${canEdit ? `<button type="button" class="secondary" id="plEdit">Edit</button><button type="button" class="secondary" id="plDel">Delete</button>` : ""}</div>`);
+    $("plMap").onclick = () => showOnMap(pl.lat, pl.lon);
+    $("plJob").onclick = () => addTask({title: `Check ${pl.name}`, note: "", lat: pl.lat, lon: pl.lon, source_id: null,
+      pasture_id: pastureAt(pl.lon, pl.lat)});
+    if (canEdit) {
+      $("plEdit").onclick = () => { placeDraft = {...pl}; startSensors(); placeForm(); };
+      $("plDel").onclick = () => { if (confirm(`Delete ${pl.name}?`)) { placeChange({place_id: pl.place_id, deleted: true}); closeSheet(); } };
+    }
+  }
+
+  // ---------------------------------------------------------------- sync (logs + photos + jobs + places)
   let syncing = false;
   async function syncAll(manual) {
     if (syncing) return;
@@ -876,6 +1149,14 @@
         if (res.errors.length) toast(res.errors[0].error);
         setTasksFromServer(res.tasks);
       } else await loadTasks();
+      const pq = store.get("placeq", []);
+      if (pq.length) {
+        const res = await api("places", {method: "POST", body: JSON.stringify(pq)});
+        const sent = new Set([...res.saved, ...res.errors.map(e => e.place_id)]);
+        store.set("placeq", store.get("placeq", []).filter(x => !sent.has(x.place_id)));
+        if (res.errors.length) toast(res.errors[0].error);
+        setPlacesFromServer(res.places);
+      } else await loadPlaces();
       await loadPending();
       const [ph, lg] = await Promise.all([api("photos"), api("logs")]);
       photos = ph; serverLogs = lg; store.set("photos", photos); store.set("serverLogs", serverLogs);
@@ -883,7 +1164,7 @@
     finally { syncing = false; rerender(); }
   }
   function updateSyncPill() {
-    const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length, p = $("syncPill");
+    const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length, p = $("syncPill");
     p.hidden = !n; p.textContent = n + " waiting to send";
   }
   $("syncPill").onclick = () => syncAll(true);
@@ -900,14 +1181,14 @@
     show("home"); await refresh(); syncAll();
   }
   // ---------------------------------------------------------------- switch between ranches (one login, several ranches)
-  const unsent = () => store.get("queue", []).length + pending.length + store.get("taskq", []).length;
+  const unsent = () => store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length;
   async function switchRanch(workspaceId) {
     if (!me || workspaceId === me.workspace_id) { closeSheet(); return; }
     if (unsent()) { await syncAll(true); if (unsent()) { toast("Some photos or entries for this ranch haven't sent yet. Switch once they have."); return; } }
     try {
       const who = await api("switch", {method: "POST", body: JSON.stringify({workspace_id: workspaceId})});
-      ["snapshot", "snapshotAt", "serverLogs", "photos", "tasks", "people"].forEach(k => store.del(k));
-      snap = null; photos = []; serverLogs = []; tasks = []; people = [];
+      ["snapshot", "snapshotAt", "serverLogs", "photos", "tasks", "people", "places"].forEach(k => store.del(k));
+      rawSnap = snap = null; photos = []; serverLogs = []; tasks = []; people = []; places = [];
       if (view3d) { view3d.dispose(); view3d = null; }
       closeSheet(); toast("Now on " + who.ranch); await signedIn(who);
     } catch (e) { if (e.signin) show("login"); else toast(navigator.onLine ? e.message : "Switching ranches needs signal."); }

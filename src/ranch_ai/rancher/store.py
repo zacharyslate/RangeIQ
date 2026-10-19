@@ -135,6 +135,20 @@ class AppStore:
                     deleted INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS ix_tasks_ws ON tasks(workspace_id);
+                -- Fixed places on the ranch map: water tanks, ponds, blinds, feeders, gates, pens, ...
+                CREATE TABLE IF NOT EXISTS places (
+                    place_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    note TEXT,
+                    lat REAL NOT NULL, lon REAL NOT NULL,
+                    photo_id TEXT,
+                    created_by TEXT, created_by_name TEXT, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS ix_places_ws ON places(workspace_id);
                 CREATE TABLE IF NOT EXISTS task_ops (
                     op_id TEXT PRIMARY KEY,
                     workspace_id TEXT NOT NULL,
@@ -154,6 +168,10 @@ class AppStore:
                 );
                 """
             )
+            if "device_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(places)").fetchall()}:
+                conn.execute("ALTER TABLE places ADD COLUMN device_id TEXT")
+            if "place_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(photos)").fetchall()}:
+                conn.execute("ALTER TABLE photos ADD COLUMN place_id TEXT")
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(invites)").fetchall()}
             if "role" not in cols:
                 conn.execute("ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'crew'")
@@ -316,11 +334,12 @@ class AppStore:
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO photos(client_id, workspace_id, user_id, user_name, taken_at, lat, lon, accuracy_m, heading_deg, "
-                "pasture_id, tags, note, analysis, flagged, bytes, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "pasture_id, tags, note, analysis, flagged, bytes, received_at, place_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (client_id, workspace_id, user_id, user_name, str(meta.get("taken_at") or _iso(utc_now())),
                  num("lat"), num("lon"), num("accuracy_m"), num("heading_deg"), meta.get("pasture_id"),
                  json.dumps(tags), (str(meta.get("note") or "")[:2000]) or None, json.dumps(analysis),
-                 1 if meta.get("flagged") else 0, len(image), _iso(utc_now())),
+                 1 if meta.get("flagged") else 0, len(image), _iso(utc_now()),
+                 (str(meta.get("place_id"))[:64] if meta.get("place_id") else None)),
             )
             row = conn.execute("SELECT * FROM photos WHERE client_id = ?", (client_id,)).fetchone()
         return self._row_to_photo(row), True
@@ -354,7 +373,7 @@ class AppStore:
         return {
             "client_id": row["client_id"], "user_id": row["user_id"], "by": row["user_name"], "taken_at": row["taken_at"],
             "lat": row["lat"], "lon": row["lon"], "accuracy_m": row["accuracy_m"], "heading_deg": row["heading_deg"],
-            "pasture_id": row["pasture_id"], "tags": json.loads(row["tags"] or "[]"), "note": row["note"],
+            "pasture_id": row["pasture_id"], "tags": json.loads(row["tags"] or "[]"), "note": row["note"], "place_id": row["place_id"],
             "analysis": json.loads(row["analysis"] or "{}"), "flagged": bool(row["flagged"]), "received_at": row["received_at"],
         }
 
@@ -440,6 +459,70 @@ class AppStore:
     def crew_user_ids(self) -> set[str]:
         with self._connect() as conn:
             return {r["user_id"] for r in conn.execute("SELECT user_id FROM ranch_members WHERE role = 'crew'").fetchall()}
+
+    # -- places on the map -------------------------------------------------------
+    PLACE_KINDS = {
+        "water_tank", "trough", "pond", "windmill", "water_other",
+        "deer_blind", "feeder", "game_camera", "stand",
+        "gate", "cattle_guard", "pens", "building", "mineral", "other",
+        # sensors: marked now with GPS + photo; device_id links the pin to its readings once sensors are connected
+        "sensor_rain", "sensor_water", "sensor_soil", "sensor_weather", "sensor_other",
+    }
+
+    def list_places(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM places WHERE workspace_id = ? AND deleted = 0 ORDER BY name", (workspace_id,)).fetchall()
+        return [{k: r[k] for k in ("place_id", "kind", "name", "note", "lat", "lon", "photo_id", "device_id", "created_by", "created_by_name",
+                                   "created_at", "updated_at")} for r in rows]
+
+    def save_place(self, workspace_id: str, data: dict[str, Any], *, user_id: str, user_name: str, is_owner: bool) -> dict[str, Any]:
+        """Add or change a place. Last change wins (by updated_at), so re-sending from a phone is safe."""
+        place_id = str(data.get("place_id") or "").strip()
+        if not place_id or len(place_id) > 64:
+            raise ValueError("place_id is required.")
+        kind = str(data.get("kind") or "")
+        if kind not in self.PLACE_KINDS:
+            raise ValueError("Unknown kind of place.")
+        name = str(data.get("name") or "").strip()[:80]
+        if not name:
+            raise ValueError("A place needs a name.")
+        try:
+            lat, lon = float(data["lat"]), float(data["lon"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("A place needs a location.") from None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError("That location isn't valid.")
+        now = _iso(utc_now())
+        updated = str(data.get("updated_at") or now)[:40]
+        device = str(data.get("device_id") or "").strip()[:64] or None
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM places WHERE place_id = ?", (place_id,)).fetchone()
+            if row is not None:
+                if row["workspace_id"] != workspace_id:
+                    raise ValueError("place_id already used.")
+                if not is_owner and row["created_by"] != user_id:
+                    raise PermissionError("Only the owner or whoever added it can change a place.")
+                if row["updated_at"] > updated:          # an older edit arriving late
+                    return dict(row)
+                conn.execute("UPDATE places SET kind=?, name=?, note=?, lat=?, lon=?, photo_id=?, device_id=?, updated_at=?, deleted=0 WHERE place_id=?",
+                             (kind, name, (str(data.get("note") or "").strip()[:1000] or None), lat, lon,
+                              data.get("photo_id") or row["photo_id"], device, updated, place_id))
+            else:
+                conn.execute("INSERT INTO places(place_id, workspace_id, kind, name, note, lat, lon, photo_id, created_by, created_by_name, "
+                             "created_at, updated_at, device_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                             (place_id, workspace_id, kind, name, (str(data.get("note") or "").strip()[:1000] or None), lat, lon,
+                              data.get("photo_id"), user_id, user_name, now, updated, device))
+            return dict(conn.execute("SELECT * FROM places WHERE place_id = ?", (place_id,)).fetchone())
+
+    def delete_place(self, workspace_id: str, place_id: str, *, user_id: str, is_owner: bool) -> bool:
+        with self._connect() as conn:
+            row = conn.execute("SELECT created_by FROM places WHERE workspace_id = ? AND place_id = ?", (workspace_id, place_id)).fetchone()
+            if row is None:
+                return False
+            if not is_owner and row["created_by"] != user_id:
+                raise PermissionError("Only the owner or whoever added it can delete a place.")
+            conn.execute("UPDATE places SET deleted = 1 WHERE place_id = ?", (place_id,))
+        return True
 
     # -- to-do list (jobs around the ranch) --------------------------------------
     TASK_OPS = {"add", "done", "undo", "delete"}
