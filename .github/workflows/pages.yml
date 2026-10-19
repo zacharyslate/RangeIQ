@@ -1,0 +1,55 @@
+# Publishes the phone app (web/) to GitHub Pages, like the Marfa Lights app.
+# Only app code and public assets are published. Ranch data never lives in this repo:
+# it stays on the RangeIQ server, behind sign-in.
+name: Publish phone app to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "scripts/build_sw.py"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the offline service worker matches the app files
+        run: |
+          python scripts/build_sw.py
+          git diff --exit-code web/app/sw.js || { echo "::error::web/app/sw.js is stale. Run: python scripts/build_sw.py and commit it."; exit 1; }
+
+      - name: Refuse to publish anything that looks like ranch data
+        run: |
+          if find web -type f \( -name '*.sqlite*' -o -name '*.geojson' -o -name '*.kml' -o -name '*.kmz' -o -name '*.tif' -o -name 'snapshot*.json' \) | grep .; then
+            echo "::error::Ranch data files found under web/. They must not be published."; exit 1
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

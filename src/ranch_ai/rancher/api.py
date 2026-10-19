@@ -21,10 +21,14 @@ Routes
 from __future__ import annotations
 
 import os
+import threading
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Response
+from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -35,6 +39,42 @@ COOKIE = "rangeiq_session"
 WEB_DIR = Path(os.getenv("RANGEIQ_WEB_DIR", PROJECT_ROOT / "web" / "app"))
 AUTH_DB = Path(os.getenv("RANGEIQ_AUTH_DB", PROJECT_ROOT / "data" / "processed" / "rangeiq_auth.sqlite"))
 SECURE_COOKIE = os.getenv("RANGEIQ_COOKIE_SECURE", "1") != "0"
+# Where the phone app may be hosted besides this server (e.g. GitHub Pages). Comma-separated origins.
+ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in os.getenv("RANGEIQ_ALLOWED_ORIGINS", "https://zacharyslate.github.io").split(",") if o.strip()]
+LOGIN_MAX_FAILURES = int(os.getenv("RANGEIQ_LOGIN_MAX_FAILURES", "8"))
+LOGIN_WINDOW_SECONDS = int(os.getenv("RANGEIQ_LOGIN_WINDOW_SECONDS", "900"))
+
+
+class LoginThrottle:
+    """Refuse sign-in after too many recent failures for the same email or the same address."""
+
+    def __init__(self, max_failures: int = LOGIN_MAX_FAILURES, window_seconds: int = LOGIN_WINDOW_SECONDS) -> None:
+        self.max_failures, self.window = max_failures, window_seconds
+        self._failures: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def _recent(self, key: str, now: float) -> deque[float]:
+        hits = self._failures[key]
+        while hits and now - hits[0] > self.window:
+            hits.popleft()
+        return hits
+
+    def blocked(self, *keys: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            return any(len(self._recent(k, now)) >= self.max_failures for k in keys if k)
+
+    def fail(self, *keys: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            for k in keys:
+                if k:
+                    self._recent(k, now).append(now)
+
+    def clear(self, *keys: str) -> None:
+        with self._lock:
+            for k in keys:
+                self._failures.pop(k, None)
 
 
 class _NoStoreStatic(StaticFiles):
@@ -47,13 +87,38 @@ class _NoStoreStatic(StaticFiles):
         return response
 
 
-def create_app(store: AppStore | None = None, auth: AuthService | None = None, web_dir: Path | None = None) -> FastAPI:
+def _bearer(authorization: str | None) -> str | None:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip() or None
+    return None
+
+
+def create_app(
+    store: AppStore | None = None,
+    auth: AuthService | None = None,
+    web_dir: Path | None = None,
+    allowed_origins: list[str] | None = None,
+) -> FastAPI:
     app = FastAPI(title="RangeIQ phone app API", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store or AppStore()
     app.state.auth = auth or AuthService(AUTH_DB)
+    app.state.throttle = LoginThrottle()
+    # The app hosted elsewhere (GitHub Pages) signs in with a bearer token, not a cookie:
+    # iPhone Safari blocks cross-site cookies, and tokens need no credentials mode.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins if allowed_origins is not None else ALLOWED_ORIGINS,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+        max_age=86400,
+    )
 
-    def session(rangeiq_session: str | None = Cookie(default=None)) -> dict[str, str]:
-        found = app.state.store.session(rangeiq_session)
+    def session(
+        rangeiq_session: str | None = Cookie(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        found = app.state.store.session(_bearer(authorization) or rangeiq_session)
         if found is None:
             raise HTTPException(status_code=401, detail="Please sign in.")
         return found
@@ -63,18 +128,28 @@ def create_app(store: AppStore | None = None, auth: AuthService | None = None, w
         return {"status": "ok"}
 
     @app.post("/api/login")
-    def login(response: Response, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    def login(request: Request, response: Response, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        email = str(payload.get("email", "")).strip().lower()
+        client = "ip:" + (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else ""))
+        if app.state.throttle.blocked("email:" + email, client):
+            raise HTTPException(status_code=429, detail="Too many sign-in attempts. Wait 15 minutes and try again.")
         try:
-            user = app.state.auth.authenticate_user(email=str(payload.get("email", "")), password=str(payload.get("password", "")))
+            user = app.state.auth.authenticate_user(email=email, password=str(payload.get("password", "")))
         except AuthError:
+            app.state.throttle.fail("email:" + email, client)
             raise HTTPException(status_code=401, detail="That email and password don't match.") from None
+        app.state.throttle.clear("email:" + email)
         token = app.state.store.create_session(user.user_id, user.workspace_id)
         response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, secure=SECURE_COOKIE, samesite="lax", path="/")
-        return {"name": user.full_name, "ranch": user.ranch_name}
+        return {"name": user.full_name, "ranch": user.ranch_name, "token": token}
 
     @app.post("/api/logout")
-    def logout(response: Response, rangeiq_session: str | None = Cookie(default=None)) -> dict[str, bool]:
-        app.state.store.end_session(rangeiq_session)
+    def logout(
+        response: Response,
+        rangeiq_session: str | None = Cookie(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, bool]:
+        app.state.store.end_session(_bearer(authorization) or rangeiq_session)
         response.delete_cookie(COOKIE, path="/")
         return {"ok": True}
 

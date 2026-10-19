@@ -157,6 +157,13 @@ bash deploy/ubuntu/update_rangeiq.sh
 
 ## Phone app (install from the website)
 
+**Where things live.**
+- **GitHub (public):** the app's code, icons and install page, published with GitHub Pages by `.github/workflows/pages.yml` at `https://zacharyslate.github.io/RangeIQ/`. Install the app from `/RangeIQ/app/`.
+- **The RangeIQ server (private):** all processing (lidar, aerial photo, weather, status) and every ranch's boundaries, logs and results. These are served only to a signed-in phone.
+
+The GitHub-hosted app signs in with a token (`Authorization: Bearer`), because iPhone Safari blocks cross-site cookies. The server allows the Pages site via `RANGEIQ_ALLOWED_ORIGINS`. `web/app/config.js` picks the API: same site when served from rangeiq.org, otherwise `https://rangeiq.org/api/`. Repeated failed sign-ins are throttled.
+
+
 RangeIQ has a phone app that installs straight from the website, the same way as the Marfa Lights app: no app store.
 
 - Open `https://YOUR-DOMAIN/app/` on your phone and sign in with your RangeIQ account.
