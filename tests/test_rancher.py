@@ -769,3 +769,12 @@ def test_setup_api_is_owner_only(client):
     assert client.get("/api/setup", headers=hand).status_code == 403
     bad = client.post("/api/setup/boundary", headers=owner, files={"file": ("ranch.txt", b"hello", "text/plain")})
     assert bad.status_code == 400 and "KML" in bad.json()["detail"]
+
+
+def test_terrain_files_are_long_cached_and_client_errors_are_logged(client, capsys):
+    owner = _login(client)
+    client.store.save_terrain(client.user.workspace_id, {"nx": 2, "ny": 1}, b"\x00\x00\x01\x00", b"\xff\xd8\xff", "image/jpeg")
+    r = client.get("/api/terrain/height?v=2026-10-19", headers=owner)
+    assert r.status_code == 200 and "max-age=2592000" in r.headers["cache-control"]
+    assert client.post("/api/client-error", content=b'{"where":"3d","error":"boom"}').json()["ok"] is True
+    assert "[client-error]" in capsys.readouterr().out
