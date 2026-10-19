@@ -34,6 +34,12 @@ run_as_app_user git -C "${APP_DIR}" pull --ff-only origin "${BRANCH}"
 echo "==> Refreshing Python dependencies"
 run_as_app_user "${APP_DIR}/.venv/bin/pip" install -e "${APP_DIR}"
 
+# A ranch update that is running old code is stopped; the hourly timer starts a fresh one.
+if systemctl is-active --quiet rangeiq-worker.service 2>/dev/null; then
+  echo "==> Stopping the running ranch update (it restarts on the hour with the new code)"
+  run_as_root systemctl stop rangeiq-worker.service || true
+fi
+
 echo "==> Restarting ${SERVICE_NAME}"
 run_as_root systemctl restart "${SERVICE_NAME}"
 run_as_root systemctl is-active --quiet "${SERVICE_NAME}"

@@ -166,6 +166,13 @@ class VegetationService:
         active_sensor = sensor or self.settings.public_data.vegetation.ndvi_default_collection
         active_aggregation = temporal_aggregation or self.settings.public_data.vegetation.ndvi_temporal_aggregation
         recognized_providers = {"mock", "earth_search_stac", "climate_engine", "appeears"}
+        if provider_name == "external":
+            # NDVI is computed elsewhere (ranch-wide pull in the worker); return a placeholder quickly so the
+            # RAP part of the summary still loads. Callers must not use this NDVI.
+            frame = self._mock_ndvi_history(feature, aoi_id=aoi_id, start_date=start_date, end_date=end_date,
+                                            cloud_cover_max=active_cloud_cover, sensor=active_sensor,
+                                            temporal_aggregation=active_aggregation)
+            return frame, {"provider": "external"}, {"provider": "external", "mode": "external", "warnings": []}
         if provider_name not in recognized_providers:
             frame = self._mock_ndvi_history(
                 feature,

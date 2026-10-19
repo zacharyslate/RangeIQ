@@ -214,6 +214,47 @@ def summary() -> int:
     return 0
 
 
+def diagnose_ranch_greenness(workspace_id: str) -> int:
+    """Ranch-wide Sentinel-2 pull, step by step: search, one scene read, progress so far (no locations printed)."""
+    import time as _time
+    from datetime import date
+
+    from ranch_ai.rancher.worker import usable_providers, workspace_inputs
+    from ranch_ai.vegetation.ranch_ndvi import (
+        RanchNDVIStore, _bbox, greenness_anomalies, pasture_geometries, scene_pasture_ndvi, search_scenes, thin_scenes)
+
+    app_settings, pastures, _ = workspace_inputs(workspace_id)
+    switched = usable_providers(app_settings)
+    print(f"greenness source: {app_settings.public_data.vegetation.provider}" + (f" ({switched[0]})" if switched else ""))
+    geoms = pasture_geometries(pastures)
+    today = date.today()
+    t0 = _time.monotonic()
+    try:
+        items = search_scenes(_bbox(geoms.values()), date(today.year - 4, today.month, 1), today)
+    except Exception as exc:  # noqa: BLE001
+        print(f"FAIL search: {type(exc).__name__}: {str(exc)[:200]}"); return 1
+    kept = thin_scenes(items)
+    print(f"ok   search: {len(items)} scenes under 30% cloud in 4 years, {len(kept)} kept (2 clearest per month per tile), "
+          f"{_time.monotonic() - t0:.1f}s")
+    if kept:
+        t0 = _time.monotonic()
+        try:
+            values = scene_pasture_ndvi(kept[0], geoms)
+            print(f"ok   newest scene {kept[0]['properties'].get('datetime', '')[:10]}: {len(values)}/{len(geoms)} pastures clear, "
+                  f"read in {_time.monotonic() - t0:.1f}s (one read per band for the whole ranch)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"FAIL scene read: {type(exc).__name__}: {str(exc)[:200]}"); return 1
+    store = RanchNDVIStore(default_settings.vegetation_cache_dir / "ranch_ndvi.sqlite")
+    states = store.scene_states(workspace_id)
+    done = sum(1 for st in states.values() if st["status"] in {"done", "empty"})
+    errors = [st["note"] for st in states.values() if st["status"] == "error"]
+    anomalies = greenness_anomalies(store.history(workspace_id), today)
+    have = sum(1 for a in anomalies.values() if a.get("anomaly_pct") is not None)
+    print(f"progress: {done} scenes stored, {len(errors)} with errors" + (f" (e.g. {errors[0][:120]})" if errors else "")
+          + f"; greenness vs. normal ready for {have}/{len(geoms)} pastures")
+    return 0
+
+
 def diagnose_all(redact: bool = True) -> int:
     from ranch_ai.rancher.worker import account_workspaces, workspace_inputs
 
@@ -222,7 +263,7 @@ def diagnose_all(redact: bool = True) -> int:
         if workspace_inputs(workspace_id)[1] is None:
             continue
         print(f"--- ranch {index}")
-        worst = max(worst, diagnose_greenness(workspace_id, redact=redact))
+        worst = max(worst, diagnose_ranch_greenness(workspace_id))
     return worst
 
 
