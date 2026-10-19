@@ -30,7 +30,7 @@ as_app() { sudo -u "${APP_USER}" -H "$@"; }
 
 health() {
   echo "==> Health"
-  for unit in rangeiq rangeiq-api rangeiq-worker.timer; do
+  for unit in rangeiq-api rangeiq-worker.timer rangeiq-worker.path rangeiq; do
     printf '  %-22s %s\n' "${unit}" "$(systemctl is-active "${unit}" 2>/dev/null || true)"
   done
   printf '  %-22s %s\n' "api /api/health" "$(curl -fsS --max-time 10 http://127.0.0.1:8502/api/health 2>/dev/null || echo FAILED)"

@@ -1,0 +1,10 @@
+[Unit]
+Description=RangeIQ: rebuild a ranch right away when its owner changes Ranch setup in the app
+
+[Path]
+# The app's server writes data/refresh/<ranch>.request; the worker clears these when it starts.
+PathExistsGlob=/opt/rangeiq/data/refresh/*.request
+Unit=rangeiq-worker.service
+
+[Install]
+WantedBy=multi-user.target

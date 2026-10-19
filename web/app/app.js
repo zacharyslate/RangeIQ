@@ -296,7 +296,8 @@
     homeTodo();
     const box = $("h-attention");
     if (!snap) {
-      box.innerHTML = `<h2>Getting started</h2><p class="dim">${esc(store.get("setupMsg", "") || "Waiting for the first ranch update…")}</p>`;
+      box.innerHTML = `<h2>Getting started</h2><p class="dim">${esc(store.get("setupMsg", "") || "Waiting for the first ranch update…")}</p>
+        ${isOwner() ? `<button type="button" class="primary" data-go="more">Go to Ranch setup</button>` : ""}`;
       $("h-weather").hidden = true; return;
     }
     const items = [];
@@ -589,9 +590,9 @@
     $("o-ranch").hidden = rs.length < 2;
     $("o-ranch").innerHTML = `<h2>Your ranches</h2><div class="row">${rs.map(r => `<button type="button" class="${r.workspace_id === me.workspace_id ? "primary" : "secondary"}"
       data-ranch="${esc(r.workspace_id)}">${esc(r.name)}</button>`).join("")}</div><p class="dim small">You can also tap the ranch name at the top.</p>`;
-    $("o-console").hidden = !isOwner();
     $("o-sources").innerHTML = ((snap && snap.sources) || []).map(s => `<li><span><b>${esc(s.name)}</b><br><span class="${s.live ? "ok-txt" : "no-txt"}">${s.live ? "Working" : s.demo ? "Demo values" : "Not available"}</span></span>
       <span class="when">${s.as_of ? esc(when(s.as_of, false)) : ""}</span></li>`).join("") || "<li class='dim'>No data yet.</li>";
+    renderSetup();
     const crew = $("o-crew");
     crew.hidden = !(me && me.role === "owner");
     if (crew.hidden) return;
@@ -615,6 +616,52 @@
         if (!confirm("Remove this person from your crew? They'll be signed out.")) return;
         await api("crew/members/" + encodeURIComponent(b.dataset.remove), {method: "DELETE"}); renderMore(); });
     } catch (e) { crew.innerHTML = "<h2>Your crew</h2><p class='dim'>Crew settings need signal.</p>"; }
+  }
+
+  // ---------------------------------------------------------------- RANCH SETUP (owner): pastures file, names, ranch name, time zone
+  async function renderSetup() {
+    const box = $("o-setup");
+    box.hidden = !isOwner();
+    if (box.hidden) return;
+    box.innerHTML = "<h2>Ranch setup</h2><p class='dim'>Loading…</p>";
+    let s;
+    try { s = await api("setup"); } catch (e) { box.innerHTML = "<h2>Ranch setup</h2><p class='dim'>Ranch setup needs signal.</p>"; return; }
+    const tzName = {"America/Chicago": "Central", "America/Denver": "Mountain", "America/Phoenix": "Arizona", "America/Los_Angeles": "Pacific",
+      "America/New_York": "Eastern", "America/Anchorage": "Alaska", "Pacific/Honolulu": "Hawaii"};
+    box.innerHTML = `<h2>Ranch setup</h2>
+      <form class="form" id="ranchForm"><label>Ranch name<input name="name" maxlength="80" required value="${esc(s.ranch.name || "")}"></label>
+        <label>Time zone<select name="timezone">${s.timezones.map(z => `<option value="${z}" ${z === s.ranch.timezone ? "selected" : ""}>${tzName[z] || z}</option>`).join("")}</select></label>
+        <button type="submit" class="secondary">Save name &amp; time zone</button></form>
+      <h3>Pastures</h3>
+      <p class="dim">${s.boundary_file ? `From <b>${esc(s.boundary_file)}</b> · ${s.pastures.length} pastures.` : "No pastures yet."}
+        Draw them in Google Earth (one shape per pasture, named), then save the folder as KML or KMZ and upload it here.</p>
+      <label class="secondary filebtn">${s.boundary_file ? "Replace pastures file" : "Upload pastures file"}<input type="file" id="boundaryFile" accept=".kml,.kmz,.geojson,.json,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden></label>
+      <p class="dim small" id="boundaryMsg">${s.refresh_pending ? "⏳ Updating the ranch with your changes; it takes a few minutes." : ""}</p>
+      ${s.pastures.length ? `<details><summary><b>Rename pastures</b></summary><form class="form" id="namesForm">${s.pastures.map(p => `<label>${esc(p.acres != null ? p.acres + " acres" : "")}
+        <input name="${esc(p.id)}" maxlength="60" value="${esc(s.pasture_names[p.id] || p.name)}"></label>`).join("")}
+        <button type="submit" class="secondary">Save names</button></form></details>` : ""}`;
+    $("ranchForm").onsubmit = async e => {
+      e.preventDefault();
+      try { await api("setup/ranch", {method: "POST", body: JSON.stringify({name: e.target.name.value, timezone: e.target.timezone.value})});
+        toast("Saved. The app updates in a few minutes."); } catch (err) { toast(err.message); }
+    };
+    $("boundaryFile").onchange = async e => {
+      const file = e.target.files && e.target.files[0]; if (!file) return;
+      if (s.boundary_file && !confirm("Replace the pastures with this file? Pasture names and status rebuild from the new outlines.")) return;
+      $("boundaryMsg").textContent = "Checking the file…";
+      const fd = new FormData(); fd.append("file", file, file.name);
+      try {
+        const r = await api("setup/boundary", {method: "POST", body: fd});
+        $("boundaryMsg").innerHTML = `✓ Found <b>${r.pastures} pastures</b>${r.names.length ? ": " + esc(r.names.slice(0, 8).join(", ")) + (r.names.length > 8 ? "…" : "") : ""}.
+          ⏳ Building the ranch now (weather, satellite greenness, lidar 3D). Check back in a few minutes.`;
+      } catch (err) { $("boundaryMsg").textContent = err.message; }
+    };
+    if ($("namesForm")) $("namesForm").onsubmit = async e => {
+      e.preventDefault();
+      const names = Object.fromEntries(new FormData(e.target).entries());
+      try { await api("setup/names", {method: "POST", body: JSON.stringify(names)}); toast("Names saved. The app updates in a few minutes."); }
+      catch (err) { toast(err.message); }
+    };
   }
   function setSize(v) { document.documentElement.style.setProperty("--scale", v); store.set("scale", v); setPressed("[data-size]", "size", v); }
   document.querySelectorAll("[data-size]").forEach(b => b.onclick = () => setSize(b.dataset.size));

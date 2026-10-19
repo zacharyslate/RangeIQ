@@ -393,6 +393,36 @@ def create_app(
             raise HTTPException(status_code=403, detail="You can only delete your own entries.")
         return {"deleted": app.state.store.delete_log(sess["workspace_id"], client_id)}
 
+    # -- ranch setup (owner): boundary, pasture names, ranch name, time zone ---------------
+    from ranch_ai.rancher import setup as ranch_setup
+
+    @app.get("/api/setup")
+    def get_setup(sess: dict[str, str] = Depends(owner_only)) -> dict[str, Any]:
+        info = ranch_setup.describe(sess["workspace_id"])
+        snap = app.state.store.latest_snapshot(sess["workspace_id"]) or {}
+        info["pastures"] = [{"id": p["id"], "name": p["name"], "acres": p.get("acres")} for p in snap.get("pastures", [])]
+        info["ranch"]["name"] = info["ranch"]["name"] or (snap.get("ranch") or {}).get("name")
+        return info
+
+    @app.post("/api/setup/boundary")
+    async def setup_boundary(file: UploadFile = File(...), sess: dict[str, str] = Depends(owner_only)) -> dict[str, Any]:
+        data = await file.read(ranch_setup.MAX_BOUNDARY_BYTES + 1)
+        try:
+            return ranch_setup.save_boundary(sess["workspace_id"], file.filename or "boundary.kml", data)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    @app.post("/api/setup/ranch")
+    def setup_ranch(payload: dict[str, Any] = Body(...), sess: dict[str, str] = Depends(owner_only)) -> dict[str, Any]:
+        try:
+            return ranch_setup.set_ranch(sess["workspace_id"], name=payload.get("name"), timezone=payload.get("timezone"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    @app.post("/api/setup/names")
+    def setup_names(payload: dict[str, Any] = Body(...), sess: dict[str, str] = Depends(owner_only)) -> dict[str, Any]:
+        return {"pasture_names": ranch_setup.set_pasture_names(sess["workspace_id"], {str(k): str(v) for k, v in payload.items()})}
+
     # -- places on the map (tanks, ponds, blinds, gates, ...) ----------------------------
     @app.get("/api/places")
     def list_places(sess: dict[str, str] = Depends(session)) -> list[dict[str, Any]]:

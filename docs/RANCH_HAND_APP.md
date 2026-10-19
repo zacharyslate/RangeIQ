@@ -145,3 +145,19 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
   - They are not available to Google Maps Platform projects billed to an EEA address (HTTP 403 since 8 July 2025).
   - Their terms prohibit offline caching.
   - They require Google attribution on screen.
+
+## Ranch setup in the app (Streamlit retired)
+
+- **Owner only:** More → **Ranch setup**:
+  - ranch name and time zone;
+  - upload or replace the pastures file (KML, KMZ or GeoJSON from Google Earth: one named shape per pasture);
+  - rename pastures.
+- **Same files as the old console:** setup writes `config/workspaces/<ranch>/config.yaml` and `dashboard_state.json`, and the boundary goes to `data/user/workspaces/<ranch>/`, so the worker reads them unchanged.
+- **The ranch's weather point** is moved to the middle of the uploaded pastures.
+- **Checking the file:** the app's server checks it with the standard library only (polygons, coordinates, size), so it never loads pandas or GDAL. The worker does the full parse.
+- **Instant rebuild:** after a change, `data/refresh/<ranch>.request` asks for a rebuild. The systemd path unit `rangeiq-worker.path` starts the worker within seconds; otherwise the hourly run picks it up.
+- **`deploy/ubuntu/make_app_home.sh`** (run once as root):
+  - rangeiq.org becomes the app, and `/console` redirects to Ranch setup;
+  - the Streamlit service is stopped and disabled (about 300 MB of memory freed);
+  - the path unit is installed.
+  - Deploys skip the console when it's disabled. The script prints how to bring the console back.

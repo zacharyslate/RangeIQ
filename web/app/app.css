@@ -311,3 +311,5 @@ details.card summary::-webkit-details-marker{display:none}
 .wxic{font-size:2.6rem;line-height:1}
 .wxic.sm{font-size:1.6rem}
 .wx{display:flex;align-items:center;gap:12px}
+.filebtn{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 18px;border-radius:12px;border:1px solid var(--rule);
+  background:var(--surface-2);font-weight:700;cursor:pointer;justify-self:start}

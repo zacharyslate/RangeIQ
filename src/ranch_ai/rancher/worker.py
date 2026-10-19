@@ -135,7 +135,11 @@ def workspace_inputs(workspace_id: str, base: Settings = default_settings):
             info = state.get("saved_boundary") or {}
             path, name = info.get("path"), info.get("filename")
             if path and name and Path(path).exists():
-                return app_settings, load_pastures(uploaded_name=name, uploaded_bytes=Path(path).read_bytes()), str(name)
+                pastures = load_pastures(uploaded_name=name, uploaded_bytes=Path(path).read_bytes())
+                renames = state.get("pasture_names") if isinstance(state.get("pasture_names"), dict) else {}
+                if renames:                      # names set in the app's Ranch setup
+                    pastures["name"] = [renames.get(str(pid), nm) for pid, nm in zip(pastures["pasture_id"], pastures["name"])]
+                return app_settings, pastures, str(name)
         except (OSError, ValueError, json.JSONDecodeError):
             pass
     if workspace_id in {DEFAULT_WORKSPACE, "demo"}:
@@ -165,7 +169,7 @@ def build_workspace(
         store.save_snapshot(workspace_id, {
             "version": 1,
             "setup_needed": True,
-            "message": "Upload your pasture boundary on the RangeIQ website (Settings > Scenario & Boundary), then check back after the next update.",
+            "message": "Add your pastures: in RangeIQ go to More → Ranch setup and upload the KML or KMZ from Google Earth. The ranch is ready a few minutes later.",
         })
         report["status"] = "no boundary uploaded"
         return report
@@ -251,6 +255,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force-live", action="store_true", help="Use free live sources even where an account chose 'mock'.")
     parser.add_argument("--db", help="App database path (default: data/processed/rangeiq_app.sqlite).")
     args = parser.parse_args(argv)
+    from ranch_ai.rancher.setup import take_refresh_requests
+
+    asked = take_refresh_requests()            # changes made in the app's Ranch setup; this run covers them
+    if asked:
+        print(f"[rangeiq-worker] refresh asked for {len(asked)} ranch(es) from the app")
 
     store = AppStore(args.db)
     workspaces = [normalize_workspace_id(w) for w in args.workspace] if args.workspace else account_workspaces(default_settings.auth_db_path)

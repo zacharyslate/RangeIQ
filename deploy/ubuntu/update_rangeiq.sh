@@ -40,9 +40,13 @@ if systemctl is-active --quiet rangeiq-worker.service 2>/dev/null; then
   run_as_root systemctl stop rangeiq-worker.service || true
 fi
 
-echo "==> Restarting ${SERVICE_NAME}"
-run_as_root systemctl restart "${SERVICE_NAME}"
-run_as_root systemctl is-active --quiet "${SERVICE_NAME}"
+if systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
+  echo "==> Restarting ${SERVICE_NAME}"
+  run_as_root systemctl restart "${SERVICE_NAME}"
+  run_as_root systemctl is-active --quiet "${SERVICE_NAME}"
+else
+  echo "==> ${SERVICE_NAME} (old desktop console) is retired; skipping"
+fi
 
 if systemctl list-unit-files rangeiq-api.service >/dev/null 2>&1 && systemctl is-enabled --quiet rangeiq-api.service 2>/dev/null; then
   echo "==> Restarting phone app API"
@@ -50,5 +54,4 @@ if systemctl list-unit-files rangeiq-api.service >/dev/null 2>&1 && systemctl is
   run_as_root systemctl is-active --quiet rangeiq-api.service
 fi
 
-echo "==> ${SERVICE_NAME} is active"
-run_as_root journalctl -u "${SERVICE_NAME}" -n 20 --no-pager
+echo "==> Updated"
