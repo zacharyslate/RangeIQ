@@ -11,12 +11,17 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
-from ranch_ai.config import normalize_workspace_id
-
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_MIN_LENGTH = 8
 PBKDF2_ITERATIONS = 200_000
+
+
+def _normalize_workspace_id(raw_value: str | None, fallback: str = "workspace") -> str:
+    # Imported lazily: ranch_ai.config pulls in pandas, which the light phone-app API avoids.
+    from ranch_ai.config import normalize_workspace_id
+
+    return normalize_workspace_id(raw_value, fallback=fallback)
 
 
 @dataclass(frozen=True)
@@ -99,7 +104,7 @@ class AuthService:
     @staticmethod
     def _workspace_id_for_email(email: str) -> str:
         slug = email.split("@", 1)[0]
-        return normalize_workspace_id(f"user-{slug}-{uuid4().hex[:10]}", fallback=f"user-{uuid4().hex[:10]}")
+        return _normalize_workspace_id(f"user-{slug}-{uuid4().hex[:10]}", fallback=f"user-{uuid4().hex[:10]}")
 
     @staticmethod
     def _row_to_user(row: sqlite3.Row | None) -> AuthUser | None:

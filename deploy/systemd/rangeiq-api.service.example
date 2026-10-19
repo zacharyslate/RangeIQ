@@ -1,0 +1,20 @@
+[Unit]
+Description=RangeIQ phone app API (light, read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rangeiq
+Group=rangeiq
+WorkingDirectory=/opt/rangeiq
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/rangeiq/rangeiq.env
+ExecStart=/opt/rangeiq/.venv/bin/uvicorn ranch_ai.rancher.api:app --app-dir /opt/rangeiq/src --host 127.0.0.1 --port 8502 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=always
+RestartSec=3
+# The API only reads stored results; it should sit around 50 MB.
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

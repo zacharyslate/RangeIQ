@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the RangeIQ worker every hour
+
+[Timer]
+# Weather and NWS alerts refresh each run; slow sources (greenness, RAP, terrain)
+# are cached for days to months, so most hourly runs are quick.
+OnCalendar=*-*-* *:07:00
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

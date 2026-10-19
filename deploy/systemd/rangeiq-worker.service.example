@@ -1,0 +1,17 @@
+[Unit]
+Description=RangeIQ worker: refresh each ranch's phone-app snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rangeiq
+Group=rangeiq
+WorkingDirectory=/opt/rangeiq
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/rangeiq/rangeiq.env
+ExecStart=/opt/rangeiq/.venv/bin/python -m ranch_ai.rancher.worker
+Nice=10
+# Hard cap so a big pull can never starve the website on a 1 GB droplet.
+MemoryMax=600M
+TimeoutStartSec=30min

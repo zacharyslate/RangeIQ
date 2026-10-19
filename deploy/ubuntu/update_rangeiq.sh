@@ -38,5 +38,11 @@ echo "==> Restarting ${SERVICE_NAME}"
 run_as_root systemctl restart "${SERVICE_NAME}"
 run_as_root systemctl is-active --quiet "${SERVICE_NAME}"
 
+if systemctl list-unit-files rangeiq-api.service >/dev/null 2>&1 && systemctl is-enabled --quiet rangeiq-api.service 2>/dev/null; then
+  echo "==> Restarting phone app API"
+  run_as_root systemctl restart rangeiq-api.service
+  run_as_root systemctl is-active --quiet rangeiq-api.service
+fi
+
 echo "==> ${SERVICE_NAME} is active"
 run_as_root journalctl -u "${SERVICE_NAME}" -n 20 --no-pager

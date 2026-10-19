@@ -110,5 +110,5 @@ The app can be wrapped for the stores later (e.g., with Capacitor) if ranchers a
 ## Decisions (2026-10-13)
 
 1. **Audience: your own land first.** Optimize for Caja Caliente, but don't hard-code it.
-2. **Platform: phone first, delivered as an installable web app (PWA).** Python stays for the engine, worker and API. Streamlit becomes your desktop admin console only.
+2. **Platform: phone first, delivered as an installable web app (PWA), downloaded straight from the website like the Marfa Lights app.** Python stays for the engine, worker and API. Streamlit becomes your desktop admin console only.
 3. **Alerts: none yet.** The worker still records results with dates, so alerts or web push can be added later without rework.
