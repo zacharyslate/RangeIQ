@@ -69,4 +69,15 @@ jobs:
           # Only the action words and a simple ref are passed; the server validates them again.
           case "$CMD" in *[!A-Za-z0-9._/\ -]*) echo "::error::Unsafe input"; exit 2;; esac
           echo "Requesting: $CMD"
-          ssh -p "${PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 "$USER_@$HOST" "$CMD"
+          set -o pipefail
+          ssh -p "${PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 "$USER_@$HOST" "$CMD" 2>&1 | tee "$RUNNER_TEMP/server-output.txt"
+
+      # Also attach the (already scrubbed) server output to the run as an annotation, so it can be read
+      # through the checks API as well as the log. Same visibility as the log; nothing extra is exposed.
+      - name: Attach server output to the run
+        if: always()
+        run: |
+          f="$RUNNER_TEMP/server-output.txt"
+          [ -s "$f" ] || exit 0
+          body="$(tail -c 60000 "$f" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"} {print}')"
+          echo "::notice title=Server output::${body}"
