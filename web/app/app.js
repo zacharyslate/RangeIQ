@@ -167,7 +167,7 @@
     building: ["Building / barn", "🏠", "ranch"], mineral: ["Mineral / salt", "🧂", "ranch"], other: ["Other", "📍", "ranch"],
     sensor_rain: ["Rain gauge sensor", "📡", "sensors"], sensor_water: ["Water-level sensor", "📡", "sensors"],
     sensor_soil: ["Soil moisture sensor", "📡", "sensors"], sensor_weather: ["Weather station", "📡", "sensors"], sensor_other: ["Other sensor", "📡", "sensors"]};
-  const LAYERS = [["pastures", "Pastures", "🟫"], ["colors", "Warning colors", "🚦"], ["water", "Water", "💧"], ["hunting", "Hunting", "🛖"],
+  const LAYERS = [["pastures", "Pastures", "🟫"], ["glow", "Glowing walls (3D)", "✨"], ["colors", "Warning colors", "🚦"], ["water", "Water", "💧"], ["hunting", "Hunting", "🛖"],
     ["ranch", "Ranch places", "🏠"], ["usgs", "USGS water map", "🗺️"], ["sensors", "Sensors", "📡"], ["wildlife", "Wildlife & sightings", "🦌"], ["problems", "Problems", "⚠️"], ["photos", "Other photos", "📷"],
     ["jobs", "Jobs", "✅"]];
   let layers = {...Object.fromEntries(LAYERS.map(([k]) => [k, true])), ...store.get("layers", {})};
@@ -504,11 +504,11 @@
     const ground = meta.dem_source === "usgs_3dep" ? `USGS lidar (${meta.dem_resolution_m} m)` : "EXAMPLE terrain, not your land";
     const skin = look === "relief" ? "Relief: land colored by height and slope, lit by the sun."
       : meta.texture_source === "naip" ? "Aerial photo: USDA NAIP." : "Aerial photo unavailable; showing relief.";
-    $("map-src").textContent = `Ground: ${ground}. ${skin} ${layers.colors ? "Glowing walls are pasture lines, colored by status." : "Pasture lines without warning colors."} Drag to turn, pinch to zoom.`;
+    $("map-src").textContent = `Ground: ${ground}. ${skin} ${layers.glow ? (layers.colors ? "Glowing walls are pasture lines, colored by status." : "Pasture lines without warning colors.") : "Pasture lines on the ground (glow off in Layers)."} Drag to turn, pinch to zoom.`;
   }
   async function render3d() {
     const box = $("map3d");
-    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses?.(statusMap()); view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); src3d(); return; }
+    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses?.(statusMap()); view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); return; }
     box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
     try {
       // The height and photo files are cached by the phone, so ask for them by build date: a rebuilt terrain gets new files.
@@ -519,7 +519,7 @@
       snap.pastures.forEach(p => { namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
       view3d = mod.mount(box, {meta, height: height.bytes, texture, statusById: statusMap(), namesById, lonlatById, look, exaggeration: exag,
         photos: mapItems(), onPhoto: id => { if (!picking()) openItem(id); }, onPasture: id => { if (!picking()) openPastureSheet(id); }});
-      view3d.meta = meta; view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); src3d(); startHere(); drawHere();
+      view3d.meta = meta; view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); startHere(); drawHere();
     } catch (e) {
       if (e.signin) { show("login"); return; }
       // No 3D yet (or no WebGL / no signal): fall back to the flat map so the console still works.
@@ -547,7 +547,7 @@
     const all = (() => { const keep = layers; layers = Object.fromEntries(LAYERS.map(([k]) => [k, true])); const x = mapItems(); layers = keep; return x; })();
     const count = k => all.filter(x => x.layer === k).length;
     $("layerCard").innerHTML = `<h2>Show on the map</h2><div class="layers">${LAYERS.map(([k, label, ic]) => `<button type="button" class="layer" data-layer="${k}"
-      aria-pressed="${!!layers[k]}"><span aria-hidden="true">${ic}</span>${esc(label)}${["pastures", "colors"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
+      aria-pressed="${!!layers[k]}"><span aria-hidden="true">${ic}</span>${esc(label)}${["pastures", "colors", "glow"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
       <h3>Roads &amp; trails</h3><div class="layers">${Object.entries(LINE_TYPES).map(([k, v]) => { const n = shapes.filter(x => x.kind === k).length;
         return `<button type="button" class="layer" data-layer="${lineLayerKey(k)}" aria-pressed="${layers[lineLayerKey(k)] !== false}"><i class="swatch" style="background:${v.color}"></i>${esc(v.label)} <span class="dim">${n}</span></button>`; }).join("")}</div>
       <label class="switchrow"><input type="checkbox" id="hideEverydayMap" ${store.get("hideEveryday", false) ? "checked" : ""}>
