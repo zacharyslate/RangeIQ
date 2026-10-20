@@ -1291,8 +1291,19 @@
       draft.coords.forEach((pt, i) => {         // corner handles: drag to move, tap to select
         const m = L.marker([pt[1], pt[0]], {draggable: true, icon: L.divIcon({className: "", iconSize: [22, 22], iconAnchor: [11, 11],
           html: `<div class="vtx${draft.selected === i ? " sel" : ""}"></div>`})});
-        m.on("dragend", e => { const p = e.target.getLatLng(); draft.coords[i] = [p.lng, p.lat]; store.set("draft", draft); renderDraft(); });
-        m.on("click", () => { draft.selected = draft.selected === i ? null : i; renderDraft(); });
+        m.on("dragend", e => {
+          const p = e.target.getLatLng(), c = draft.coords, n = c.length;
+          const closed = !isPasture && n > 3 && c[0][0] === c[n - 1][0] && c[0][1] === c[n - 1][1];
+          c[i] = [p.lng, p.lat];
+          if (closed && (i === 0 || i === n - 1)) c[i === 0 ? n - 1 : 0] = [p.lng, p.lat];      // a closed loop stays closed
+          store.set("draft", draft); renderDraft();
+        });
+        m.on("click", () => {
+          // Lines: tapping the starting point again closes the loop (that's how people finish a fence around something).
+          const c = draft.coords, closed = c.length > 1 && c[0][0] === c[c.length - 1][0] && c[0][1] === c[c.length - 1][1];
+          if (i === 0 && !isPasture && c.length >= 3 && !closed) { c.push([...c[0]]); draft.selected = null; store.set("draft", draft); renderDraft(); toast("Loop closed. Tap Done."); return; }
+          draft.selected = draft.selected === i ? null : i; renderDraft();
+        });
         m.addTo(map); draftLayers.push(m);
       });
       const n = draft.coords.length, segs = isPasture ? n : n - 1;   // "+" handles in the middle of each side add a corner
@@ -1332,6 +1343,7 @@
     if (draft.how === "gps") { stopGps(); draft.coords = simplify(draft.coords, 2); }
     if (draft.coords.length < (isPasture ? 3 : 2)) { toast(isPasture ? "A pasture needs at least 3 corners." : "A line needs at least 2 points."); return; }
     const d = draft, title = isPasture ? "Pasture" : "Line";
+    if (!isPasture && !d.askedLoop && isOwner() && closesOnItself(d.coords)) { askIfBoundary(d); return; }
     openSheet(d.editing ? `Save ${title.toLowerCase()}` : `Name this ${title.toLowerCase()}`, `<form class="form" id="shapeForm">
       ${isPasture ? "" : `<label>Type<select name="kind">${Object.entries(LINE_TYPES).map(([k, v]) => `<option value="${k}" ${k === d.kind ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select></label>`}
       <label>Name<input name="name" maxlength="80" required value="${esc(d.name || "")}" placeholder="${isPasture ? "North Flat" : "Road to the windmill"}"></label>
@@ -1399,9 +1411,31 @@
     }
     return c;
   }
-  function lineToPasture(line) {
+  // A line that ends where it started (within 25 m, or 3% of its length on a long GPS loop) is probably a boundary.
+  function closesOnItself(c) {
+    if (c.length < 3) return false;
+    const gap = metres({lat: c[0][1], lon: c[0][0]}, {lat: c[c.length - 1][1], lon: c[c.length - 1][0]});
+    return gap <= Math.max(25, 0.03 * lengthM(c)) && acresOf(c) >= 0.25;
+  }
+  function askIfBoundary(d) {
+    openSheet("Is this a pasture boundary?", `<p>This line ends where it started, so it goes all the way around something
+        (${acresOf(d.coords).toFixed(1)} acres).</p>
+      <p class="dim small">A pasture boundary gets a glowing, colored outline, a flag and its own status. A fence line is just a line on the map.</p>
+      <div class="row"><button type="button" class="primary" id="loopYes">🟫 Yes, a pasture boundary</button>
+        <button type="button" class="secondary" id="loopNo">No, keep it as a line</button></div>
+      <div class="row"><button type="button" class="secondary" id="loopBack">Keep editing</button></div>`);
+    $("loopYes").onclick = () => lineToPasture({coords: d.coords, name: d.name, source: d.source, kind: d.kind,
+      shape_id: d.editing ? d.shape_id : null}, {draft: d});
+    $("loopNo").onclick = () => { d.askedLoop = true; finishDraw(); };
+    $("loopBack").onclick = () => { closeSheet(); renderDraft(); };
+  }
+  function lineToPasture(line, opts = {}) {
     if (!canEditBoundaries()) {
-      openSheet("Pasture boundaries are locked", `<p>Unlock them first: ✏️ Draw → <b>Unlock to edit</b>. Then open this line again.</p>`); return;
+      openSheet("Pasture boundaries are locked", `<p>Unlock them first: ✏️ Draw → <b>Unlock to edit</b>, then try again.
+          ${opts.draft ? "Your drawing is kept; tap <b>Keep editing</b> to get back to it." : ""}</p>
+        ${opts.draft ? `<div class="row"><button type="button" class="secondary" id="l2pBack">Keep editing</button></div>` : ""}`);
+      if ($("l2pBack")) $("l2pBack").onclick = () => { closeSheet(); renderDraft(); };
+      return;
     }
     let ring = line.coords.slice();
     if (ring.length > 3 && metres({lat: ring[0][1], lon: ring[0][0]}, {lat: ring[ring.length - 1][1], lon: ring[ring.length - 1][0]}) < 1) ring.pop();
@@ -1411,7 +1445,7 @@
     const score = p => ring.filter(([x, y]) => inRing(x, y, p.coords)).length / ring.length + (inRing(...interiorPoint(p.coords), ring) ? 1 : 0);
     const ranked = current.map(p => ({...p, s: score(p)})).sort((a, b) => b.s - a.s);
     openSheet("Use as a pasture boundary", `<form class="form" id="l2pForm">
-      <p>${acresOf(ring).toFixed(1)} acres · ${ring.length} corners. The line itself is removed once it becomes a boundary.</p>
+      <p>${acresOf(ring).toFixed(1)} acres · ${ring.length} corners.${line.shape_id ? " The line itself is removed once it becomes a boundary." : ""}</p>
       <label>Which pasture?<select name="target">
         ${ranked.map((p, i) => `<option value="${esc(p.id)}" ${i === 0 && p.s > 0 ? "selected" : ""}>Replace the boundary of ${esc(p.name)}</option>`).join("")}
         <option value="" ${ranked.length && ranked[0].s > 0 ? "" : "selected"}>A new pasture</option></select></label>
@@ -1420,13 +1454,14 @@
     const f = $("l2pForm"), nameRow = $("l2pName");
     const sync = () => { nameRow.hidden = !!f.target.value; f.name.required = !f.target.value; };
     f.target.onchange = sync; sync();
-    $("l2pBack").onclick = closeSheet;
+    $("l2pBack").onclick = () => { if (opts.draft) askIfBoundary(opts.draft); else closeSheet(); };
     f.onsubmit = e => {
       e.preventDefault();
       const target = ranked.find(p => p.id === f.target.value);
       const id = target ? target.id : uid();
       shapeChange({shape_id: id, kind: "pasture", name: target ? target.name : f.name.value.trim(), coords: ring, source: line.source || "drawn", note: null});
-      shapeChange({shape_id: line.shape_id, kind: line.kind, deleted: true});
+      if (line.shape_id && shapes.some(s2 => s2.shape_id === line.shape_id)) shapeChange({shape_id: line.shape_id, kind: line.kind, deleted: true});
+      if (opts.draft) { draft = null; store.del("draft"); renderDraft(); }
       closeSheet(); toast(`Boundary saved${target ? " for " + target.name : ""}. Status updates in a few minutes.`); renderMap();
     };
   }

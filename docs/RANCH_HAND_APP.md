@@ -168,6 +168,8 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - **✏️ Draw** on the map:
   - **Pasture boundaries:** tap the corners, or walk or drive the fence with GPS.
   - **A line drawn around a pasture** (for example as a fence line) can become its boundary: tap the line → **Use as a pasture boundary**, pick the pasture (or a new one). The line is then removed. Owner or partner only, with boundaries unlocked.
+  - **Closing a loop:** while drawing a line, tap its first point again to close it. When a line ends where it started, the app asks whether it's a pasture boundary (owner/partner); "No" keeps it as a line.
+  - **Changing things later:** tap any road, trail or fence → **Edit line** to move, add or remove points and change its name, type or notes; or **Use as a pasture boundary** to turn it into one.
   - **Roads, trails and lines:** main road, ranch road, two-track, game trail, hunting trail, path, fence line, water line or pipe, creek or draw, other. Draw them by tapping points or record them with GPS.
 - **Editing:** drag a dot to move it, tap "+" to add a point between, or select a dot and **Delete point**. **Undo** removes the last point.
   - GPS recording keeps points within 30 m accuracy, every 4 m or more. A **📷 Photo here** button saves a photo on the line. The finished track is simplified (Douglas-Peucker, 2 m).
