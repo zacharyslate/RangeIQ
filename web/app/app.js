@@ -179,7 +179,7 @@
   }
   function mapItems() {                         // every pin, with the layer it belongs to
     const out = [];
-    const loose = allPhotos().filter(p => !p.place_id);
+    const loose = allPhotos().filter(p => !p.place_id && !p.log_id && !p.task_id);
     for (const sp of spots(loose)) {
       const newest = loose.find(p => p.client_id === sp.client_id) || {};
       const lay = layerOfTags(newest.tags) || "photos", top = topTag(newest.tags);
@@ -208,8 +208,19 @@
     $("wSave").onclick = () => addPlace({kind, name: w.name || PLACE_KINDS[kind][0], lat: w.lat, lon: w.lon});
     $("wMap").onclick = () => showOnMap(w.lat, w.lon);
   }
+  // "Part of: …" on a photo that belongs to a report, job, place or line.
+  function belongsTo(p) {
+    let label = null, id = null;
+    if (p.log_id) { const it = logItems().find(i => i.l && i.l.client_id === p.log_id);
+      if (it) { id = p.log_id; label = it.type === "rain" ? "Rain gauge" : it.type === "move" ? "Moved cattle" : "Report: " + (((it.l.tags || [])[0]) || it.l.text || "").slice(0, 40); } }
+    else if (p.task_id) { const t = tasks.find(x => x.task_id === p.task_id); if (t) { id = t.task_id; label = "Job: " + t.title; } }
+    else if (p.place_id) { const pl = places.find(x => x.place_id === p.place_id); if (pl) { id = pl.place_id; label = "Place: " + pl.name; } }
+    else if (p.shape_id) { const sh = shapes.find(x => x.shape_id === p.shape_id); if (sh) { id = sh.shape_id; label = sh.name; } }
+    return id ? `<p><button type="button" class="secondary" data-item="${esc(id)}">↩ Part of: ${esc(label)}</button></p>` : "";
+  }
   function openItem(id) {
     if (String(id).startsWith("nhd-")) return openWater(id);
+    if (shapes.some(s2 => s2.shape_id === id)) return openShape(id);
     if (places.some(p => p.place_id === id)) return openPlace(id);
     if (tasks.some(t => t.task_id === id)) return openTask(id);
     return openPhoto(id);
@@ -255,6 +266,7 @@
     const go = e.target.closest("[data-go]"); if (go) { show(go.dataset.go); return; }
     const p = e.target.closest("[data-pasture]"); if (p) { show("pasture-" + encodeURIComponent(p.dataset.pasture)); return; }
     const ph = e.target.closest("[data-photo]"); if (ph) { openPhoto(ph.dataset.photo); return; }
+    const itm = e.target.closest("[data-item]"); if (itm) { openItem(itm.dataset.item); return; }
     const a = e.target.closest("[data-act]"); if (a) act(a.dataset.act, a.dataset.here ? currentPasture : null);
   });
   window.addEventListener("hashchange", () => show(location.hash.slice(1)));
@@ -655,11 +667,39 @@
   function logItems() {
     const q = store.get("queue", []).map(l => ({...l, _pending: true}));
     const logs = [...q, ...serverLogs.filter(l => !q.some(x => x.client_id === l.client_id))].map(l => ({type: l.kind === "note" ? "problem" : l.kind, at: l.logged_at, l}));
-    const ph = allPhotos().map(p => ({type: "photo", at: p.taken_at, p}));
-    return [...logs, ...ph].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    // Everything added on the ranch shows here too: jobs (added and checked off), places, and lines or pastures people drew.
+    const now = new Date().toISOString();
+    const jobs = tasks.flatMap(t => [{type: "job", at: t.created_at || now, t, what: "added", by: t.created_by_name},
+      ...(t.history || []).filter(h => h.op === "done").map(h => ({type: "job", at: h.at, t, what: "done", by: h.by}))]);
+    const pls = places.map(pl => ({type: "place", at: pl.created_at || pl.updated_at || now, pl}));
+    const shp = shapes.filter(x => x.source !== "imported").map(sh => ({type: "shape", at: sh.created_at || sh.updated_at || now, sh}));
+    // A photo that belongs to one of those shows on that item, not on its own.
+    const ids = new Set([...logs.map(i => i.l.client_id), ...tasks.map(t => t.task_id), ...places.map(p => p.place_id), ...shapes.map(x => x.shape_id)]);
+    const ph = allPhotos().filter(p => !PHOTO_KEYS.some(k => p[k] && ids.has(p[k]))).map(p => ({type: "photo", at: p.taken_at, p}));
+    return [...logs, ...ph, ...jobs, ...pls, ...shp].sort((a, b) => String(b.at).localeCompare(String(a.at)));
   }
+  const miniPhotos = (key, id) => { const list = photosOf(key, id);
+    return list.length ? `<span class="lphotos">${list.slice(0, 4).map(p => `<img src="${esc(thumbOf(p))}" alt="" loading="lazy">`).join("")}${list.length > 4 ? `<b>+${list.length - 4}</b>` : ""}</span>` : ""; };
   function itemHtml(it) {
     const by = x => x.by ? " · " + esc(x.by) : "";
+    if (it.type === "job") {
+      const t = it.t, done = it.what === "done";
+      return `<li class="clickable" data-item="${esc(t.task_id)}"><span class="ico" aria-hidden="true">${done ? "✔️" : "📋"}</span>
+        <span>${done ? "Checked off" : "New job"}: <b>${esc(t.title)}</b>${t.pasture_id ? ` <span class="dim">(${esc(pastureName(t.pasture_id))})</span>` : ""}${done ? "" : miniPhotos("task_id", t.task_id)}</span><span></span>
+        <span class="meta">${esc(when(it.at))}${it.by ? " · " + esc(it.by) : ""}</span></li>`;
+    }
+    if (it.type === "place") {
+      const pl = it.pl, k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
+      return `<li class="clickable" data-item="${esc(pl.place_id)}"><span class="ico" aria-hidden="true">${k[1]}</span>
+        <span>Added a place: <b>${esc(pl.name)}</b> <span class="dim">(${esc(k[0])})</span>${miniPhotos("place_id", pl.place_id)}</span><span></span>
+        <span class="meta">${esc(when(it.at))}${pl.created_by_name ? " · " + esc(pl.created_by_name) : ""}</span></li>`;
+    }
+    if (it.type === "shape") {
+      const sh = it.sh, isP = sh.kind === "pasture", lt = LINE_TYPES[sh.kind] || LINE_TYPES.other_line;
+      return `<li class="clickable" data-item="${esc(sh.shape_id)}"><span class="ico" aria-hidden="true">${isP ? "🟫" : `<i class="swatch" style="background:${lt.color}"></i>`}</span>
+        <span>Drew ${isP ? "a pasture" : "a " + esc(lt.label.toLowerCase())}: <b>${esc(sh.name || "")}</b>${miniPhotos("shape_id", sh.shape_id)}</span><span></span>
+        <span class="meta">${esc(when(it.at))}${sh.created_by_name ? " · " + esc(sh.created_by_name) : ""}</span></li>`;
+    }
     if (it.type === "photo") {
       const p = it.p, a = p.analysis || {};
       const tags = (p.tags || []).map(tagSpan).join("");
@@ -673,7 +713,7 @@
     const what = it.type === "move" ? `Moved cattle${l.from_pasture_id ? " from " + esc(pastureName(l.from_pasture_id)) : ""} to <b>${esc(pastureName(l.pasture_id))}</b>${l.head ? " (" + esc(l.head) + " head)" : ""}`
       : it.type === "rain" ? `Rain gauge: <b>${Number(l.inches).toFixed(2)} in</b>${l.pasture_id ? " at " + esc(pastureName(l.pasture_id)) : ""}`
       : `${(l.tags || []).map(tagSpan).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}${l.lat != null ? " 📍" : ""}`;
-    return `<li${it.type === "problem" ? ` class="clickable" data-photo="${esc(l.client_id)}"` : ""}><span class="ico" aria-hidden="true">${ico}</span><span>${what}</span><span></span>
+    return `<li class="clickable" data-photo="${esc(l.client_id)}"><span class="ico" aria-hidden="true">${ico}</span><span>${what}${miniPhotos("log_id", l.client_id)}</span><span></span>
       <span class="meta">${esc(when(l.logged_at))}${by(l)}${l._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
   }
   function renderLog() {
@@ -683,8 +723,8 @@
     $("g-queue").innerHTML = `<p><b>${n} waiting to send.</b> Safe on this phone; they'll send by themselves when there's signal.</p>
       <button type="button" class="secondary" id="syncNow">Send now</button>`;
     if ($("syncNow")) $("syncNow").onclick = () => syncAll(true);
-    const tagsOf = i => (i.p || i.l).tags || [];
-    const items = logItems().filter(i => logFilter === "all" || i.type === logFilter
+    const tagsOf = i => (i.p || i.l || {}).tags || [];
+    const items = logItems().filter(i => logFilter === "all" || i.type === logFilter || (logFilter === "map" && (i.type === "place" || i.type === "shape"))
       || (logFilter === "problem" && (i.type === "photo" || i.type === "problem") && (tagsAt(tagsOf(i), HEADS_UP).length || (i.p && i.p.flagged)))
       || (logFilter === "wildlife" && tagsOf(i).some(t => TAG[t] && TAG[t].group === "Wildlife"))).slice(0, 80);
     $("g-list").innerHTML = items.length ? items.map(itemHtml).join("") : "<li class='dim'>Nothing yet. Use the buttons on Home.</li>";
@@ -831,9 +871,12 @@
         <label>Where?<select name="pasture_id">${pastureOptions(here, "Whole ranch / not sure")}</select></label>
         <label>Anything else? (optional)<textarea name="text" maxlength="2000" placeholder="Which trough, how many head, which gate…"></textarea></label>`;
     }
-    openSheet(title, `<form class="form" id="actForm">${html}<label>When<input type="datetime-local" name="logged_at" value="${local}"></label>
+    const entryId = uid();
+    openSheet(title, `<form class="form" id="actForm">${html}<div><p class="dim small">Photos (optional)</p><div id="actPhotos"></div></div>
+      <label>When<input type="datetime-local" name="logged_at" value="${local}"></label>
       <div class="row"><button type="submit" class="primary">Save</button><button type="button" class="secondary" id="actCancel">Cancel</button></div></form>`);
     const f = $("actForm"); wireChips(f);
+    mountPhotoStrip($("actPhotos"), "log_id", entryId, {form: true, extra: () => ({pasture_id: (f.pasture_id && f.pasture_id.value) || null})});
     f.querySelectorAll("[data-in]").forEach(b => b.onclick = () => { f.inches.value = b.dataset.in; });
     let whereTimer = null;
     if (kind === "report") whereTimer = setInterval(() => {
@@ -844,19 +887,22 @@
     }, 1000);
     if (f.pasture_id) f.pasture_id.addEventListener("change", () => { f.pasture_id.dataset.touched = "1"; });
     const done = () => { clearInterval(whereTimer); if (kind === "report") stopSensors(); };
-    $("actCancel").onclick = () => { done(); closeSheet(); };
+    $("actCancel").onclick = () => { done(); closeSheet(); dropPhotosOf("log_id", entryId); };
     f.onsubmit = e => {
       e.preventDefault();
       const d = Object.fromEntries(new FormData(f).entries());
-      const entry = {client_id: uid(), kind: kind === "report" ? "note" : kind, logged_at: new Date(d.logged_at || Date.now()).toISOString(), by: me && me.name};
+      const entry = {client_id: entryId, kind: kind === "report" ? "note" : kind, logged_at: new Date(d.logged_at || Date.now()).toISOString(), by: me && me.name};
       if (d.pasture_id) entry.pasture_id = d.pasture_id;
       if (kind === "move") { if (d.from_pasture_id && d.from_pasture_id !== d.pasture_id) entry.from_pasture_id = d.from_pasture_id; if (d.head) entry.head = Number(d.head); }
       if (kind === "rain") entry.inches = Number(d.inches);
       if (kind === "report") {
         entry.tags = chosenTags(f); entry.text = (d.text || "").trim();
-        if (!entry.tags.length && !entry.text) { toast("Tap what you saw, or write a note."); return; }
+        const pics = photosOf("log_id", entryId);
+        if (!entry.tags.length && !entry.text && !pics.length) { toast("Tap what you saw, add a photo, or write a note."); return; }
         const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
+        const located = pics.find(p => p.lat != null);         // no GPS now, but a photo has it: use the photo's spot
         if (fx) { entry.lat = fx.lat; entry.lon = fx.lon; entry.accuracy_m = fx.acc; }
+        else if (located) { entry.lat = located.lat; entry.lon = located.lon; entry.accuracy_m = located.accuracy_m; }
       }
       done();
       const q = store.get("queue", []); q.push(entry); store.set("queue", q);
@@ -976,18 +1022,23 @@
   }
 
   function openReport(id) {
-    const it = logItems().find(i => i.type === "problem" && i.l.client_id === id); if (!it) return;
-    const l = it.l, mine = me && me.user_id && l.user_id === me.user_id;
-    openSheet(l.pasture_id ? pastureName(l.pasture_id) : "Report", `<p>${(l.tags || []).map(tagSpan).join(" ")}</p>
+    const it = logItems().find(i => i.l && i.l.client_id === id); if (!it) return;
+    const l = it.l, mine = me && me.user_id && l.user_id === me.user_id, isReport = it.type === "problem";
+    const title = isReport ? (l.pasture_id ? pastureName(l.pasture_id) : "Report") : it.type === "rain" ? "Rain gauge" : "Moved cattle";
+    const what = it.type === "rain" ? `<p><b>${Number(l.inches).toFixed(2)} in</b>${l.pasture_id ? " at " + esc(pastureName(l.pasture_id)) : ""}</p>`
+      : it.type === "move" ? `<p>Into <b>${esc(pastureName(l.pasture_id))}</b>${l.from_pasture_id ? " from " + esc(pastureName(l.from_pasture_id)) : ""}${l.head ? " · " + esc(l.head) + " head" : ""}</p>` : "";
+    openSheet(title, `${what}<p>${(l.tags || []).map(tagSpan).join(" ")}</p>
       ${l.text ? `<p>${esc(l.text)}</p>` : ""}
+      <div id="rpPhotos"></div>
       <p class="dim">${esc(when(l.logged_at))}${l.by ? " · " + esc(l.by) : ""}${l.accuracy_m ? " · 📍 ±" + l.accuracy_m + " m" : l.lat == null ? " · no location" : ""}</p>
       ${l._pending ? "<p class='pending'>Waiting to send.</p>" : ""}
-      <div class="row"><button type="button" class="primary" id="rpJob">＋ Make it a job</button>${l.lat != null ? `<button type="button" class="secondary" id="rpMap">Show on map</button>` : ""}
+      <div class="row">${isReport ? `<button type="button" class="primary" id="rpJob">＋ Make it a job</button>` : ""}${l.lat != null ? `<button type="button" class="secondary" id="rpMap">Show on map</button>` : ""}
       ${l._pending || isOwner() || mine ? `<button type="button" class="secondary" id="rpDel">Delete</button>` : ""}</div>`);
-    $("rpJob").onclick = () => window.__rangeiqMakeJob(l, false);
+    mountPhotoStrip($("rpPhotos"), "log_id", id, {extra: () => ({pasture_id: l.pasture_id || null})});
+    if ($("rpJob")) $("rpJob").onclick = () => window.__rangeiqMakeJob(l, false);
     if ($("rpMap")) $("rpMap").onclick = () => showOnMap(l.lat, l.lon);
     if ($("rpDel")) $("rpDel").onclick = async () => {
-      if (!confirm("Delete this report?")) return;
+      if (!confirm(isReport ? "Delete this report?" : "Delete this entry?")) return;
       try {
         if (l._pending) store.set("queue", store.get("queue", []).filter(x => x.client_id !== id));
         else await api("logs/" + encodeURIComponent(id), {method: "DELETE"});
@@ -1003,8 +1054,9 @@
       <p>${esc(when(p.taken_at))}${p.by ? " · " + esc(p.by) : ""}${p.heading_deg != null ? " · facing " + compass(p.heading_deg) : ""}${p.accuracy_m ? " · ±" + p.accuracy_m + " m" : ""}</p>
       <p>${(p.tags || []).map(tagSpan).join(" ")}</p>
       ${p.note ? `<p>${esc(p.note)}</p>` : ""}
-      <div class="stat"><div><span class="dim">Green</span><b>${a.green_pct ?? "–"}%</b></div><div><span class="dim">Brown or bare</span><b>${a.brown_bare_pct ?? "–"}%</b></div>
-      ${a.green_change_pts != null ? `<div><span class="dim">vs. last photo here</span><b>${a.green_change_pts > 0 ? "+" : ""}${a.green_change_pts} pts</b></div>` : ""}</div>
+      ${belongsTo(p)}
+      ${a.green_pct != null ? `<div class="stat"><div><span class="dim">Green</span><b>${a.green_pct}%</b></div><div><span class="dim">Brown or bare</span><b>${a.brown_bare_pct ?? "–"}%</b></div>
+      ${a.green_change_pts != null ? `<div><span class="dim">vs. last photo here</span><b>${a.green_change_pts > 0 ? "+" : ""}${a.green_change_pts} pts</b></div>` : ""}</div>` : ""}
       ${p._pending ? "<p class='pending'>Waiting to send.</p>" : ""}
       ${spot.length > 1 ? `<h3>This spot over time</h3><div class="spotrow">${spot.map(x => `<button type="button" data-photo="${esc(x.client_id)}"
         ${x.client_id === p.client_id ? 'aria-current="true"' : ""}><img src="${esc(thumbOf(x))}" alt="" loading="lazy"><span>${esc(when(x.taken_at, false))}<br>
@@ -1120,17 +1172,22 @@
   });
   function openTask(id) {
     const t = tasks.find(x => x.task_id === id); if (!t) return;
+    // Photos from the report or photo the job came from (shown, not removable here).
+    const fromSource = t.source_id ? [...allPhotos().filter(p => p.client_id === t.source_id), ...photosOf("log_id", t.source_id)] : [];
     const canDelete = isOwner() || (me && t.created_by === me.user_id);
     openSheet(t.title, `${t.note ? `<p>${esc(t.note)}</p>` : ""}
       <p class="dim">${esc(dueText(t))}${t.repeat_days ? " · 🔁 " + esc(REPEATS.find(r => r[0] === t.repeat_days)[1].toLowerCase()) : ""}
         ${t.pasture_id ? " · " + esc(pastureName(t.pasture_id)) : ""}${t.assignee_id ? " · for " + esc(personName(t.assignee_id)) : ""}</p>
       <p class="dim small">Added by ${esc(t.created_by_name || "?")} ${esc(when(t.created_at))}</p>
+      ${fromSource.length ? `<p class="dim small">From the report</p><div class="pstrip">${fromSource.map(p => `<span class="pthumb"><button type="button" data-photo="${esc(p.client_id)}" aria-label="Open photo"><img src="${esc(thumbOf(p))}" alt=""></button></span>`).join("")}</div>` : ""}
+      <div><p class="dim small">Photos${t.done_at ? "" : " (before, after…)"}</p><div id="tkPhotos"></div></div>
       ${(t.history || []).length ? `<h3>History</h3><ul class="srclist">${t.history.map(h => `<li><span>${h.op === "done" ? "✓ Checked off" : "↩ Undone"} by ${esc(h.by || "?")}</span>
         <span class="when">${esc(when(h.at))}</span></li>`).join("")}</ul>` : ""}
       <div class="row"><button type="button" class="primary" data-check="${esc(t.task_id)}">${t.done_at ? "Mark not done" : "✓ Check off"}</button>
       ${t.lat != null ? `<button type="button" class="secondary" id="tkMap">Show on map</button>` : ""}
       ${t.source_id ? `<button type="button" class="secondary" data-photo="${esc(t.source_id)}">See the report</button>` : ""}
       ${canDelete ? `<button type="button" class="secondary" id="tkDel">Delete</button>` : ""}</div>`);
+    mountPhotoStrip($("tkPhotos"), "task_id", t.task_id, {extra: () => ({pasture_id: t.pasture_id || null})});
     $("sheetBody").querySelector("[data-check]").addEventListener("click", () => setTimeout(closeSheet, 50));
     if ($("tkMap")) $("tkMap").onclick = () => showOnMap(t.lat, t.lon);
     if ($("tkDel")) $("tkDel").onclick = () => { if (confirm("Delete this job?")) { taskOp({op: "delete", task_id: t.task_id}); closeSheet(); } };
@@ -1147,15 +1204,17 @@
       <label>Where (optional)<select name="pasture_id">${pastureOptions(pre.pasture_id, "Anywhere / whole ranch")}</select></label>
       <label>Who (optional)<select name="assignee_id"><option value="">Anyone</option>${people.map(p => `<option value="${esc(p.user_id)}">${esc(p.name)}</option>`).join("")}</select></label>
       <label>Notes (optional)<textarea name="note" maxlength="1000">${esc(pre.note || "")}</textarea></label>
+      <div><p class="dim small">Photos (optional)</p><div id="taskPhotos"></div></div>
       <div class="row"><button type="submit" class="primary">Add job</button><button type="button" class="secondary" id="taskCancel">Cancel</button></div></form>`);
-    const f = $("taskForm");
+    const f = $("taskForm"), taskId = uid();
+    mountPhotoStrip($("taskPhotos"), "task_id", taskId, {form: true, extra: () => ({pasture_id: f.pasture_id.value || null})});
     f.querySelectorAll("[data-idea]").forEach(b => b.onclick = () => { f.title.value = b.dataset.idea; if (/water|cattle/i.test(b.dataset.idea)) f.repeat_days.value = "2"; });
     f.due.onchange = () => { f.due_pick.hidden = f.due.value !== "pick"; };
-    $("taskCancel").onclick = closeSheet;
+    $("taskCancel").onclick = () => { closeSheet(); dropPhotosOf("task_id", taskId); };
     f.onsubmit = e => {
       e.preventDefault();
       const due = f.due.value === "pick" ? f.due_pick.value : f.due.value;
-      taskOp({op: "add", task_id: uid(), title: f.title.value.trim(), due_date: due || null, repeat_days: Number(f.repeat_days.value),
+      taskOp({op: "add", task_id: taskId, title: f.title.value.trim(), due_date: due || null, repeat_days: Number(f.repeat_days.value),
         pasture_id: f.pasture_id.value || null, assignee_id: f.assignee_id.value || null, note: f.note.value.trim() || null,
         lat: pre.lat ?? null, lon: pre.lon ?? null, source_id: pre.source_id || null});
       closeSheet(); toast("Job added."); if (!pre.source_id) show("todo");
@@ -1386,19 +1445,18 @@
   function openShape(id) {
     const x = shapes.find(s2 => s2.shape_id === id); if (!x) return;
     const isPasture = x.kind === "pasture", t = LINE_TYPES[x.kind];
-    const pics = allPhotos().filter(p => p.shape_id === id);
     openSheet(x.name, `<p>${isPasture ? "🟫 Pasture" : `<i class="swatch" style="background:${t.color}"></i> ${esc(t.label)}`} ·
         ${isPasture ? acresOf(x.coords).toFixed(1) + " acres" : fmtLen(lengthM(x.coords))}${x.source === "gps" ? " · 🛰 recorded with GPS" : ""}</p>
       ${x.note ? `<p>${esc(x.note)}</p>` : ""}
       <p class="dim small">${x.created_by_name ? "Added by " + esc(x.created_by_name) : ""}</p>
-      ${pics.length ? `<div class="spotrow">${pics.map(p => `<button type="button" data-photo="${esc(p.client_id)}"><img src="${esc(thumbOf(p))}" alt=""><span>${esc(when(p.taken_at, false))}</span></button>`).join("")}</div>` : ""}
-      <div class="row"><button type="button" class="secondary" id="shPhoto">📷 Add photo</button>
+      <div id="shPhotos"></div>
+      <div class="row">
         ${isPasture && snap && snap.pastures.some(p => p.id === id) ? `<button type="button" class="secondary" data-pasture="${esc(id)}">Pasture details</button>` : ""}
         ${!isPasture && x.coords.length >= 3 && isOwner() ? `<button type="button" class="secondary" id="shToPasture">🟫 Use as a pasture boundary</button>` : ""}
         ${canEditShape(x) ? `<button type="button" class="secondary" id="shEdit">✏️ Edit ${isPasture ? "boundary" : "line"}</button>
           <button type="button" class="secondary" id="shDel">Delete</button>` : ""}</div>
       ${isPasture && !canEditShape(x) && isOwner() ? `<p class="dim small">🔒 Boundaries are locked. Unlock them under ✏️ Draw to edit.</p>` : ""}`);
-    $("shPhoto").onclick = async () => { const id2 = await attachPhoto({shape_id: id, near: x.coords}); if (id2) openShape(id); };
+    mountPhotoStrip($("shPhotos"), "shape_id", id, {near: x.coords});
     if ($("shEdit")) $("shEdit").onclick = () => startDraw(x.kind, "tap", x);
     if ($("shToPasture")) $("shToPasture").onclick = () => lineToPasture(x);
     if ($("shDel")) $("shDel").onclick = () => { if (confirm(`Delete ${x.name}?`)) { shapeChange({shape_id: id, kind: x.kind, deleted: true}); closeSheet(); renderMap(); } };
@@ -1466,6 +1524,45 @@
     };
   }
   // A photo tied to a line or boundary: where the phone is, or the middle of the shape when there's no GPS.
+  // ---------------------------------------------------------------- PHOTOS THAT BELONG TO SOMETHING
+  // A report, rain or cattle-move entry (log_id), a job (task_id), a place (place_id) or a road / fence / pasture (shape_id).
+  const PHOTO_KEYS = ["log_id", "task_id", "place_id", "shape_id"];
+  const photosOf = (key, id) => allPhotos().filter(p => p[key] === id).sort((a, b) => String(a.taken_at).localeCompare(String(b.taken_at)));
+  const canRemovePhoto = p => p._pending || isOwner() || !!(me && me.user_id && p.user_id === me.user_id);
+  async function removePhoto(id) {
+    const p = allPhotos().find(x => x.client_id === id); if (!p) return;
+    try {
+      if (p._pending) await idb.del(id); else await api("photos/" + encodeURIComponent(id), {method: "DELETE"});
+      photos = photos.filter(x => x.client_id !== id); store.set("photos", photos); await loadPending(); rerender();
+    } catch (e) { toast(e.message); }
+  }
+  // Thumbnails + "Add photo" + ✕ to remove, drawn into `el`. In a form (opts.form) thumbnails don't open the photo,
+  // so nothing typed is lost. opts.extra() adds fields to a new photo (e.g. the pasture picked in the form).
+  function mountPhotoStrip(el, key, id, opts = {}) {
+    if (!el) return;
+    const draw = () => {
+      const list = photosOf(key, id);
+      el.innerHTML = `<div class="pstrip">${list.map(p => `<span class="pthumb">${opts.form ? `<img src="${esc(thumbOf(p))}" alt="Photo">`
+          : `<button type="button" data-photo="${esc(p.client_id)}" aria-label="Open photo"><img src="${esc(thumbOf(p))}" alt=""></button>`}
+          ${canRemovePhoto(p) ? `<button type="button" class="pdel" data-pdel="${esc(p.client_id)}" aria-label="Remove photo">✕</button>` : ""}</span>`).join("")}
+        ${opts.add === false ? "" : `<button type="button" class="padd" data-padd><span aria-hidden="true">📷</span>${list.length ? "Add another" : "Add photo"}</button>`}</div>`;
+      const add = el.querySelector("[data-padd]");
+      if (add) add.onclick = async e => {
+        e.preventDefault();
+        const pid = await attachPhoto({[key]: id, ...(opts.extra ? opts.extra() : {}), ...(opts.near ? {near: opts.near} : {})});
+        if (pid) { draw(); if (opts.onChange) opts.onChange(); }
+      };
+      el.querySelectorAll("[data-pdel]").forEach(b => b.onclick = async e => {
+        e.preventDefault(); e.stopPropagation();
+        if (!confirm("Remove this photo?")) return;
+        await removePhoto(b.dataset.pdel); draw(); if (opts.onChange) opts.onChange();
+      });
+    };
+    draw();
+  }
+  // Photos added to something that was then cancelled are thrown away.
+  async function dropPhotosOf(key, id) { for (const p of photosOf(key, id)) await removePhoto(p.client_id); }
+
   async function attachPhoto(extra) {
     startSensors();
     const near = extra.near; delete extra.near;
@@ -1504,8 +1601,14 @@
   async function placePhoto(extra = {}) {       // returns the queued photo's id, or null
     return new Promise(ok => {
       const input = $("camInput"); input.value = "";
+      let settled = false;
+      const giveUp = () => { if (settled) return; settled = true; input.onchange = onCam; input.oncancel = null; ok(null); };
+      input.oncancel = giveUp;                     // closed the camera without a photo
+      // Older phones don't send "cancel": if nothing arrives soon after the app is back in front, stop waiting.
+      window.addEventListener("focus", () => setTimeout(giveUp, 4000), {once: true});
       input.onchange = async e => {
-        input.onchange = onCam;                    // back to the normal camera
+        if (settled) return; settled = true;
+        input.onchange = onCam; input.oncancel = null;   // back to the normal camera
         const file = e.target.files && e.target.files[0]; if (!file) return ok(null);
         try {
           const img = await loadImage(file);
@@ -1513,7 +1616,7 @@
           const client_id = uid(), fix = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
           await idb.put({client_id, photo, thumb, meta: {client_id, taken_at: new Date().toISOString(), lat: fix ? fix.lat : null, lon: fix ? fix.lon : null,
             accuracy_m: fix ? fix.acc : null, heading_deg: null, pasture_id: null, tags: [], note: null, by: me && me.name, analysis: {}, flagged: false,
-            place_id: extra.shape_id ? null : placeDraft && placeDraft.place_id, ...extra}});
+            ...extra}});
           await loadPending(); ok(client_id);
         } catch (err) { toast("Couldn't use that photo: " + err.message); ok(null); }
       };
@@ -1528,13 +1631,12 @@
   }
   function placeForm() {
     const d = placeDraft, isNew = !places.some(p => p.place_id === d.place_id);
-    const ph = d.photo_id && allPhotos().find(x => x.client_id === d.photo_id);
     openSheet(isNew ? "Add a place" : "Edit place", `<form class="form" id="placeForm"><div>${kindPicker(d.kind)}</div>
       <label>Name<input name="name" maxlength="80" required value="${esc(d.name)}" placeholder="${esc(PLACE_KINDS[d.kind][0])} by the north gate"></label>
       <div><p><b>Where</b></p><p class="dim" id="plWhere"></p>
         <div class="row"><button type="button" class="secondary" id="plGps">📍 Use where I'm standing</button>
         <button type="button" class="secondary" id="plTap">👆 Tap it on the map</button></div></div>
-      <div class="row" style="align-items:center">${ph ? `<img class="placethumb" src="${esc(thumbOf(ph))}" alt="">` : ""}<button type="button" class="secondary" id="plPhoto">📷 ${ph ? "Change photo" : "Add a photo"}</button></div>
+      <div><p class="dim small">Photos (optional)</p><div id="plPhotos"></div></div>
       <label id="plDevice" ${d.kind.startsWith("sensor_") ? "" : "hidden"}>Device ID (optional; on the sensor's label)<input name="device_id" maxlength="64" value="${esc(d.device_id || "")}" autocapitalize="characters"></label>
       <label>Notes (optional)<textarea name="note" maxlength="1000" placeholder="Holds about 2,000 gal · feeder set to 7 am">${esc(d.note || "")}</textarea></label>
       <div class="row"><button type="submit" class="primary">Save place</button><button type="button" class="secondary" id="plCancel">Cancel</button></div></form>`);
@@ -1556,28 +1658,35 @@
       if (!fx) { toast("No GPS fix yet. Try again in a moment, or tap it on the map."); return; } d.lat = fx.lat; d.lon = fx.lon; d.acc = fx.acc; where(); };
     $("plTap").onclick = () => { keep(); clearInterval(t); closeSheet();
       pickOnMap((lat, lon) => { if (lat != null) { d.lat = lat; d.lon = lon; d.acc = null; } placeForm(); }); };
-    $("plPhoto").onclick = async () => { keep(); const id = await placePhoto(); if (id) { d.photo_id = id; if (d.lat == null && cam.fix) { d.lat = cam.fix.lat; d.lon = cam.fix.lon; d.acc = cam.fix.acc; } } placeForm(); };
-    $("plCancel").onclick = () => { clearInterval(t); placeDraft = null; stopSensors(); closeSheet(); };
+    mountPhotoStrip($("plPhotos"), "place_id", d.place_id, {form: true, onChange: () => {
+      const pics = photosOf("place_id", d.place_id); d.photo_id = pics.length ? pics[0].client_id : null;
+      const at = pics.find(p => p.lat != null);
+      if (d.lat == null && at) { d.lat = at.lat; d.lon = at.lon; d.acc = at.accuracy_m; where(); }     // a photo with GPS places it
+    }});
+    $("plCancel").onclick = () => { clearInterval(t); placeDraft = null; stopSensors(); closeSheet(); if (isNew) dropPhotosOf("place_id", d.place_id); };
     f.onsubmit = e => {
       e.preventDefault(); keep();
       if (d.lat == null) { toast("Set where it is: use your location or tap it on the map."); return; }
       clearInterval(t); stopSensors();
       placeChange({place_id: d.place_id, kind: d.kind, name: d.name.trim() || PLACE_KINDS[d.kind][0], note: d.note.trim() || null,
-        lat: d.lat, lon: d.lon, photo_id: d.photo_id || null, device_id: d.kind.startsWith("sensor_") ? (d.device_id || "").trim() || null : null});
+        lat: d.lat, lon: d.lon, photo_id: (photosOf("place_id", d.place_id)[0] || {}).client_id || null, device_id: d.kind.startsWith("sensor_") ? (d.device_id || "").trim() || null : null});
       closeSheet(); toast("Place saved."); placeDraft = null;
     };
   }
   function openPlace(id) {
     const pl = places.find(x => x.place_id === id); if (!pl) return;
-    const k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other, ph = pl.photo_id && allPhotos().find(x => x.client_id === pl.photo_id);
+    const k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
+    const ph = (pl.photo_id && allPhotos().find(x => x.client_id === pl.photo_id)) || photosOf("place_id", pl.place_id)[0];
     const canEdit = isOwner() || (me && pl.created_by === me.user_id);
     openSheet(`${k[1]} ${pl.name}`, `<p class="dim">${esc(k[0])}${pl.created_by_name ? " · added by " + esc(pl.created_by_name) : ""}</p>
       ${ph ? `<img class="photoimg" src="${esc(imageOf(ph))}" alt="Photo of ${esc(pl.name)}">` : ""}
       ${pl.note ? `<p>${esc(pl.note)}</p>` : ""}
+      <div id="plPhotosView"></div>
       ${pl.kind.startsWith("sensor_") ? `<p class="dim small">${pl.device_id ? "Device " + esc(pl.device_id) + ". " : ""}Live readings will show here once sensors are connected to RangeIQ.</p>` : ""}
       <div class="row"><button type="button" class="secondary" id="plMap">Show on map</button>
         <button type="button" class="secondary" id="plJob">＋ Make it a job</button>
         ${canEdit ? `<button type="button" class="secondary" id="plEdit">Edit</button><button type="button" class="secondary" id="plDel">Delete</button>` : ""}</div>`);
+    mountPhotoStrip($("plPhotosView"), "place_id", pl.place_id, {onChange: () => openPlace(id)});
     $("plMap").onclick = () => showOnMap(pl.lat, pl.lon);
     $("plJob").onclick = () => addTask({title: `Check ${pl.name}`, note: "", lat: pl.lat, lon: pl.lon, source_id: null,
       pasture_id: pastureAt(pl.lon, pl.lat)});

@@ -344,3 +344,15 @@ body.drawing #v-map .map{height:calc(100dvh - 300px - env(safe-area-inset-bottom
 .pflag span{display:none;position:absolute;left:1px;bottom:36px;transform:translateX(-50%);background:rgba(20,22,40,.82);color:#fff;border:2px solid var(--c);border-radius:8px;padding:3px 8px;font-weight:700;font-size:.8rem;white-space:nowrap}
 .flag-names .pflag span{display:block}
 .pflag::before{content:"";position:absolute;left:-14px;right:-6px;top:-4px;bottom:-8px}
+
+/* photos that belong to a report, job, place or line: thumbnails, ✕ to remove, "Add photo" */
+.pstrip{display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;margin:4px 0}
+.pthumb{position:relative;width:84px;height:84px}
+.pthumb img{width:84px;height:84px;object-fit:cover;border-radius:10px;display:block}
+.pthumb > button[data-photo]{padding:0;border:0;background:none;cursor:pointer;border-radius:10px}
+.pdel{position:absolute;top:-8px;right:-8px;width:30px;height:30px;border-radius:50%;border:2px solid #fff;background:#1d1d1f;color:#fff;font-size:.9rem;line-height:1;cursor:pointer;padding:0}
+.padd{width:84px;height:84px;border:2px dashed var(--rule);border-radius:10px;background:var(--surface-2);color:inherit;font-size:.8rem;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer}
+.padd span{font-size:1.5rem}
+.timeline .lphotos{display:flex;gap:4px;margin-top:6px;align-items:center}
+.timeline .lphotos img{width:44px;height:44px;object-fit:cover;border-radius:6px;grid-row:auto}
+.timeline .ico .swatch{display:inline-block;width:22px;height:6px;border-radius:3px;vertical-align:middle}
