@@ -1381,12 +1381,53 @@
       ${pics.length ? `<div class="spotrow">${pics.map(p => `<button type="button" data-photo="${esc(p.client_id)}"><img src="${esc(thumbOf(p))}" alt=""><span>${esc(when(p.taken_at, false))}</span></button>`).join("")}</div>` : ""}
       <div class="row"><button type="button" class="secondary" id="shPhoto">📷 Add photo</button>
         ${isPasture && snap && snap.pastures.some(p => p.id === id) ? `<button type="button" class="secondary" data-pasture="${esc(id)}">Pasture details</button>` : ""}
+        ${!isPasture && x.coords.length >= 3 && isOwner() ? `<button type="button" class="secondary" id="shToPasture">🟫 Use as a pasture boundary</button>` : ""}
         ${canEditShape(x) ? `<button type="button" class="secondary" id="shEdit">✏️ Edit ${isPasture ? "boundary" : "line"}</button>
           <button type="button" class="secondary" id="shDel">Delete</button>` : ""}</div>
       ${isPasture && !canEditShape(x) && isOwner() ? `<p class="dim small">🔒 Boundaries are locked. Unlock them under ✏️ Draw to edit.</p>` : ""}`);
     $("shPhoto").onclick = async () => { const id2 = await attachPhoto({shape_id: id, near: x.coords}); if (id2) openShape(id); };
     if ($("shEdit")) $("shEdit").onclick = () => startDraw(x.kind, "tap", x);
+    if ($("shToPasture")) $("shToPasture").onclick = () => lineToPasture(x);
     if ($("shDel")) $("shDel").onclick = () => { if (confirm(`Delete ${x.name}?`)) { shapeChange({shape_id: id, kind: x.kind, deleted: true}); closeSheet(); renderMap(); } };
+  }
+  // A line drawn around a pasture (say, as a fence line) becomes that pasture's boundary, or a new pasture.
+  function inRing(x, y, ring) {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  }
+  function lineToPasture(line) {
+    if (!canEditBoundaries()) {
+      openSheet("Pasture boundaries are locked", `<p>Unlock them first: ✏️ Draw → <b>Unlock to edit</b>. Then open this line again.</p>`); return;
+    }
+    let ring = line.coords.slice();
+    if (ring.length > 3 && metres({lat: ring[0][1], lon: ring[0][0]}, {lat: ring[ring.length - 1][1], lon: ring[ring.length - 1][0]}) < 1) ring.pop();
+    const current = pastureShapes().length ? pastureShapes().map(s2 => ({id: s2.shape_id, name: s2.name, coords: s2.coords}))
+      : (snap ? snap.pastures.map(p => ({id: p.id, name: p.name, coords: p.outline})) : []);
+    // Best guess: the pasture this line mostly sits on (share of its corners inside + whether the pasture's middle is inside the line).
+    const score = p => ring.filter(([x, y]) => inRing(x, y, p.coords)).length / ring.length + (inRing(...interiorPoint(p.coords), ring) ? 1 : 0);
+    const ranked = current.map(p => ({...p, s: score(p)})).sort((a, b) => b.s - a.s);
+    openSheet("Use as a pasture boundary", `<form class="form" id="l2pForm">
+      <p>${acresOf(ring).toFixed(1)} acres · ${ring.length} corners. The line itself is removed once it becomes a boundary.</p>
+      <label>Which pasture?<select name="target">
+        ${ranked.map((p, i) => `<option value="${esc(p.id)}" ${i === 0 && p.s > 0 ? "selected" : ""}>Replace the boundary of ${esc(p.name)}</option>`).join("")}
+        <option value="" ${ranked.length && ranked[0].s > 0 ? "" : "selected"}>A new pasture</option></select></label>
+      <label id="l2pName">Name of the new pasture<input name="name" maxlength="80" value="${esc(line.name || "")}"></label>
+      <div class="row"><button type="submit" class="primary">Save boundary</button><button type="button" class="secondary" id="l2pBack">Cancel</button></div></form>`);
+    const f = $("l2pForm"), nameRow = $("l2pName");
+    const sync = () => { nameRow.hidden = !!f.target.value; f.name.required = !f.target.value; };
+    f.target.onchange = sync; sync();
+    $("l2pBack").onclick = closeSheet;
+    f.onsubmit = e => {
+      e.preventDefault();
+      const target = ranked.find(p => p.id === f.target.value);
+      const id = target ? target.id : uid();
+      shapeChange({shape_id: id, kind: "pasture", name: target ? target.name : f.name.value.trim(), coords: ring, source: line.source || "drawn", note: null});
+      shapeChange({shape_id: line.shape_id, kind: line.kind, deleted: true});
+      closeSheet(); toast(`Boundary saved${target ? " for " + target.name : ""}. Status updates in a few minutes.`); renderMap();
+    };
   }
   // A photo tied to a line or boundary: where the phone is, or the middle of the shape when there's no GPS.
   async function attachPhoto(extra) {
