@@ -161,3 +161,27 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
   - the Streamlit service is stopped and disabled (about 300 MB of memory freed);
   - the path unit is installed.
   - Deploys skip the console when it's disabled. The script prints how to bring the console back.
+
+## Drawing pastures, roads and trails
+
+- **✏️ Draw** on the map:
+  - **Pasture boundaries:** tap the corners, or walk or drive the fence with GPS.
+  - **Roads, trails and lines:** main road, ranch road, two-track, game trail, hunting trail, path, fence line, water line or pipe, creek or draw, other. Draw them by tapping points or record them with GPS.
+- **Editing:** drag a dot to move it, tap "+" to add a point between, or select a dot and **Delete point**. **Undo** removes the last point.
+  - GPS recording keeps points within 30 m accuracy, every 4 m or more. A **📷 Photo here** button saves a photo on the line. The finished track is simplified (Douglas-Peucker, 2 m).
+  - The screen is kept awake where the phone allows it. An unfinished drawing survives closing the app.
+- **Lockable boundaries:**
+  - Pasture boundaries start **locked** whenever the ranch has pastures.
+  - Only the owner or a partner can unlock, edit and lock them again (✏️ Draw, or the yellow banner on the map).
+  - The first unlock copies the pastures from the uploaded file into editable shapes, keeping their ids so logs, photos and history stay attached.
+  - From then on the drawn pastures replace the file. The server refuses boundary changes while locked or from crew.
+- **Roads and trails:** anyone on the ranch can draw them. The owner or whoever drew one can edit or delete it.
+- **Layers:** each line type is its own layer (Layers → Roads & trails) with its own color, on both the 2D and 3D maps.
+- **Photos on a line or boundary:** tap the line, then **📷 Add photo**. The photo uses the phone's GPS, or the middle of the line if there's no fix.
+- **Rebuilds:** pasture changes trigger a ranch rebuild (status, greenness, 3D walls), within seconds on the server. The 3D terrain rebuilds when a boundary moves (outline hash).
+
+## Map extras
+
+- **📍 Me** shows where the phone is: a blue dot with an accuracy ring in 2D, and a blue marker in 3D, with a direction arrow when the compass is known. It centers the map on you. GPS runs only while the map is open.
+- **Relief** look replaces Topo: land colored by height and slope (sage flats, tan slopes, rust and rock on steep ground, greener draws), lit by the scene's sun, with no contour lines.
+- **Height slider:** ×1 to ×12.

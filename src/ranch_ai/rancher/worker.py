@@ -82,6 +82,14 @@ def usable_providers(app_settings: Settings, env: dict | None = None) -> list[st
     return []
 
 
+def outline_hash(pastures) -> str:
+    import hashlib
+
+    rows = sorted((str(r["pasture_id"]), json.dumps(r["geometry"] if not isinstance(r["geometry"], str) else json.loads(r["geometry"])))
+                  for r in pastures.to_dict("records"))
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16]
+
+
 def terrain_needs_rebuild(store: AppStore, workspace_id: str, pastures, max_age_days: int = 30) -> bool:
     """The 3D terrain and aerial photo change rarely: rebuild when the format, the boundary or the month changes."""
     from datetime import datetime, timezone
@@ -91,8 +99,7 @@ def terrain_needs_rebuild(store: AppStore, workspace_id: str, pastures, max_age_
     meta = store.terrain_meta(workspace_id)
     if not meta or meta.get("asset_version") != ASSET_VERSION:
         return True
-    ids = sorted(str(p) for p in pastures["pasture_id"])
-    if sorted(str(o.get("id")) for o in meta.get("outlines", [])) != ids:
+    if meta.get("outline_hash") != outline_hash(pastures):     # a boundary was redrawn
         return True
     try:
         age = datetime.now(timezone.utc) - datetime.fromisoformat(str(meta.get("updated_at")).replace("Z", "+00:00"))
@@ -120,7 +127,28 @@ def ranch_greenness(workspace_id: str, pastures, *, budget_seconds: float | None
     return {"anomalies": anomalies, "note": note, "error": rep.error, "report": rep.text()}
 
 
-def workspace_inputs(workspace_id: str, base: Settings = default_settings):
+def _default_store() -> AppStore | None:
+    try:
+        return AppStore()
+    except Exception:  # noqa: BLE001 - no app database (e.g. tests without one)
+        return None
+
+
+def drawn_pastures(workspace_id: str, store: AppStore | None):
+    """Pastures drawn or edited in the app (they replace the uploaded file once the owner starts editing)."""
+    if store is None:
+        return None
+    shapes = store.list_shapes(workspace_id, "pasture")
+    if not shapes:
+        return None
+    from ranch_ai.utils.io import load_geojson_pastures
+
+    features = [{"type": "Feature", "properties": {"pasture_id": s["shape_id"], "name": s["name"]},
+                 "geometry": {"type": "Polygon", "coordinates": [s["coords"] + [s["coords"][0]]]}} for s in shapes]
+    return load_geojson_pastures(geojson_text=json.dumps({"type": "FeatureCollection", "features": features}))
+
+
+def workspace_inputs(workspace_id: str, base: Settings = default_settings, store: AppStore | None = None):
     """Settings + pasture boundaries for a workspace, as saved from the desktop console.
 
     Returns (settings, pastures or None, boundary_label). Real accounts with no
@@ -128,6 +156,12 @@ def workspace_inputs(workspace_id: str, base: Settings = default_settings):
     """
     config_path = base.workspace_config_path_for(workspace_id)
     app_settings = load_settings(config_path) if config_path.exists() else load_settings()
+    drawn = drawn_pastures(workspace_id, store if store is not None else _default_store())
+    if drawn is not None:
+        # Weather and the ranch's map point follow the drawn pastures.
+        app_settings.ranch.latitude = round(float(drawn["centroid_lat"].mean()), 6)
+        app_settings.ranch.longitude = round(float(drawn["centroid_lon"].mean()), 6)
+        return app_settings, drawn, "drawn in the app"
     state_path = base.workspace_state_path_for(workspace_id)
     if state_path.exists():
         try:
@@ -158,7 +192,7 @@ def build_workspace(
     """Build and store one ranch's snapshot (and 3D terrain). Returns a short report."""
     from ranch_ai.rancher.snapshot import build_snapshot, is_live
 
-    app_settings, pastures, boundary = workspace_inputs(workspace_id)
+    app_settings, pastures, boundary = workspace_inputs(workspace_id, store=store)
     report: dict = {"workspace_id": workspace_id, "boundary": boundary}
     switched = usable_providers(app_settings)
     if switched:
@@ -219,6 +253,7 @@ def build_workspace(
         from ranch_ai.rancher.terrain3d import build_terrain_assets
 
         assets = build_terrain_assets(terrain_result.grid, pastures, user_agent=app_settings.terrain.user_agent)
+        assets["meta"]["outline_hash"] = outline_hash(pastures)
         store.save_terrain(workspace_id, assets["meta"], assets["height"], assets["texture"], assets["texture_mime"])
         report["terrain_3d"] = {
             "mesh": f"{assets['meta']['nx']}x{assets['meta']['ny']} @ {assets['meta']['cell_m']:.1f} m",

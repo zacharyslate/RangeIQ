@@ -64,7 +64,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   const elev = new Float32Array(NX * NY);
   let zmin = Infinity, zmax = -Infinity;
   for (let i = 0; i < elev.length; i++) { const z = meta.z0 + q[i] * meta.zscale; elev[i] = z; if (z < zmin) zmin = z; if (z > zmax) zmax = z; }
-  let exag = exaggeration;
+  let exag = exaggeration, exagPending = false;
 
   let renderer;
   try { renderer = new THREE.WebGLRenderer({antialias: true, alpha: true}); }
@@ -111,45 +111,44 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   const toScene = (x, y, lift = 0) => new THREE.Vector3((x - W / 2) * S, (elevAt(x, y) - zmin) * exag * S + lift, (H / 2 - y) * S);
 
   // Topo look: earth-tone elevation colors, hillshade from the NW, and contour lines every "nice" interval in feet.
+  // "Relief" look: natural West Texas colours from elevation and slope, lit live by the low sun (no contour lines).
+  // Grassy flats are sage and gold, slopes turn tan, steep ground and ridges turn rust and grey rock; a little
+  // grain keeps it from looking flat. Light and shadow come from the scene's sun, so they change as you turn it.
   function buildTopo() {
-    const scale = Math.max(1, Math.min(4, Math.floor(1024 / Math.max(NX, NY))));
+    const scale = Math.max(1, Math.min(4, Math.floor(2048 / Math.max(NX, NY))));
     const TW = (NX - 1) * scale + 1, TH = (NY - 1) * scale + 1;
     const z = new Float32Array(TW * TH);
     for (let r = 0; r < TH; r++) for (let c = 0; c < TW; c++) z[r * TW + c] = gridZ(c / scale, r / scale);
-    const reliefFt = (zmax - zmin) * 3.28084;
-    const ci = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500].find(v => reliefFt / v <= 14) || 1000;   // contour interval (ft)
-    const stops = [[0, [122, 146, 96]], [0.3, [168, 170, 112]], [0.55, [201, 178, 124]], [0.8, [168, 118, 76]], [1, [232, 220, 196]]];
-    const ramp = t => { for (let k = 1; k < stops.length; k++) if (t <= stops[k][0]) {
-      const [t0, a] = stops[k - 1], [t1, b] = stops[k], u = (t - t0) / (t1 - t0 || 1); return a.map((v, j) => v + (b[j] - v) * u); } return stops[4][1]; };
+    const low = [[0, [104, 128, 78]], [0.35, [150, 152, 92]], [0.6, [192, 168, 110]], [0.85, [170, 120, 80]], [1, [214, 196, 168]]];
+    const rock = [138, 112, 92];
+    const ramp = t => { for (let k = 1; k < low.length; k++) if (t <= low[k][0]) {
+      const [t0, a] = low[k - 1], [t1, b] = low[k], u = (t - t0) / (t1 - t0 || 1); return a.map((v, j) => v + (b[j] - v) * u); } return low[4][1]; };
     const cv = document.createElement("canvas"); cv.width = TW; cv.height = TH;
     const g = cv.getContext("2d"), img = g.createImageData(TW, TH), d = img.data;
-    const px = CELL / scale, az = 315 * D2R, alt = 40 * D2R, span = (zmax - zmin) || 1;
-    const band = v => Math.floor((v - zmin) * 3.28084 / ci);
+    const px = CELL / scale, span = (zmax - zmin) || 1;
+    let seed = 1234567;
+    const noise = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
     for (let r = 0; r < TH; r++) for (let c = 0; c < TW; c++) {
       const i = r * TW + c, zc = z[i];
       const zl = z[r * TW + Math.max(c - 1, 0)], zr = z[r * TW + Math.min(c + 1, TW - 1)];
       const zu = z[Math.max(r - 1, 0) * TW + c], zd = z[Math.min(r + 1, TH - 1) * TW + c];
-      const dzdx = (zr - zl) / (2 * px), dzdy = (zu - zd) / (2 * px);           // y north
-      const slope = Math.atan(Math.hypot(dzdx, dzdy)), aspect = Math.atan2(dzdy, -dzdx);
-      const shade = Math.max(0, Math.cos(alt) * Math.cos(slope) + Math.sin(alt) * Math.sin(slope) * Math.cos(az - aspect));
-      const col = ramp((zc - zmin) / span), k = 0.55 + 0.6 * shade;
-      let [R, G, B] = col.map(v => v * k);
-      const b0 = band(zc);
-      if (c + 1 < TW && r + 1 < TH && (band(z[i + 1]) !== b0 || band(z[i + TW]) !== b0)) {
-        const index = Math.max(b0, band(z[i + 1]), band(z[i + TW])) % 5 === 0;
-        const m = index ? 0.35 : 0.62; R *= m; G *= m; B *= m;
-      }
-      d[i * 4] = Math.min(255, R); d[i * 4 + 1] = Math.min(255, G); d[i * 4 + 2] = Math.min(255, B); d[i * 4 + 3] = 255;
+      const slopePct = Math.hypot((zr - zl) / (2 * px), (zu - zd) / (2 * px)) * 100;
+      const curv = (zl + zr + zu + zd - 4 * zc) / (px * px);          // > 0 in draws and washes, < 0 on ridges
+      let col = ramp((zc - zmin) / span);
+      const steep = Math.min(1, Math.max(0, (slopePct - 15) / 35));    // 15% slope starts turning rocky, 50% is bare rock
+      col = col.map((v, j) => v + (rock[j] - v) * steep);
+      if (curv > 0) col = col.map((v, j) => v + ([88, 120, 70][j] - v) * Math.min(0.45, curv * 40));   // greener in the draws
+      const grain = 1 + noise() * 0.08;
+      d[i * 4] = Math.min(255, col[0] * grain); d[i * 4 + 1] = Math.min(255, col[1] * grain); d[i * 4 + 2] = Math.min(255, col[2] * grain); d[i * 4 + 3] = 255;
     }
     g.putImageData(img, 0, 0);
     const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = photoTex.anisotropy;
-    topoMat = new THREE.MeshBasicMaterial({map: t});        // shading is baked in, like a paper topo map
-    topoMat.userData.interval = ci;
+    topoMat = new THREE.MeshLambertMaterial({map: t});
   }
   function setLook(v) {
-    look = v === "topo" ? "topo" : "photo";
-    if (look === "topo" && !topoMat) buildTopo();
-    mesh.material = look === "topo" ? topoMat : photoMat;
+    look = v === "photo" ? "photo" : "relief";
+    if (look === "relief" && !topoMat) buildTopo();
+    mesh.material = look === "relief" ? topoMat : photoMat;
   }
   setLook(look);
 
@@ -166,6 +165,17 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     g.fillStyle = "#fff"; g.font = `700 ${f}px system-ui, sans-serif`; g.textBaseline = "middle"; g.fillText(text, 15, (f + 22) / 2);
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(c), depthTest: false}));
     sp.userData.aspect = w / (f + 22); sp.userData.k = 0.045; sp.renderOrder = 10; return sp;
+  }
+  // Lines on the ground as straight segments between points. (A smooth spline through the points overshoots wherever
+  // two points sit on top of each other, e.g. where a KML ring closes, and draws little loops at the corners.)
+  function straightPath(points, closed) {
+    const pts = [];
+    for (const p of points) if (!pts.length || pts[pts.length - 1].distanceTo(p) > 1e-6) pts.push(p);
+    if (closed && pts.length > 2 && pts[0].distanceTo(pts[pts.length - 1]) <= 1e-6) pts.pop();
+    if (closed && pts.length > 2) pts.push(pts[0].clone());
+    const curve = new THREE.CurvePath();
+    for (let i = 1; i < pts.length; i++) curve.add(new THREE.LineCurve3(pts[i - 1], pts[i]));
+    return {curve, segments: Math.min(Math.max(pts.length * 2, 8), 3000)};
   }
   function densify(ring) {
     const out = [];
@@ -200,8 +210,9 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
       wallMats.push(mat);
       const wall = new THREE.Mesh(g, mat); wall.renderOrder = 4; walls.add(wall);
       // a solid bright line on the ground so the boundary reads from straight above too
-      const line = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map(([x, y]) => toScene(x, y, 0.001)), true, "centripetal", 0),
-        Math.min(pts.length * 2, 1200), 0.0022 * (focus ? 1.6 : 1), 5, true), new THREE.MeshBasicMaterial({color, fog: false}));
+      const path = straightPath(pts.map(([x, y]) => toScene(x, y, 0.001)), true);
+      const line = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, 0.0022 * (focus ? 1.6 : 1), 5, false),
+        new THREE.MeshBasicMaterial({color, fog: false}));
       line.renderOrder = 5; walls.add(line);
       if (meta.outlines.length <= 25 || focus) {
         let sx = 0, sy = 0; o.ring.forEach(([x, y]) => { sx += x; sy += y; }); sx /= o.ring.length; sy /= o.ring.length;
@@ -255,6 +266,33 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     }
   }
   drawPins();
+
+  // ---------------------------------------------------------------- you are here
+  const hereObj = new THREE.Group(); hereObj.visible = false; scene.add(hereObj);
+  const hereDot = new THREE.Mesh(new THREE.SphereGeometry(0.009, 20, 14), new THREE.MeshBasicMaterial({color: 0x2b7de9, fog: false, depthTest: false}));
+  const hereRing = new THREE.Mesh(new THREE.RingGeometry(0.011, 0.016, 32), new THREE.MeshBasicMaterial({color: 0xffffff, fog: false, depthTest: false, side: THREE.DoubleSide}));
+  hereRing.rotation.x = -Math.PI / 2;
+  const hereArrow = new THREE.Mesh(new THREE.ConeGeometry(0.008, 0.022, 3), new THREE.MeshBasicMaterial({color: 0x2b7de9, fog: false, depthTest: false}));
+  hereArrow.geometry.rotateX(-Math.PI / 2); hereArrow.geometry.translate(0, 0, -0.022);   // points north (-z) before turning
+  // drawn in the see-through pass after labels and pins (renderOrder 30 > 12), so nothing covers it
+  [hereDot, hereRing, hereArrow].forEach(m => { m.material.transparent = true; m.renderOrder = 30; hereObj.add(m); });
+
+  // ---------------------------------------------------------------- roads, trails and other lines, draped on the ground
+  const roads = new THREE.Group(); scene.add(roads);
+  let lineList = [];
+  function drawLines() {
+    roads.children.forEach(o => { o.geometry.dispose(); o.material.dispose(); }); roads.clear();
+    for (const ln of lineList) {
+      const pts = [];
+      for (const [lon, lat] of ln.coords) { const xy = localXY(lat, lon); if (xy) pts.push(xy); }
+      if (pts.length < 2) continue;
+      const dense = densify(pts).map(([x, y]) => toScene(x, y, 0.0012));
+      const path = straightPath(dense, false);
+      const tube = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, 0.0006 * (ln.width || 3), 6, false),
+        new THREE.MeshBasicMaterial({color: new THREE.Color(ln.color), fog: false}));
+      tube.renderOrder = 5; tube.userData.shape = ln.id; roads.add(tube);
+    }
+  }
 
   // ---------------------------------------------------------------- tap: photo pin first, then pasture under the finger
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
@@ -319,6 +357,10 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     if (!running) return;
     const t = clock.getElapsedTime();
     controls.update();
+    if (hereObj.visible) {                        // same size on screen at any zoom, with a gentle pulse
+      const d = camera.position.distanceTo(hereObj.position), sz = Math.min(6, Math.max(0.08, d * 1.7));
+      hereObj.scale.set(sz, sz, sz); const k = 1 + 0.25 * Math.sin(t * 4); hereRing.scale.set(k, k, k);
+    }
     wallMats.forEach(m => { m.uniforms.time.value = t; if (m.userData.pulse) m.uniforms.strength.value = 1.15 + 0.25 * Math.sin(t * 3); });
     for (const sp of [...labels.children, ...pins.children.filter(o => o.isSprite)]) {
       const d = camera.position.distanceTo(sp.position), k = sp.userData.k; sp.scale.set(k * d * sp.userData.aspect, k * d, 1);
@@ -328,10 +370,20 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   })();
 
   return {
-    setExaggeration(v) { exag = v; applyHeights(); drawWalls(); drawPins(); },
+    setExaggeration(v) {                        // the slider sends many values; redraw once per frame
+      exag = v; if (exagPending) return; exagPending = true;
+      requestAnimationFrame(() => { exagPending = false; applyHeights(); drawWalls(); drawPins(); drawLines();
+        if (hereObj.userData.xy) hereObj.position.copy(toScene(hereObj.userData.xy[0], hereObj.userData.xy[1], 0.004)); });
+    },
     setLook,
-    contourFt: () => topoMat && topoMat.userData.interval,
     setPhotos(list) { photoList = list || []; drawPins(); },
+    setLines(list) { lineList = list || []; drawLines(); },
+    setHere(h) {                                   // the phone's GPS position: a blue dot on the ground
+      hereObj.visible = false; if (!h) return;
+      const xy = localXY(h.lat, h.lon); if (!xy) return;
+      hereObj.position.copy(toScene(xy[0], xy[1], 0.004)); hereObj.visible = true; hereObj.userData.xy = xy;
+      hereArrow.visible = h.heading != null; if (h.heading != null) hereArrow.rotation.y = -h.heading * D2R;
+    },
     setStatuses(map) { statusById = map || {}; drawWalls(); },
     setPasturesVisible(on) { walls.visible = labels.visible = !!on; },
     pickOnce(cb) { picker = cb; renderer.domElement.style.cursor = "crosshair"; },

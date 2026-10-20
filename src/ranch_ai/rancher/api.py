@@ -431,6 +431,55 @@ def create_app(
     def setup_names(payload: dict[str, Any] = Body(...), sess: dict[str, str] = Depends(owner_only)) -> dict[str, Any]:
         return {"pasture_names": ranch_setup.set_pasture_names(sess["workspace_id"], {str(k): str(v) for k, v in payload.items()})}
 
+    # -- drawn shapes: pasture boundaries (lockable) and roads / trails -----------------
+    def boundaries_locked(workspace_id: str) -> bool:
+        """Locked by default once the ranch has any pastures (drawn or from a file); open while there are none yet."""
+        has_pastures = bool(app.state.store.list_shapes(workspace_id, "pasture")) or \
+            bool((app.state.store.latest_snapshot(workspace_id) or {}).get("pastures"))
+        return bool(app.state.store.ranch_setting(workspace_id, "boundaries_locked", has_pastures))
+
+    def ensure_imported(workspace_id: str, sess: dict[str, str]) -> None:
+        """Before the first boundary edit, copy the current pastures in, so drawing one never drops the others."""
+        if not app.state.store.list_shapes(workspace_id, "pasture"):
+            snap = app.state.store.latest_snapshot(workspace_id) or {}
+            app.state.store.import_pastures(workspace_id, snap.get("pastures") or [], user_id=sess["user_id"], user_name=who(sess))
+
+    @app.get("/api/shapes")
+    def list_shapes(sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        shapes = app.state.store.list_shapes(sess["workspace_id"])
+        return {"shapes": shapes, "boundaries_locked": boundaries_locked(sess["workspace_id"]),
+                "boundary_source": "drawn" if any(s["kind"] == "pasture" for s in shapes) else "file"}
+
+    @app.post("/api/shapes")
+    def save_shapes(payload: Any = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        items = payload if isinstance(payload, list) else [payload]
+        if len(items) > 200 or not all(isinstance(i, dict) for i in items):
+            raise HTTPException(status_code=400, detail="Send a list of at most 200 shapes.")
+        saved, errors, pastures_changed = [], [], False
+        locked = boundaries_locked(sess["workspace_id"])
+        if not locked and sess["role"] == "owner" and any(i.get("kind") == "pasture" for i in items):
+            ensure_imported(sess["workspace_id"], sess)
+        for item in items:
+            try:
+                row = app.state.store.save_shape(sess["workspace_id"], item, user_id=sess["user_id"], user_name=who(sess),
+                                                 is_owner=sess["role"] == "owner", boundaries_locked=locked)
+                saved.append(item.get("shape_id"))
+                pastures_changed = pastures_changed or item.get("kind") == "pasture" or (row or {}).get("kind") == "pasture"
+            except (ValueError, PermissionError) as exc:
+                errors.append({"shape_id": item.get("shape_id"), "error": str(exc)})
+        if pastures_changed:
+            ranch_setup.request_refresh(sess["workspace_id"])
+        return {"saved": saved, "errors": errors, "shapes": app.state.store.list_shapes(sess["workspace_id"]),
+                "boundaries_locked": locked}
+
+    @app.post("/api/boundaries/lock")
+    def lock_boundaries(payload: dict[str, Any] = Body(...), sess: dict[str, str] = Depends(owner_only)) -> dict[str, Any]:
+        locked = bool(payload.get("locked"))
+        if not locked:
+            ensure_imported(sess["workspace_id"], sess)   # first time editing: the uploaded pastures become editable
+        app.state.store.set_ranch_setting(sess["workspace_id"], "boundaries_locked", locked)
+        return {"boundaries_locked": locked, "shapes": app.state.store.list_shapes(sess["workspace_id"])}
+
     # -- places on the map (tanks, ponds, blinds, gates, ...) ----------------------------
     @app.get("/api/places")
     def list_places(sess: dict[str, str] = Depends(session)) -> list[dict[str, Any]]:

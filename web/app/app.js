@@ -64,7 +64,7 @@
   let pending = [];                      // photos waiting to upload (from IndexedDB), with object URLs
   let currentPasture = null, photoHere = null;
   let map = null, mapLayers = [], view3d = null;
-  let mapMode = "3d", look = store.get("look", "photo"), exag = 2, logFilter = "all";   // the map always opens in 3D
+  let mapMode = "3d", look = store.get("look", "photo") === "photo" ? "photo" : "relief", exag = Number(store.get("exag", 2)) || 2, logFilter = "all";   // the map always opens in 3D
 
   // ---------------------------------------------------------------- small helpers
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9-]/g, "").slice(0, 36);
@@ -237,18 +237,20 @@
     if (view.startsWith("pasture-")) { currentPasture = decodeURIComponent(view.slice(8)); tab = "pasture"; }
     if (!["login", "pasture", ...TABS].includes(tab)) tab = "home";
     if (tab !== "map" && view3d) { view3d.dispose(); view3d = null; }
+    if (tab !== "map" && !(draft && draft.recording)) stopHere();
     document.querySelectorAll(".view").forEach(v => { v.hidden = v.id !== "v-" + tab; });
     document.querySelectorAll(".tabs [data-tab]").forEach(b => {
       const on = b.dataset.tab === (tab === "pasture" ? "map" : tab);
       if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
     });
     document.querySelector(".tabs").hidden = tab === "login";
+    $("drawBar").hidden = tab !== "map" || !draft;
     const hash = tab === "pasture" ? "pasture-" + encodeURIComponent(currentPasture) : tab;
     if (location.hash !== "#" + hash) history.replaceState(null, "", "#" + hash);
     ({home: renderHome, todo: renderTodo, map: renderMap, pasture: renderPasture, log: renderLog, more: renderMore}[tab] || (() => {}))();
     window.scrollTo(0, 0);
   }
-  document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => { if (b.dataset.tab === "map") mapMode = "3d"; show(b.dataset.tab); });
+  document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => { if (b.dataset.tab === "map" && !draft) mapMode = "3d"; show(b.dataset.tab); });
   document.addEventListener("click", e => {
     const go = e.target.closest("[data-go]"); if (go) { show(go.dataset.go); return; }
     const p = e.target.closest("[data-pasture]"); if (p) { show("pasture-" + encodeURIComponent(p.dataset.pasture)); return; }
@@ -272,7 +274,7 @@
       const data = await api("snapshot");
       if (data.pending || data.setup_needed) { rawSnap = snap = null; store.del("snapshot"); store.set("setupMsg", data.message); }
       else { rawSnap = data; snap = viewOf(data); snapAt = new Date().toISOString(); store.set("snapshot", data); store.set("snapshotAt", snapAt); store.del("setupMsg"); }
-      const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs), loadTasks(), loadPlaces()]);
+      const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs), loadTasks(), loadPlaces(), loadShapes()]);
       me = m; photos = ph; serverLogs = lg; if (m.workspace_id) store.set("lastRanch", m.workspace_id);
       store.set("me", me); store.set("photos", photos); store.set("serverLogs", serverLogs);
     } catch (e) {
@@ -430,18 +432,32 @@
       map = L.map("map", {zoomControl: true});
       L.tileLayer("https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
         {maxZoom: 19, maxNativeZoom: 16, attribution: "USGS The National Map"}).addTo(map);
-      map.on("click", e => { if (mapPicker) { const cb = mapPicker; mapPicker = null; $("map").style.cursor = ""; cb(e.latlng.lat, e.latlng.lng); } });
+      map.on("click", e => {
+        if (mapPicker) { const cb = mapPicker; mapPicker = null; $("map").style.cursor = ""; cb(e.latlng.lat, e.latlng.lng); return; }
+        if (draft && draft.how !== "gps") { draft.coords.push([e.latlng.lng, e.latlng.lat]); draft.selected = null; store.set("draft", draft); renderDraft(); }
+      });
     }
     const first = !mapLayers.length;
     mapLayers.forEach(l => l.remove()); mapLayers = [];
     const all = [];
-    snap.pastures.forEach(p => {
-      const ll = p.outline.map(([lon, lat]) => [lat, lon]); all.push(...ll);
-      if (!layers.pastures) return;
-      const poly = L.polygon(ll, {color: "#fff", weight: 2, fillColor: layers.colors ? (COLOR[p.status] || "#888") : "#ffffff",
-        fillOpacity: layers.colors ? .4 : .12}).on("click", () => { if (!mapPicker) openPastureSheet(p.id); });
-      poly.bindTooltip(esc(p.name), {permanent: snap.pastures.length <= 8, direction: "center", className: "maplabel"});
+    // Pasture outlines: the drawn ones (so edits show straight away), otherwise the ones from the last ranch update.
+    const drawn = pastureShapes(), statusOf = Object.fromEntries(snap.pastures.map(p => [p.id, p.status]));
+    const outlines = drawn.length ? drawn.map(x => ({id: x.shape_id, name: x.name, ll: x.coords.map(([lon, lat]) => [lat, lon]), drawn: true}))
+      : snap.pastures.map(p => ({id: p.id, name: p.name, ll: p.outline.map(([lon, lat]) => [lat, lon])}));
+    outlines.forEach(o => {
+      all.push(...o.ll);
+      if (!layers.pastures || (draft && draft.shape_id === o.id)) return;
+      const st = statusOf[o.id];
+      const poly = L.polygon(o.ll, {color: canEditBoundaries() ? "#ffd84d" : "#fff", weight: 2, dashArray: canEditBoundaries() ? "6 4" : null,
+        fillColor: layers.colors && st ? (COLOR[st] || "#888") : "#ffffff", fillOpacity: layers.colors && st ? .4 : .12})
+        .on("click", () => { if (mapPicker || draft) return; if (o.drawn) openShape(o.id); else openPastureSheet(o.id); });
+      poly.bindTooltip(esc(o.name), {permanent: outlines.length <= 8, direction: "center", className: "maplabel"});
       poly.addTo(map); mapLayers.push(poly);
+    });
+    shapes.filter(x => x.kind !== "pasture" && layers[lineLayerKey(x.kind)] !== false && !(draft && draft.shape_id === x.shape_id)).forEach(x => {
+      const ln = L.polyline(x.coords.map(([lon, lat]) => [lat, lon]), lineStyle(x.kind)).on("click", e => { if (mapPicker || draft) return; L.DomEvent.stop(e); openShape(x.shape_id); });
+      ln.bindTooltip(esc(x.name), {sticky: true, className: "maplabel"});
+      ln.addTo(map); mapLayers.push(ln);
     });
     mapItems().forEach(p => {
       const icon = L.divIcon({className: "", iconSize: [34, 34], iconAnchor: [17, 17], html:
@@ -449,18 +465,50 @@
       const m = L.marker([p.lat, p.lon], {icon, title: p.title + (p.taken_at ? ", " + when(p.taken_at) : "")}).on("click", () => openItem(p.client_id));
       m.addTo(map); mapLayers.push(m);
     });
-    map.invalidateSize(); if (first) map.fitBounds(all, {padding: [20, 20]});
+    map.invalidateSize(); if (first && all.length) map.fitBounds(all, {padding: [20, 20]}); else if (first && rawSnap && rawSnap.ranch) map.setView([rawSnap.ranch.center[1], rawSnap.ranch.center[0]], 14);
+    $("lockNote").hidden = !canEditBoundaries();
+    renderDraft(); startHere(); drawHere();
   }
+  // ---------------------------------------------------------------- YOU ARE HERE (GPS, only while the map is open)
+  let hereWatch = null, here = null, hereLayers = [], hereFollowNext = false;
+  function startHere() {
+    if (hereWatch != null || !navigator.geolocation) return;
+    hereWatch = navigator.geolocation.watchPosition(p => {
+      here = {lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy),
+        heading: cam.heading != null && Date.now() - cam.headingAt < 30000 ? cam.heading : (p.coords.heading ?? null)};
+      drawHere();
+      if (hereFollowNext) { hereFollowNext = false; centerOnMe(); }
+    }, err => { if (hereFollowNext) { hereFollowNext = false; toast(err.code === 1 ? "Location is off for RangeIQ. Turn it on in the phone's settings." : "No GPS fix yet."); } },
+    {enableHighAccuracy: true, maximumAge: 5000, timeout: 30000});
+  }
+  function stopHere() { if (hereWatch != null) { navigator.geolocation.clearWatch(hereWatch); hereWatch = null; } }
+  function drawHere() {
+    hereLayers.forEach(l => l.remove()); hereLayers = [];
+    if (!here) return;
+    if (map && mapMode === "2d") {
+      if (here.acc < 2000) hereLayers.push(L.circle([here.lat, here.lon], {radius: here.acc, color: "#2b7de9", weight: 1, fillColor: "#2b7de9", fillOpacity: .12, interactive: false}).addTo(map));
+      hereLayers.push(L.marker([here.lat, here.lon], {interactive: false, zIndexOffset: 1000, icon: L.divIcon({className: "", iconSize: [26, 26], iconAnchor: [13, 13],
+        html: `<div class="me">${here.heading != null ? `<i style="transform:rotate(${here.heading}deg)"></i>` : ""}</div>`})}).addTo(map));
+    }
+    if (view3d && view3d.setHere) view3d.setHere(here);
+  }
+  function centerOnMe() {
+    if (!here) { hereFollowNext = true; startSensors(); startHere(); toast("Finding you…"); return; }
+    if (mapMode === "3d" && view3d) { if (!view3d.focus(here.lat, here.lon)) toast(`You're outside the ranch map (±${here.acc} m).`); return; }
+    if (map) map.setView([here.lat, here.lon], Math.max(map.getZoom(), 16));
+  }
+  $("meBtn").onclick = () => { startSensors(); centerOnMe(); };
+
   function src3d() {
     const meta = view3d && view3d.meta; if (!meta) return;
     const ground = meta.dem_source === "usgs_3dep" ? `USGS lidar (${meta.dem_resolution_m} m)` : "EXAMPLE terrain, not your land";
-    const skin = look === "topo" ? "Topo: elevation colors, contour lines" + (view3d.contourFt ? ` every ${view3d.contourFt()} ft` : "") + "."
+    const skin = look === "relief" ? "Relief: land colored by height and slope, lit by the sun."
       : meta.texture_source === "naip" ? "Aerial photo: USDA NAIP." : "Aerial photo unavailable; showing relief.";
     $("map-src").textContent = `Ground: ${ground}. ${skin} ${layers.colors ? "Glowing walls are pasture lines, colored by status." : "Pasture lines without warning colors."} Drag to turn, pinch to zoom.`;
   }
   async function render3d() {
     const box = $("map3d");
-    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses(statusMap()); view3d.setPasturesVisible(layers.pastures); src3d(); return; }
+    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses(statusMap()); view3d.setPasturesVisible(layers.pastures); view3d.setLines(lines3d()); src3d(); return; }
     box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
     try {
       // The height and photo files are cached by the phone, so ask for them by build date: a rebuilt terrain gets new files.
@@ -471,7 +519,7 @@
       snap.pastures.forEach(p => { namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
       view3d = mod.mount(box, {meta, height: height.bytes, texture, statusById: statusMap(), namesById, lonlatById, look, exaggeration: exag,
         photos: mapItems(), onPhoto: id => { if (!picking()) openItem(id); }, onPasture: id => { if (!picking()) openPastureSheet(id); }});
-      view3d.meta = meta; view3d.setPasturesVisible(layers.pastures); src3d();
+      view3d.meta = meta; view3d.setPasturesVisible(layers.pastures); view3d.setLines(lines3d()); src3d(); startHere(); drawHere();
     } catch (e) {
       if (e.signin) { show("login"); return; }
       // No 3D yet (or no WebGL / no signal): fall back to the flat map so the console still works.
@@ -493,11 +541,15 @@
       else { mapPicker = done; $("map").style.cursor = "crosshair"; }
     }, 300);
   }
+  const lines3d = () => shapes.filter(x => x.kind !== "pasture" && layers[lineLayerKey(x.kind)] !== false)
+    .map(x => ({id: x.shape_id, coords: x.coords, color: (LINE_TYPES[x.kind] || LINE_TYPES.other_line).color, width: (LINE_TYPES[x.kind] || {}).weight || 3}));
   function renderLayerCard() {
     const all = (() => { const keep = layers; layers = Object.fromEntries(LAYERS.map(([k]) => [k, true])); const x = mapItems(); layers = keep; return x; })();
     const count = k => all.filter(x => x.layer === k).length;
     $("layerCard").innerHTML = `<h2>Show on the map</h2><div class="layers">${LAYERS.map(([k, label, ic]) => `<button type="button" class="layer" data-layer="${k}"
       aria-pressed="${!!layers[k]}"><span aria-hidden="true">${ic}</span>${esc(label)}${["pastures", "colors"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
+      <h3>Roads &amp; trails</h3><div class="layers">${Object.entries(LINE_TYPES).map(([k, v]) => { const n = shapes.filter(x => x.kind === k).length;
+        return `<button type="button" class="layer" data-layer="${lineLayerKey(k)}" aria-pressed="${layers[lineLayerKey(k)] !== false}"><i class="swatch" style="background:${v.color}"></i>${esc(v.label)} <span class="dim">${n}</span></button>`; }).join("")}</div>
       <label class="switchrow"><input type="checkbox" id="hideEverydayMap" ${store.get("hideEveryday", false) ? "checked" : ""}>
         <span>Ignore drought &amp; rain in pasture status <span class="dim small">(they're the same everywhere)</span></span></label>`;
     $("layerCard").querySelectorAll("[data-layer]").forEach(b => b.onclick = () => {
@@ -506,10 +558,13 @@
   }
   document.querySelectorAll("[data-mapmode]").forEach(b => b.onclick = () => { mapMode = b.dataset.mapmode; renderMap(); });
   document.querySelectorAll("[data-look]").forEach(b => b.onclick = () => { look = b.dataset.look; store.set("look", look); setPressed("[data-look]", "look", look); if (view3d) view3d.setLook(look); renderMap(); });
-  document.querySelectorAll("[data-exag]").forEach(b => b.onclick = () => { exag = Number(b.dataset.exag); setPressed("[data-exag]", "exag", exag); if (view3d) view3d.setExaggeration(exag); });
+  $("exagSlider").value = exag; $("exagVal").textContent = "×" + exag;
+  $("exagSlider").oninput = e => { exag = Number(e.target.value); $("exagVal").textContent = "×" + exag; store.set("exag", exag); if (view3d) view3d.setExaggeration(exag); };
   $("resetView").onclick = () => view3d && view3d.reset();
   $("layersBtn").onclick = () => { $("layerCard").hidden = !$("layerCard").hidden; $("layersBtn").setAttribute("aria-pressed", String(!$("layerCard").hidden)); };
   $("addPlaceBtn").onclick = () => addPlace();
+  $("drawBtn").onclick = () => drawMenu();
+  $("lockNoteBtn").onclick = () => setLock(true);
 
   function openPastureSheet(id) {
     const p = snap && snap.pastures.find(x => x.id === id); if (!p) return;
@@ -672,7 +727,7 @@
   $("logoutBtn").onclick = async () => {
     if ((store.get("queue", []).length || pending.length) && !confirm("Some photos or entries haven't been sent yet. Sign out anyway? They stay on this phone.")) return;
     try { await api("logout", {method: "POST"}); } catch (e) {}
-    ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me", "tasks", "people", "places"].forEach(k => store.del(k)); rawSnap = snap = null; me = null; photos = []; show("login");
+    ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me", "tasks", "people", "places", "shapes", "draft"].forEach(k => store.del(k)); rawSnap = snap = null; me = null; photos = []; show("login");
   };
 
   // ---------------------------------------------------------------- sheets
@@ -1062,6 +1117,238 @@
   };
 
 
+
+  // ================================================================ DRAWN SHAPES: pasture boundaries (lockable) and roads / trails
+  const LINE_TYPES = {
+    main_road: {label: "Main road", color: "#2d2d2d", weight: 6},
+    ranch_road: {label: "Ranch road", color: "#8b5a2b", weight: 5},
+    two_track: {label: "Two-track", color: "#c08a52", weight: 4, dash: "10 6"},
+    game_trail: {label: "Game trail", color: "#e67e22", weight: 3, dash: "6 6"},
+    hunting_trail: {label: "Hunting trail", color: "#d63c2f", weight: 3, dash: "8 5"},
+    path: {label: "Path / footpath", color: "#f1c40f", weight: 3, dash: "2 6"},
+    fence: {label: "Fence line", color: "#f5f5f5", weight: 3},
+    water_line: {label: "Water line / pipe", color: "#2b6cb0", weight: 3, dash: "10 4"},
+    creek: {label: "Creek / draw", color: "#3fa9f5", weight: 3},
+    other_line: {label: "Other line", color: "#8e44ad", weight: 3}};
+  let shapes = store.get("shapes", []), boundariesLocked = store.get("boundariesLocked", true);
+  const lineLayerKey = k => "line_" + k;
+  Object.keys(LINE_TYPES).forEach(k => { if (layers[lineLayerKey(k)] === undefined) layers[lineLayerKey(k)] = true; });
+  const pastureShapes = () => shapes.filter(x => x.kind === "pasture");
+  const canEditBoundaries = () => isOwner() && !boundariesLocked;
+  const canEditShape = x => x.kind === "pasture" ? canEditBoundaries() : (isOwner() || (me && x.created_by === me.user_id) || x._local);
+
+  // geometry helpers (flat-earth around the shape: fine for a ranch)
+  function metresXY(pts) {
+    const lat0 = pts.reduce((a, p) => a + p[1], 0) / pts.length, kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540;
+    return pts.map(([lon, lat]) => [lon * kx, lat * ky]);
+  }
+  function lengthM(pts) { let d = 0; for (let i = 1; i < pts.length; i++) d += metres({lat: pts[i - 1][1], lon: pts[i - 1][0]}, {lat: pts[i][1], lon: pts[i][0]}); return d; }
+  function acresOf(pts) {
+    if (pts.length < 3) return 0;
+    const xy = metresXY(pts); let a = 0;
+    for (let i = 0; i < xy.length; i++) { const [x0, y0] = xy[i], [x1, y1] = xy[(i + 1) % xy.length]; a += x0 * y1 - x1 * y0; }
+    return Math.abs(a) / 2 / 4046.856;
+  }
+  const fmtLen = m => m < 300 ? `${Math.round(m * 3.281)} ft` : `${(m / 1609.34).toFixed(m < 16093 ? 2 : 1)} mi`;
+  function simplify(pts, tolM = 2) {                 // Douglas-Peucker on a GPS track
+    if (pts.length < 3) return pts;
+    const xy = metresXY(pts), keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+    const stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      const [a, b] = stack.pop(); let best = -1, bi = -1;
+      const [ax, ay] = xy[a], [bx, by] = xy[b], L = Math.hypot(bx - ax, by - ay) || 1e-9;
+      for (let i = a + 1; i < b; i++) { const d = Math.abs((bx - ax) * (ay - xy[i][1]) - (ax - xy[i][0]) * (by - ay)) / L; if (d > best) { best = d; bi = i; } }
+      if (best > tolM) { keep[bi] = 1; stack.push([a, bi], [bi, b]); }
+    }
+    return pts.filter((_, i) => keep[i]);
+  }
+
+  async function loadShapes() {
+    try { const d = await api("shapes"); setShapesFromServer(d.shapes); boundariesLocked = d.boundaries_locked; store.set("boundariesLocked", boundariesLocked); }
+    catch (e) { if (e.signin) throw e; }
+  }
+  function setShapesFromServer(list) {
+    shapes = list || [];
+    for (const q of store.get("shapeq", [])) { shapes = shapes.filter(x => x.shape_id !== q.shape_id); if (!q.deleted) shapes.push({...q, _local: true}); }
+    store.set("shapes", shapes);
+  }
+  function shapeChange(item) {
+    item = {...item, updated_at: new Date().toISOString()};
+    const q = store.get("shapeq", []).filter(x => x.shape_id !== item.shape_id); q.push(item); store.set("shapeq", q);
+    const old = shapes.find(x => x.shape_id === item.shape_id);
+    shapes = shapes.filter(x => x.shape_id !== item.shape_id);
+    if (!item.deleted) shapes.push({...(old || {created_by: me && me.user_id, created_by_name: me && me.name}), ...item, _local: true});
+    store.set("shapes", shapes); rerender(); syncAll();
+  }
+  async function setLock(locked) {
+    try {
+      const r = await api("boundaries/lock", {method: "POST", body: JSON.stringify({locked})});
+      boundariesLocked = r.boundaries_locked; store.set("boundariesLocked", boundariesLocked); setShapesFromServer(r.shapes);
+      toast(locked ? "🔒 Pasture boundaries locked." : "🔓 Boundaries unlocked. Owner and partners can edit them now."); rerender();
+    } catch (e) { toast(navigator.onLine ? e.message : "Locking needs signal."); }
+  }
+
+  // ---- draw on the map (tap points) or with the phone's GPS
+  let draft = null, draftLayers = [], gpsWatch = null, wakeLock = null;
+  function startDraw(kind, how, base) {
+    closeSheet();
+    draft = base ? {...base, coords: base.coords.map(p => [...p]), editing: true}
+      : {shape_id: uid(), kind, name: "", note: "", coords: [], source: how === "gps" ? "gps" : "drawn"};
+    draft.how = how; draft.selected = null; store.set("draft", draft);
+    mapMode = "2d"; show("map");
+    setTimeout(async () => { await renderMap(); if (draft.coords.length) map.fitBounds(draft.coords.map(([x, y]) => [y, x]), {padding: [40, 40]}); renderDraft(); }, 200);
+    if (how === "gps") startGps();
+  }
+  function startGps() {
+    if (!navigator.geolocation) { toast("This phone has no GPS access."); return; }
+    try { navigator.wakeLock && navigator.wakeLock.request("screen").then(l => { wakeLock = l; }).catch(() => {}); } catch (e) {}
+    draft.recording = true;
+    gpsWatch = navigator.geolocation.watchPosition(p => {
+      if (!draft || !draft.recording) return;
+      const acc = p.coords.accuracy, pt = [p.coords.longitude, p.coords.latitude];
+      draft.acc = Math.round(acc);
+      if (acc <= 30) {
+        const last = draft.coords[draft.coords.length - 1];
+        if (!last || metres({lat: last[1], lon: last[0]}, {lat: pt[1], lon: pt[0]}) >= Math.max(4, acc / 2)) {
+          draft.coords.push(pt); store.set("draft", draft);
+        }
+      }
+      renderDraft(true);
+    }, () => { if (draft) { draft.acc = null; renderDraft(); } }, {enableHighAccuracy: true, maximumAge: 2000, timeout: 20000});
+  }
+  function stopGps() {
+    if (gpsWatch != null) { navigator.geolocation.clearWatch(gpsWatch); gpsWatch = null; }
+    if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+    if (draft) draft.recording = false;
+  }
+  function renderDraft(follow) {
+    draftLayers.forEach(l => l.remove()); draftLayers = [];
+    const bar = $("drawBar");
+    const was = document.body.classList.contains("drawing");
+    document.body.classList.toggle("drawing", !!draft);           // drawing: the map gets the whole screen
+    if (was !== !!draft && map) setTimeout(() => map.invalidateSize(), 50);
+    if (!draft) { bar.hidden = true; return; }
+    if (!map) return;
+    const isPasture = draft.kind === "pasture", style = isPasture ? {color: "#ffd84d", weight: 3} : {...lineStyle(draft.kind), weight: (LINE_TYPES[draft.kind] || {}).weight + 1};
+    const ll = draft.coords.map(([x, y]) => [y, x]);
+    if (ll.length >= 2) {
+      const shape = isPasture && ll.length >= 3 ? L.polygon(ll, {...style, fillOpacity: .15}) : L.polyline(ll, style);
+      shape.addTo(map); draftLayers.push(shape);
+    }
+    if (draft.how !== "gps" || !draft.recording) {
+      draft.coords.forEach((pt, i) => {         // corner handles: drag to move, tap to select
+        const m = L.marker([pt[1], pt[0]], {draggable: true, icon: L.divIcon({className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+          html: `<div class="vtx${draft.selected === i ? " sel" : ""}"></div>`})});
+        m.on("dragend", e => { const p = e.target.getLatLng(); draft.coords[i] = [p.lng, p.lat]; store.set("draft", draft); renderDraft(); });
+        m.on("click", () => { draft.selected = draft.selected === i ? null : i; renderDraft(); });
+        m.addTo(map); draftLayers.push(m);
+      });
+      const n = draft.coords.length, segs = isPasture ? n : n - 1;   // "+" handles in the middle of each side add a corner
+      for (let i = 0; n >= 2 && i < segs; i++) {
+        const a = draft.coords[i], b = draft.coords[(i + 1) % n];
+        const m = L.marker([(a[1] + b[1]) / 2, (a[0] + b[0]) / 2], {icon: L.divIcon({className: "", iconSize: [18, 18], iconAnchor: [9, 9], html: `<div class="vtx mid">+</div>`})});
+        m.on("click", () => { draft.coords.splice(i + 1, 0, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); draft.selected = i + 1; store.set("draft", draft); renderDraft(); });
+        m.addTo(map); draftLayers.push(m);
+      }
+    } else if (ll.length) {
+      const here = L.circleMarker(ll[ll.length - 1], {radius: 8, color: "#fff", weight: 3, fillColor: "#2b6cb0", fillOpacity: 1});
+      here.addTo(map); draftLayers.push(here);
+      if (follow) map.panTo(ll[ll.length - 1], {animate: true});
+    }
+    const what = isPasture ? "pasture boundary" : (LINE_TYPES[draft.kind] || {}).label.toLowerCase();
+    const size = isPasture ? (draft.coords.length >= 3 ? `${acresOf(draft.coords).toFixed(1)} acres` : "") : (draft.coords.length >= 2 ? fmtLen(lengthM(draft.coords)) : "");
+    const gps = draft.how === "gps";
+    bar.hidden = false;
+    bar.innerHTML = `<div class="drawinfo"><b>${draft.editing ? "Editing" : gps ? (draft.recording ? "● Recording" : "Paused") : "Drawing"} ${esc(what)}</b>
+        <span class="dim small">${draft.coords.length} points${size ? " · " + size : ""}${gps ? ` · GPS ${draft.acc != null ? "±" + draft.acc + " m" : "searching…"}` : ""}</span>
+        <span class="dim small">${gps && draft.recording ? "Walk or drive the line. Keep the app open and the screen on."
+          : `Tap the map to add a ${isPasture ? "corner" : "point"}. Drag a dot to move it; tap “+” to add one between.`}</span></div>
+      <div class="row">${gps ? `<button type="button" class="pill" id="dGps">${draft.recording ? "⏸ Pause" : "▶ Resume GPS"}</button>
+          <button type="button" class="pill" id="dPhoto">📷 Photo here</button>` : ""}
+        <button type="button" class="pill" id="dUndo" ${draft.coords.length ? "" : "disabled"}>↩ Undo</button>
+        ${draft.selected != null ? `<button type="button" class="pill" id="dDel">✕ Delete point</button>` : ""}
+        <button type="button" class="pill primarypill" id="dDone">✓ Done</button><button type="button" class="pill" id="dCancel">Cancel</button></div>`;
+    if ($("dGps")) $("dGps").onclick = () => { if (draft.recording) { stopGps(); renderDraft(); } else startGps(); };
+    if ($("dPhoto")) $("dPhoto").onclick = async () => { const id = await attachPhoto({shape_id: draft.shape_id}); if (id) toast("Photo saved with this line."); };
+    $("dUndo").onclick = () => { draft.coords.pop(); draft.selected = null; store.set("draft", draft); renderDraft(); };
+    if ($("dDel")) $("dDel").onclick = () => { draft.coords.splice(draft.selected, 1); draft.selected = null; store.set("draft", draft); renderDraft(); };
+    $("dCancel").onclick = () => { if (draft.coords.length > 2 && !draft.editing && !confirm("Throw away this drawing?")) return; stopGps(); draft = null; store.del("draft"); renderDraft(); renderMap(); };
+    $("dDone").onclick = finishDraw;
+  }
+  function finishDraw() {
+    const isPasture = draft.kind === "pasture";
+    if (draft.how === "gps") { stopGps(); draft.coords = simplify(draft.coords, 2); }
+    if (draft.coords.length < (isPasture ? 3 : 2)) { toast(isPasture ? "A pasture needs at least 3 corners." : "A line needs at least 2 points."); return; }
+    const d = draft, title = isPasture ? "Pasture" : "Line";
+    openSheet(d.editing ? `Save ${title.toLowerCase()}` : `Name this ${title.toLowerCase()}`, `<form class="form" id="shapeForm">
+      ${isPasture ? "" : `<label>Type<select name="kind">${Object.entries(LINE_TYPES).map(([k, v]) => `<option value="${k}" ${k === d.kind ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select></label>`}
+      <label>Name<input name="name" maxlength="80" required value="${esc(d.name || "")}" placeholder="${isPasture ? "North Flat" : "Road to the windmill"}"></label>
+      <p class="dim">${isPasture ? `${acresOf(d.coords).toFixed(1)} acres` : fmtLen(lengthM(d.coords))} · ${d.coords.length} points</p>
+      <label>Notes (optional)<textarea name="note" maxlength="1000">${esc(d.note || "")}</textarea></label>
+      <div class="row"><button type="submit" class="primary">Save</button><button type="button" class="secondary" id="shapeBack">Keep editing</button></div></form>`);
+    $("shapeBack").onclick = () => { closeSheet(); renderDraft(); };
+    $("shapeForm").onsubmit = e => {
+      e.preventDefault();
+      const f = e.target;
+      shapeChange({shape_id: d.shape_id, kind: isPasture ? "pasture" : f.kind.value, name: f.name.value.trim(), note: f.note.value.trim() || null,
+        coords: d.coords, source: d.source});
+      draft = null; store.del("draft"); closeSheet(); renderDraft();
+      toast(isPasture ? "Pasture saved. Status and 3D update in a few minutes." : "Saved."); renderMap();
+    };
+  }
+  function lineStyle(kind) { const t = LINE_TYPES[kind] || LINE_TYPES.other_line; return {color: t.color, weight: t.weight, dashArray: t.dash, opacity: .95}; }
+  function drawMenu() {
+    const lockRow = isOwner() ? `<div class="row" style="align-items:center"><span>${boundariesLocked ? "🔒 Pasture boundaries are <b>locked</b>." : "🔓 Pasture boundaries are <b>unlocked</b>."}</span>
+      <button type="button" class="pill" id="lockBtn">${boundariesLocked ? "Unlock to edit" : "Lock them"}</button></div>`
+      : `<p class="dim small">Pasture boundaries can only be changed by the owner or a partner.</p>`;
+    openSheet("Draw on the map", `<h3>Pasture boundary</h3>${lockRow}
+      ${canEditBoundaries() ? `<div class="row"><button type="button" class="secondary" data-draw="pasture:tap">👆 Tap the corners</button>
+        <button type="button" class="secondary" data-draw="pasture:gps">🛰 Walk or drive the fence</button></div>
+        <p class="dim small">To change an existing pasture, tap it on the map, then <b>Edit boundary</b>.</p>` : ""}
+      <h3>Road, trail or line</h3>
+      <div class="tagchips" id="lineKinds">${Object.entries(LINE_TYPES).map(([k, v], i) => `<button type="button" data-lk="${k}" aria-pressed="${i === 1}">
+        <i class="swatch" style="background:${v.color}"></i>${esc(v.label)}</button>`).join("")}</div>
+      <div class="row"><button type="button" class="secondary" id="lineTap">👆 Tap points on the map</button>
+        <button type="button" class="secondary" id="lineGps">🛰 Record with GPS</button></div>
+      <p class="dim small">GPS recording keeps going while the app is open; keep the screen on. Lines are saved on the phone and sent when there's signal.</p>`);
+    let kind = "ranch_road";
+    document.querySelectorAll("#lineKinds [data-lk]").forEach(b => b.onclick = () => { kind = b.dataset.lk;
+      document.querySelectorAll("#lineKinds [data-lk]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
+    $("lineTap").onclick = () => startDraw(kind, "tap");
+    $("lineGps").onclick = () => startDraw(kind, "gps");
+    document.querySelectorAll("[data-draw]").forEach(b => b.onclick = () => { const [k, how] = b.dataset.draw.split(":"); startDraw(k, how); });
+    if ($("lockBtn")) $("lockBtn").onclick = async () => { await setLock(!boundariesLocked); drawMenu(); };
+  }
+  function openShape(id) {
+    const x = shapes.find(s2 => s2.shape_id === id); if (!x) return;
+    const isPasture = x.kind === "pasture", t = LINE_TYPES[x.kind];
+    const pics = allPhotos().filter(p => p.shape_id === id);
+    openSheet(x.name, `<p>${isPasture ? "🟫 Pasture" : `<i class="swatch" style="background:${t.color}"></i> ${esc(t.label)}`} ·
+        ${isPasture ? acresOf(x.coords).toFixed(1) + " acres" : fmtLen(lengthM(x.coords))}${x.source === "gps" ? " · 🛰 recorded with GPS" : ""}</p>
+      ${x.note ? `<p>${esc(x.note)}</p>` : ""}
+      <p class="dim small">${x.created_by_name ? "Added by " + esc(x.created_by_name) : ""}</p>
+      ${pics.length ? `<div class="spotrow">${pics.map(p => `<button type="button" data-photo="${esc(p.client_id)}"><img src="${esc(thumbOf(p))}" alt=""><span>${esc(when(p.taken_at, false))}</span></button>`).join("")}</div>` : ""}
+      <div class="row"><button type="button" class="secondary" id="shPhoto">📷 Add photo</button>
+        ${isPasture && snap && snap.pastures.some(p => p.id === id) ? `<button type="button" class="secondary" data-pasture="${esc(id)}">Pasture details</button>` : ""}
+        ${canEditShape(x) ? `<button type="button" class="secondary" id="shEdit">✏️ Edit ${isPasture ? "boundary" : "line"}</button>
+          <button type="button" class="secondary" id="shDel">Delete</button>` : ""}</div>
+      ${isPasture && !canEditShape(x) && isOwner() ? `<p class="dim small">🔒 Boundaries are locked. Unlock them under ✏️ Draw to edit.</p>` : ""}`);
+    $("shPhoto").onclick = async () => { const id2 = await attachPhoto({shape_id: id, near: x.coords}); if (id2) openShape(id); };
+    if ($("shEdit")) $("shEdit").onclick = () => startDraw(x.kind, "tap", x);
+    if ($("shDel")) $("shDel").onclick = () => { if (confirm(`Delete ${x.name}?`)) { shapeChange({shape_id: id, kind: x.kind, deleted: true}); closeSheet(); renderMap(); } };
+  }
+  // A photo tied to a line or boundary: where the phone is, or the middle of the shape when there's no GPS.
+  async function attachPhoto(extra) {
+    startSensors();
+    const near = extra.near; delete extra.near;
+    const id = await placePhoto(extra);
+    if (id && near) {
+      const rec = (await idb.all()).find(r => r.client_id === id);
+      if (rec && rec.meta.lat == null) { const mid = near[Math.floor(near.length / 2)]; rec.meta.lat = mid[1]; rec.meta.lon = mid[0]; await idb.put(rec); await loadPending(); }
+    }
+    syncAll(); return id;
+  }
+
   // ---------------------------------------------------------------- PLACES: tanks, ponds, blinds, feeders, gates... on the map
   async function loadPlaces() {
     try { setPlacesFromServer(await api("places")); } catch (e) { if (e.signin) throw e; }
@@ -1086,7 +1373,7 @@
     return groups.map(([g, label]) => `<p class="dim small" style="margin-top:4px">${label}</p><div class="tagchips">${Object.entries(PLACE_KINDS)
       .filter(([, v]) => v[2] === g).map(([k, v]) => `<button type="button" data-kind="${k}" aria-pressed="${k === selected}">${v[1]} ${esc(v[0])}</button>`).join("")}</div>`).join("");
   }
-  async function placePhoto() {                 // returns the queued photo's id, or null
+  async function placePhoto(extra = {}) {       // returns the queued photo's id, or null
     return new Promise(ok => {
       const input = $("camInput"); input.value = "";
       input.onchange = async e => {
@@ -1098,7 +1385,7 @@
           const client_id = uid(), fix = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
           await idb.put({client_id, photo, thumb, meta: {client_id, taken_at: new Date().toISOString(), lat: fix ? fix.lat : null, lon: fix ? fix.lon : null,
             accuracy_m: fix ? fix.acc : null, heading_deg: null, pasture_id: null, tags: [], note: null, by: me && me.name, analysis: {}, flagged: false,
-            place_id: placeDraft && placeDraft.place_id}});
+            place_id: extra.shape_id ? null : placeDraft && placeDraft.place_id, ...extra}});
           await loadPending(); ok(client_id);
         } catch (err) { toast("Couldn't use that photo: " + err.message); ok(null); }
       };
@@ -1199,6 +1486,14 @@
         if (res.errors.length) toast(res.errors[0].error);
         setTasksFromServer(res.tasks);
       } else await loadTasks();
+      const sq = store.get("shapeq", []);
+      if (sq.length) {
+        const res = await api("shapes", {method: "POST", body: JSON.stringify(sq)});
+        const sent = new Set([...res.saved, ...res.errors.map(e => e.shape_id)]);
+        store.set("shapeq", store.get("shapeq", []).filter(x => !sent.has(x.shape_id)));
+        if (res.errors.length) toast(res.errors[0].error);
+        setShapesFromServer(res.shapes); boundariesLocked = res.boundaries_locked; store.set("boundariesLocked", boundariesLocked);
+      } else await loadShapes();
       const pq = store.get("placeq", []);
       if (pq.length) {
         const res = await api("places", {method: "POST", body: JSON.stringify(pq)});
@@ -1214,7 +1509,7 @@
     finally { syncing = false; rerender(); }
   }
   function updateSyncPill() {
-    const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length, p = $("syncPill");
+    const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length, p = $("syncPill");
     p.hidden = !n; p.textContent = n + " waiting to send";
   }
   $("syncPill").onclick = () => syncAll(true);
@@ -1231,14 +1526,14 @@
     show("home"); await refresh(); syncAll();
   }
   // ---------------------------------------------------------------- switch between ranches (one login, several ranches)
-  const unsent = () => store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length;
+  const unsent = () => store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length;
   async function switchRanch(workspaceId) {
     if (!me || workspaceId === me.workspace_id) { closeSheet(); return; }
     if (unsent()) { await syncAll(true); if (unsent()) { toast("Some photos or entries for this ranch haven't sent yet. Switch once they have."); return; } }
     try {
       const who = await api("switch", {method: "POST", body: JSON.stringify({workspace_id: workspaceId})});
-      ["snapshot", "snapshotAt", "serverLogs", "photos", "tasks", "people", "places"].forEach(k => store.del(k));
-      rawSnap = snap = null; photos = []; serverLogs = []; tasks = []; people = []; places = [];
+      ["snapshot", "snapshotAt", "serverLogs", "photos", "tasks", "people", "places", "shapes", "draft"].forEach(k => store.del(k));
+      rawSnap = snap = null; photos = []; serverLogs = []; tasks = []; people = []; places = []; shapes = []; draft = null; stopGps();
       if (view3d) { view3d.dispose(); view3d = null; }
       closeSheet(); toast("Now on " + who.ranch); await signedIn(who);
     } catch (e) { if (e.signin) show("login"); else toast(navigator.onLine ? e.message : "Switching ranches needs signal."); }
@@ -1281,6 +1576,8 @@
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { refresh(); syncAll(); } });
 
   (async function start() {
+    const saved = store.get("draft", null);
+    if (saved && saved.coords) { draft = {...saved, recording: false}; }
     await loadPending();
     updateSyncPill(); setBanner();
     show(store.get("token", null) || snap ? (location.hash.slice(1) || "home") : "login");

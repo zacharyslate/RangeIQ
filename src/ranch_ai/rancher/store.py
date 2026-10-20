@@ -149,6 +149,24 @@ class AppStore:
                     deleted INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS ix_places_ws ON places(workspace_id);
+                -- Shapes drawn in the app: pasture boundaries (closed) and roads / trails / lines (open).
+                CREATE TABLE IF NOT EXISTS shapes (
+                    shape_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,              -- 'pasture' or a line type
+                    name TEXT NOT NULL,
+                    note TEXT,
+                    coords TEXT NOT NULL,            -- JSON [[lon, lat], ...]
+                    source TEXT,                     -- 'drawn', 'gps', 'imported'
+                    created_by TEXT, created_by_name TEXT, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (workspace_id, shape_id)
+                );
+                CREATE TABLE IF NOT EXISTS ranch_settings (
+                    workspace_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                    PRIMARY KEY (workspace_id, key)
+                );
                 CREATE TABLE IF NOT EXISTS task_ops (
                     op_id TEXT PRIMARY KEY,
                     workspace_id TEXT NOT NULL,
@@ -170,8 +188,11 @@ class AppStore:
             )
             if "device_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(places)").fetchall()}:
                 conn.execute("ALTER TABLE places ADD COLUMN device_id TEXT")
-            if "place_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(photos)").fetchall()}:
+            photo_cols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)").fetchall()}
+            if "place_id" not in photo_cols:
                 conn.execute("ALTER TABLE photos ADD COLUMN place_id TEXT")
+            if "shape_id" not in photo_cols:
+                conn.execute("ALTER TABLE photos ADD COLUMN shape_id TEXT")
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(invites)").fetchall()}
             if "role" not in cols:
                 conn.execute("ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'crew'")
@@ -334,12 +355,13 @@ class AppStore:
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO photos(client_id, workspace_id, user_id, user_name, taken_at, lat, lon, accuracy_m, heading_deg, "
-                "pasture_id, tags, note, analysis, flagged, bytes, received_at, place_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "pasture_id, tags, note, analysis, flagged, bytes, received_at, place_id, shape_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (client_id, workspace_id, user_id, user_name, str(meta.get("taken_at") or _iso(utc_now())),
                  num("lat"), num("lon"), num("accuracy_m"), num("heading_deg"), meta.get("pasture_id"),
                  json.dumps(tags), (str(meta.get("note") or "")[:2000]) or None, json.dumps(analysis),
                  1 if meta.get("flagged") else 0, len(image), _iso(utc_now()),
-                 (str(meta.get("place_id"))[:64] if meta.get("place_id") else None)),
+                 (str(meta.get("place_id"))[:64] if meta.get("place_id") else None),
+                 (str(meta.get("shape_id"))[:64] if meta.get("shape_id") else None)),
             )
             row = conn.execute("SELECT * FROM photos WHERE client_id = ?", (client_id,)).fetchone()
         return self._row_to_photo(row), True
@@ -373,7 +395,7 @@ class AppStore:
         return {
             "client_id": row["client_id"], "user_id": row["user_id"], "by": row["user_name"], "taken_at": row["taken_at"],
             "lat": row["lat"], "lon": row["lon"], "accuracy_m": row["accuracy_m"], "heading_deg": row["heading_deg"],
-            "pasture_id": row["pasture_id"], "tags": json.loads(row["tags"] or "[]"), "note": row["note"], "place_id": row["place_id"],
+            "pasture_id": row["pasture_id"], "tags": json.loads(row["tags"] or "[]"), "note": row["note"], "place_id": row["place_id"], "shape_id": row["shape_id"],
             "analysis": json.loads(row["analysis"] or "{}"), "flagged": bool(row["flagged"]), "received_at": row["received_at"],
         }
 
@@ -459,6 +481,102 @@ class AppStore:
     def crew_user_ids(self) -> set[str]:
         with self._connect() as conn:
             return {r["user_id"] for r in conn.execute("SELECT user_id FROM ranch_members WHERE role = 'crew'").fetchall()}
+
+    # -- per-ranch settings ---------------------------------------------------------
+    def ranch_setting(self, workspace_id: str, key: str, default: Any = None) -> Any:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM ranch_settings WHERE workspace_id = ? AND key = ?", (workspace_id, key)).fetchone()
+        return json.loads(row["value"]) if row else default
+
+    def set_ranch_setting(self, workspace_id: str, key: str, value: Any) -> None:
+        with self._connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO ranch_settings(workspace_id, key, value) VALUES (?, ?, ?)", (workspace_id, key, json.dumps(value)))
+
+    # -- drawn shapes: pasture boundaries, roads, trails -----------------------------
+    LINE_KINDS = {"main_road", "ranch_road", "two_track", "game_trail", "hunting_trail", "path", "fence", "water_line", "creek", "other_line"}
+
+    def list_shapes(self, workspace_id: str, kind: str | None = None) -> list[dict[str, Any]]:
+        sql, args = "SELECT * FROM shapes WHERE workspace_id = ? AND deleted = 0", [workspace_id]
+        if kind:
+            sql += " AND kind = ?"; args.append(kind)
+        with self._connect() as conn:
+            rows = conn.execute(sql + " ORDER BY name", args).fetchall()
+        return [{**{k: r[k] for k in ("shape_id", "kind", "name", "note", "source", "created_by", "created_by_name", "created_at", "updated_at")},
+                 "coords": json.loads(r["coords"])} for r in rows]
+
+    def save_shape(self, workspace_id: str, data: dict[str, Any], *, user_id: str, user_name: str, is_owner: bool,
+                   boundaries_locked: bool) -> dict[str, Any] | None:
+        """Add, change or delete (data['deleted']) a shape. Last change wins by updated_at.
+        Pasture boundaries: owner/partner only, and only while boundaries are unlocked. Lines: anyone adds; owner or creator edits."""
+        shape_id = str(data.get("shape_id") or "").strip()
+        if not shape_id or len(shape_id) > 64 or not all(c.isalnum() or c in "-_" for c in shape_id):
+            raise ValueError("shape_id is required (letters, numbers, - and _).")
+        now = _iso(utc_now())
+        updated = str(data.get("updated_at") or now)[:40]
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM shapes WHERE workspace_id = ? AND shape_id = ?", (workspace_id, shape_id)).fetchone()
+            kind = str(data.get("kind") or (row["kind"] if row else ""))
+            if kind != "pasture" and kind not in self.LINE_KINDS:
+                raise ValueError("Unknown kind of line.")
+            if kind == "pasture" or (row is not None and row["kind"] == "pasture"):
+                if not is_owner:
+                    raise PermissionError("Only the owner or a partner can change pasture boundaries.")
+                if boundaries_locked:
+                    raise PermissionError("Pasture boundaries are locked. Unlock them first (owner or partner).")
+            elif row is not None and not is_owner and row["created_by"] != user_id:
+                raise PermissionError("Only the owner or whoever drew it can change this line.")
+            if row is not None and row["updated_at"] > updated:
+                return None                                     # an older edit arriving late
+            if data.get("deleted"):
+                if row is not None:
+                    conn.execute("UPDATE shapes SET deleted = 1, updated_at = ? WHERE workspace_id = ? AND shape_id = ?", (updated, workspace_id, shape_id))
+                return None
+            coords = data.get("coords")
+            try:
+                pts = [[round(float(p[0]), 7), round(float(p[1]), 7)] for p in coords]
+            except (TypeError, ValueError, IndexError):
+                raise ValueError("Points must be [longitude, latitude] pairs.") from None
+            if any(not (-180 <= x <= 180 and -90 <= y <= 90) for x, y in pts):
+                raise ValueError("A point is out of range.")
+            if kind == "pasture":
+                if len(pts) >= 2 and pts[0] == pts[-1]:
+                    pts = pts[:-1]
+                if len(pts) < 3:
+                    raise ValueError("A pasture needs at least 3 corners.")
+            elif len(pts) < 2:
+                raise ValueError("A line needs at least 2 points.")
+            if len(pts) > 5000:
+                raise ValueError("Too many points (5,000 max).")
+            name = str(data.get("name") or "").strip()[:80] or ("Pasture" if kind == "pasture" else "Trail")
+            note = str(data.get("note") or "").strip()[:1000] or None
+            source = str(data.get("source") or (row["source"] if row else "drawn"))[:20]
+            if row is None:
+                conn.execute("INSERT INTO shapes(shape_id, workspace_id, kind, name, note, coords, source, created_by, created_by_name, created_at, "
+                             "updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                             (shape_id, workspace_id, kind, name, note, json.dumps(pts), source, user_id, user_name, now, updated))
+            else:
+                conn.execute("UPDATE shapes SET kind=?, name=?, note=?, coords=?, source=?, updated_at=?, deleted=0 WHERE workspace_id=? AND shape_id=?",
+                             (kind, name, note, json.dumps(pts), source, updated, workspace_id, shape_id))
+            row = conn.execute("SELECT * FROM shapes WHERE workspace_id = ? AND shape_id = ?", (workspace_id, shape_id)).fetchone()
+        return {**dict(row), "coords": json.loads(row["coords"])}
+
+    def import_pastures(self, workspace_id: str, pastures: list[dict[str, Any]], *, user_id: str, user_name: str) -> int:
+        """Copy the current (uploaded-file) pastures into editable shapes, keeping their ids so history stays attached."""
+        now = _iso(utc_now())
+        with self._connect() as conn:
+            if conn.execute("SELECT 1 FROM shapes WHERE workspace_id = ? AND kind = 'pasture' AND deleted = 0", (workspace_id,)).fetchone():
+                return 0
+            for p in pastures:
+                pts = [[round(float(x), 7), round(float(y), 7)] for x, y in p["outline"]]
+                if len(pts) >= 2 and pts[0] == pts[-1]:
+                    pts = pts[:-1]
+                sid = "".join(c for c in str(p["id"]) if c.isalnum() or c in "-_")[:64] or None
+                if not sid or len(pts) < 3:
+                    continue
+                conn.execute("INSERT OR REPLACE INTO shapes(shape_id, workspace_id, kind, name, note, coords, source, created_by, created_by_name, "
+                             "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                             (sid, workspace_id, "pasture", str(p["name"])[:80], None, json.dumps(pts), "imported", user_id, user_name, now, now))
+        return len(pastures)
 
     # -- places on the map -------------------------------------------------------
     PLACE_KINDS = {
