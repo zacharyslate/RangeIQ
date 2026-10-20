@@ -272,7 +272,43 @@ def diagnose_ranch_greenness(workspace_id: str) -> int:
     have = sum(1 for a in anomalies.values() if a.get("anomaly_pct") is not None)
     print(f"progress: {done} scenes stored, {len(errors)} with errors" + (f" (e.g. {errors[0][:120]})" if errors else "")
           + f"; greenness vs. normal ready for {have}/{len(geoms)} pastures")
+    _greenness_table(store.history(workspace_id), anomalies, pastures)
     return 0
+
+
+def _greenness_table(history, anomalies, pastures) -> None:
+    """Per pasture (numbered, no names): NDVI now, the same weeks in each earlier year, and how the pasture swings over a
+    year (lowest / highest monthly median). Bare-soil lows (~0.1-0.2) and big swings point at cultivated fields."""
+    import pandas as pd
+
+    if history is None or history.empty:
+        return
+    h = history.copy()
+    h["scene_date"] = pd.to_datetime(h["scene_date"])
+    acres = {}
+    if pastures is not None and "acres" in pastures:
+        acres = {str(r["pasture_id"]): r.get("acres") for r in pastures.to_dict("records")}
+    print("greenness by pasture (NDVI; 'same weeks' = window used for normal, by year):")
+    print("  #  acres   now  normal   anom%  same weeks earlier years           monthly min-max  scenes")
+    rows = []
+    for pid, a in anomalies.items():
+        g = h[h["pasture_id"] == pid]
+        monthly = g.set_index("scene_date")["ndvi"].resample("MS").median().dropna()
+        rows.append((a.get("anomaly_pct") if a.get("anomaly_pct") is not None else 999, pid, a, monthly, len(g)))
+    for k, (_, pid, a, monthly, n) in enumerate(sorted(rows, key=lambda r: r[0]), start=1):
+        center = h[h["pasture_id"] == pid]["scene_date"].max()
+        years = []
+        for back in range(1, 6):
+            c = center - pd.DateOffset(years=back)
+            same = h[(h["pasture_id"] == pid) & (h["scene_date"] >= c - pd.Timedelta(days=35)) & (h["scene_date"] <= c + pd.Timedelta(days=20))]
+            if not same.empty:
+                years.append(f"{c.year}:{same['ndvi'].median():.2f}")
+        ac = acres.get(str(pid))
+        ac_txt = f"{float(ac):6.0f}" if ac is not None and ac == ac else "     ?"
+        fmt = lambda v: f"{v:.2f}" if isinstance(v, (int, float)) else "  - "   # noqa: E731
+        anom = a.get("anomaly_pct")
+        print(f"  {k:2d} {ac_txt}  {fmt(a.get('current'))}   {fmt(a.get('normal'))}  {(f'{anom:+6.0f}' if anom is not None else '     -')}  "
+              f"{' '.join(years):34s}  {monthly.min():.2f}-{monthly.max():.2f}  {n}")
 
 
 def diagnose_all(redact: bool = True) -> int:
