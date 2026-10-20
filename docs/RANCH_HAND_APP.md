@@ -58,6 +58,14 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - **The Log shows everything that was added:** reports, rain, cattle moves, loose photos, new jobs and check-offs, new places, and roads, fences or pastures people drew (pastures imported from a boundary file are left out). Photos show as small thumbnails on the item they belong to. Filters: Jobs, and Places & lines.
 - The map doesn't add a separate pin for a photo that belongs to a report or job; the report or job pin stands for it.
 
+## Resolving problems
+
+- Open a report (or a photo flagged as a problem) → **✓ Mark resolved**. Add what was done and a photo of the fix if you like. **Anyone on the ranch** can resolve a problem, and anyone can **↺ Reopen** it.
+- A resolved problem leaves **Needs attention** and the map, and stops counting toward the pasture's status. The server is asked to update the ranch right away, so the pasture's colour catches up within a few minutes instead of the next hourly run.
+- **Checking off a job made from a report resolves that report** ("Job done: …"). Undoing the check-off reopens it, but only if the job is what resolved it.
+- The Log keeps the report (with a ✓ Resolved tag) and adds a "Resolved: …" line with who, when and the note. The Problems filter shows both.
+- Works offline: the change waits on the phone and sends with everything else. If two phones disagree, the most recent change wins.
+
 ## Honest limits
 
 - **Green % is a color count, not a forage measurement.** Canopeo was validated for fractional green canopy cover from overhead photos, with good agreement against other methods (Patrignani & Ochsner 2015). Ranch photos are oblique, so the share of the frame that is near ground versus far ground changes the number. Shadows, low sun, and green-tinged water or algae also change it. Use it to compare **the same spot, same direction, similar time of day** (repeat photo points; Hall 2002). Don't use it to compare two different pastures.

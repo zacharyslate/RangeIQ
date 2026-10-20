@@ -356,3 +356,7 @@ body.drawing #v-map .map{height:calc(100dvh - 300px - env(safe-area-inset-bottom
 .timeline .lphotos{display:flex;gap:4px;margin-top:6px;align-items:center}
 .timeline .lphotos img{width:44px;height:44px;object-fit:cover;border-radius:6px;grid-row:auto}
 .timeline .ico .swatch{display:inline-block;width:22px;height:6px;border-radius:3px;vertical-align:middle}
+
+/* resolved problems */
+.resolved{background:var(--good-bg);color:var(--good);border-radius:12px;padding:10px 12px;margin:8px 0}
+.donechip{display:inline-block;background:var(--good-bg);color:var(--good);border-radius:99px;padding:1px 8px;font-size:.8rem;font-weight:700;white-space:nowrap}

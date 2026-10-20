@@ -182,10 +182,10 @@
     const loose = allPhotos().filter(p => !p.place_id && !p.log_id && !p.task_id);
     for (const sp of spots(loose)) {
       const newest = loose.find(p => p.client_id === sp.client_id) || {};
-      const lay = layerOfTags(newest.tags) || "photos", top = topTag(newest.tags);
+      const done = !!resolution(newest), lay = (!done && layerOfTags(newest.tags)) || "photos", top = topTag(newest.tags);
       out.push({...sp, layer: lay, icon: lay === "photos" ? "📷" : (top ? TAG[top].icon : "📷"), title: (newest.tags || []).join(", ") || "Photo"});
     }
-    logItems().filter(i => i.type === "problem" && i.l.lat != null).forEach(i => {
+    logItems().filter(i => i.type === "problem" && i.l.lat != null && !resolution(i.l)).forEach(i => {     // resolved: off the map
       const top = topTag(i.l.tags);
       out.push({client_id: i.l.client_id, lat: i.l.lat, lon: i.l.lon, icon: top ? TAG[top].icon : "📝", taken_at: i.at, report: true,
         layer: layerOfTags(i.l.tags) || "problems", flagged: tagsAt(i.l.tags, HEADS_UP).length > 0, title: (i.l.tags || []).join(", ") || i.l.text || "Report"});
@@ -322,7 +322,7 @@
     // Sightings (deer, new calf) stay in the Log and on the map; only problems and heads-ups (rattlesnake) come here.
     logItems().filter(i => (i.type === "photo" || i.type === "problem") && new Date(i.at) > cutoff)
       .map(i => ({i, x: i.p || i.l, hot: tagsAt((i.p || i.l).tags, HEADS_UP)}))
-      .filter(({i, x, hot}) => hot.length || (i.p && x.flagged))
+      .filter(({i, x, hot}) => (hot.length || (i.p && x.flagged)) && !resolution(x))
       .sort((a, b) => (RANK[TAG[topTag(b.hot)]?.level] || 0) - (RANK[TAG[topTag(a.hot)]?.level] || 0)).slice(0, 4)
       .forEach(({i, x, hot}) => { const top = topTag(hot); items.push({
         cls: top && TAG[top].level === "concern" ? "act" : "watch", lead: top ? TAG[top].icon : "📷",
@@ -673,10 +673,12 @@
       ...(t.history || []).filter(h => h.op === "done").map(h => ({type: "job", at: h.at, t, what: "done", by: h.by}))]);
     const pls = places.map(pl => ({type: "place", at: pl.created_at || pl.updated_at || now, pl}));
     const shp = shapes.filter(x => x.source !== "imported").map(sh => ({type: "shape", at: sh.created_at || sh.updated_at || now, sh}));
+    const fixed = [...logs.filter(i => i.type === "problem").map(i => i.l), ...allPhotos()].map(x => ({x, r: resolution(x)})).filter(o => o.r)
+      .map(({x, r}) => ({type: "resolved", at: r.at, x, r}));
     // A photo that belongs to one of those shows on that item, not on its own.
     const ids = new Set([...logs.map(i => i.l.client_id), ...tasks.map(t => t.task_id), ...places.map(p => p.place_id), ...shapes.map(x => x.shape_id)]);
     const ph = allPhotos().filter(p => !PHOTO_KEYS.some(k => p[k] && ids.has(p[k]))).map(p => ({type: "photo", at: p.taken_at, p}));
-    return [...logs, ...ph, ...jobs, ...pls, ...shp].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    return [...logs, ...ph, ...jobs, ...pls, ...shp, ...fixed].sort((a, b) => String(b.at).localeCompare(String(a.at)));
   }
   const miniPhotos = (key, id) => { const list = photosOf(key, id);
     return list.length ? `<span class="lphotos">${list.slice(0, 4).map(p => `<img src="${esc(thumbOf(p))}" alt="" loading="lazy">`).join("")}${list.length > 4 ? `<b>+${list.length - 4}</b>` : ""}</span>` : ""; };
@@ -687,6 +689,12 @@
       return `<li class="clickable" data-item="${esc(t.task_id)}"><span class="ico" aria-hidden="true">${done ? "✔️" : "📋"}</span>
         <span>${done ? "Checked off" : "New job"}: <b>${esc(t.title)}</b>${t.pasture_id ? ` <span class="dim">(${esc(pastureName(t.pasture_id))})</span>` : ""}${done ? "" : miniPhotos("task_id", t.task_id)}</span><span></span>
         <span class="meta">${esc(when(it.at))}${it.by ? " · " + esc(it.by) : ""}</span></li>`;
+    }
+    if (it.type === "resolved") {
+      const x = it.x, r = it.r, what = [(x.tags || []).join(", "), x.text || x.note].filter(Boolean).join(" · ") || "Problem";
+      return `<li class="clickable" data-photo="${esc(x.client_id)}"><span class="ico" aria-hidden="true">✅</span>
+        <span>Resolved: <b>${esc(what)}</b>${x.pasture_id ? ` <span class="dim">(${esc(pastureName(x.pasture_id))})</span>` : ""}${r.note ? `<br><span class="dim">${esc(r.note)}</span>` : ""}</span><span></span>
+        <span class="meta">${esc(when(it.at))}${r.by ? " · " + esc(r.by) : ""}</span></li>`;
     }
     if (it.type === "place") {
       const pl = it.pl, k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
@@ -705,14 +713,14 @@
       const tags = (p.tags || []).map(tagSpan).join("");
       return `<li class="clickable" data-photo="${esc(p.client_id)}"><img src="${esc(thumbOf(p))}" alt="" loading="lazy">
         <b>Photo${p.pasture_id ? " · " + esc(pastureName(p.pasture_id)) : ""}${p.heading_deg != null ? " · facing " + compass(p.heading_deg) : ""}</b>
-        <span>${tags}${a.green_pct != null ? ` <span class="dim">${a.green_pct}% green</span>` : ""}</span>
+        <span>${tags}${a.green_pct != null ? ` <span class="dim">${a.green_pct}% green</span>` : ""}${resolution(p) ? ' <span class="donechip">✓ Resolved</span>' : ""}</span>
         <span class="meta">${esc(when(p.taken_at))}${by(p)}${p._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
     }
     const l = it.l;
     const top = topTag(l.tags), ico = it.type === "problem" ? (top ? TAG[top].icon : "📝") : {move: "🐄", rain: "🌧"}[it.type] || "•";
     const what = it.type === "move" ? `Moved cattle${l.from_pasture_id ? " from " + esc(pastureName(l.from_pasture_id)) : ""} to <b>${esc(pastureName(l.pasture_id))}</b>${l.head ? " (" + esc(l.head) + " head)" : ""}`
       : it.type === "rain" ? `Rain gauge: <b>${Number(l.inches).toFixed(2)} in</b>${l.pasture_id ? " at " + esc(pastureName(l.pasture_id)) : ""}`
-      : `${(l.tags || []).map(tagSpan).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}${l.lat != null ? " 📍" : ""}`;
+      : `${(l.tags || []).map(tagSpan).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}${l.lat != null ? " 📍" : ""}${resolution(l) ? ' <span class="donechip">✓ Resolved</span>' : ""}`;
     return `<li class="clickable" data-photo="${esc(l.client_id)}"><span class="ico" aria-hidden="true">${ico}</span><span>${what}${miniPhotos("log_id", l.client_id)}</span><span></span>
       <span class="meta">${esc(when(l.logged_at))}${by(l)}${l._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
   }
@@ -726,6 +734,7 @@
     const tagsOf = i => (i.p || i.l || {}).tags || [];
     const items = logItems().filter(i => logFilter === "all" || i.type === logFilter || (logFilter === "map" && (i.type === "place" || i.type === "shape"))
       || (logFilter === "problem" && (i.type === "photo" || i.type === "problem") && (tagsAt(tagsOf(i), HEADS_UP).length || (i.p && i.p.flagged)))
+      || (logFilter === "problem" && i.type === "resolved")
       || (logFilter === "wildlife" && tagsOf(i).some(t => TAG[t] && TAG[t].group === "Wildlife"))).slice(0, 80);
     $("g-list").innerHTML = items.length ? items.map(itemHtml).join("") : "<li class='dim'>Nothing yet. Use the buttons on Home.</li>";
   }
@@ -1030,11 +1039,13 @@
     openSheet(title, `${what}<p>${(l.tags || []).map(tagSpan).join(" ")}</p>
       ${l.text ? `<p>${esc(l.text)}</p>` : ""}
       <div id="rpPhotos"></div>
+      <div id="rpResolve"></div>
       <p class="dim">${esc(when(l.logged_at))}${l.by ? " · " + esc(l.by) : ""}${l.accuracy_m ? " · 📍 ±" + l.accuracy_m + " m" : l.lat == null ? " · no location" : ""}</p>
       ${l._pending ? "<p class='pending'>Waiting to send.</p>" : ""}
-      <div class="row">${isReport ? `<button type="button" class="primary" id="rpJob">＋ Make it a job</button>` : ""}${l.lat != null ? `<button type="button" class="secondary" id="rpMap">Show on map</button>` : ""}
+      <div class="row">${isReport && !resolution(l) ? `<button type="button" class="primary" id="rpJob">＋ Make it a job</button>` : ""}${l.lat != null ? `<button type="button" class="secondary" id="rpMap">Show on map</button>` : ""}
       ${l._pending || isOwner() || mine ? `<button type="button" class="secondary" id="rpDel">Delete</button>` : ""}</div>`);
     mountPhotoStrip($("rpPhotos"), "log_id", id, {extra: () => ({pasture_id: l.pasture_id || null})});
+    if (canResolve(l, true)) mountResolve($("rpResolve"), l, () => openReport(id));
     if ($("rpJob")) $("rpJob").onclick = () => window.__rangeiqMakeJob(l, false);
     if ($("rpMap")) $("rpMap").onclick = () => showOnMap(l.lat, l.lon);
     if ($("rpDel")) $("rpDel").onclick = async () => {
@@ -1055,6 +1066,7 @@
       <p>${(p.tags || []).map(tagSpan).join(" ")}</p>
       ${p.note ? `<p>${esc(p.note)}</p>` : ""}
       ${belongsTo(p)}
+      <div id="phMore"></div><div id="phResolve"></div>
       ${a.green_pct != null ? `<div class="stat"><div><span class="dim">Green</span><b>${a.green_pct}%</b></div><div><span class="dim">Brown or bare</span><b>${a.brown_bare_pct ?? "–"}%</b></div>
       ${a.green_change_pts != null ? `<div><span class="dim">vs. last photo here</span><b>${a.green_change_pts > 0 ? "+" : ""}${a.green_change_pts} pts</b></div>` : ""}</div>` : ""}
       ${p._pending ? "<p class='pending'>Waiting to send.</p>" : ""}
@@ -1063,6 +1075,8 @@
         <b>${(x.analysis || {}).green_pct ?? "–"}% green</b></span></button>`).join("")}</div>` : ""}
       <div class="row"><button type="button" class="primary" id="phJob">＋ Make it a job</button>${p.lat != null ? `<button type="button" class="secondary" id="phMap">Show on map</button>` : ""}
       ${canDelete ? `<button type="button" class="secondary" id="phDel">Delete</button>` : ""}</div>`);
+    if (photosOf("log_id", p.client_id).length) mountPhotoStrip($("phMore"), "log_id", p.client_id, {add: false, onChange: () => openPhoto(id)});
+    if (canResolve(p, false)) mountResolve($("phResolve"), p, () => openPhoto(id));
     $("phJob").onclick = () => window.__rangeiqMakeJob(p, true);
     if ($("phMap")) $("phMap").onclick = () => showOnMap(p.lat, p.lon);
     if ($("phDel")) $("phDel").onclick = async () => {
@@ -1560,6 +1574,47 @@
     };
     draw();
   }
+  // ---------------------------------------------------------------- RESOLVING PROBLEMS (anyone on the ranch)
+  // The newest change wins: one waiting on this phone, else what the server says, else a job made from it that's been checked off.
+  function resolution(x) {
+    if (!x) return null;
+    const q = store.get("resolveq", []).filter(r => r.item_id === x.client_id).sort((a, b) => String(a.at).localeCompare(String(b.at))).pop();
+    if (q) return q.resolved ? {at: q.at, by: q.by, note: q.note} : null;
+    if (x.resolved_at) return {at: x.resolved_at, by: x.resolved_by, note: x.resolve_note};
+    const t = tasks.find(t2 => t2.source_id === x.client_id && t2.done_at);
+    return t ? {at: t.done_at, by: t.done_by_name, note: "Job done: " + t.title} : null;
+  }
+  const canResolve = (x, isLog) => isLog ? x.kind === "note" : (tagsAt(x.tags, HEADS_UP).length > 0 || !!x.flagged);
+  function setResolved(x, resolved, note) {
+    const q = store.get("resolveq", []);
+    q.push({item_id: x.client_id, resolved, note: note || null, at: new Date().toISOString(), by: me && me.name});
+    store.set("resolveq", q); rerender(); syncAll();
+  }
+  function mountResolve(el, x, back) {
+    if (!el) return;
+    const r = resolution(x);
+    el.innerHTML = r ? `<p class="resolved">✓ <b>Resolved</b>${r.by ? " by " + esc(r.by) : ""} · ${esc(when(r.at))}${r.note ? `<br>${esc(r.note)}` : ""}</p>
+        <div class="row"><button type="button" class="secondary" data-reopen>↺ Reopen</button></div>`
+      : `<div class="row"><button type="button" class="primary" data-resolve>✓ Mark resolved</button></div>`;
+    const res = el.querySelector("[data-resolve]"), reo = el.querySelector("[data-reopen]");
+    if (res) res.onclick = () => resolveSheet(x, back);
+    if (reo) reo.onclick = () => { if (confirm("Reopen this problem? It will show as needing attention again.")) { setResolved(x, false); toast("Reopened."); back(); } };
+  }
+  function resolveSheet(x, back) {
+    const before = new Set(photosOf("log_id", x.client_id).map(p => p.client_id));
+    const what = [(x.tags || []).join(", "), x.text || x.note].filter(Boolean).join(" · ") || "This problem";
+    openSheet("Mark resolved", `<form class="form" id="resForm"><p><b>${esc(what)}</b>${x.pasture_id ? ` <span class="dim">(${esc(pastureName(x.pasture_id))})</span>` : ""}</p>
+      <label>What was done? (optional)<textarea name="note" maxlength="1000" placeholder="All 12 head back in, gate chained"></textarea></label>
+      <div><p class="dim small">Photos (add one of the fix if you like)</p><div id="resPhotos"></div></div>
+      <div class="row"><button type="submit" class="primary">✓ Resolved</button><button type="button" class="secondary" id="resCancel">Cancel</button></div></form>`);
+    mountPhotoStrip($("resPhotos"), "log_id", x.client_id, {form: true, extra: () => ({pasture_id: x.pasture_id || null})});
+    $("resCancel").onclick = async () => {
+      for (const p of photosOf("log_id", x.client_id)) if (!before.has(p.client_id)) await removePhoto(p.client_id);
+      back();
+    };
+    $("resForm").onsubmit = e => { e.preventDefault(); setResolved(x, true, e.target.note.value.trim()); toast("Marked resolved."); back(); };
+  }
+
   // Photos added to something that was then cancelled are thrown away.
   async function dropPhotosOf(key, id) { for (const p of photosOf(key, id)) await removePhoto(p.client_id); }
 
@@ -1715,6 +1770,14 @@
         try { await api("photos", {method: "POST", body: fd}); await idb.del(rec.client_id); }
         catch (e) { if (e.signin) throw e; if (e.status === 400 || e.status === 413) await idb.del(rec.client_id); else break; }
       }
+      const rq = store.get("resolveq", []);
+      if (rq.length) {
+        const res = await api("resolve", {method: "POST", body: JSON.stringify(rq)});
+        // Drop what was sent, except changes whose report or photo hasn't reached the server yet (they go next time).
+        const key = x => x.item_id + "|" + x.at, retry = new Set(res.errors.filter(e => e.retry).map(e => e.item_id));
+        const sent = new Set(rq.filter(x => !retry.has(x.item_id)).map(key));
+        store.set("resolveq", store.get("resolveq", []).filter(x => !sent.has(key(x))));
+      }
       const tq = store.get("taskq", []);
       if (tq.length) {
         const res = await api("tasks", {method: "POST", body: JSON.stringify(tq)});
@@ -1746,7 +1809,8 @@
     finally { syncing = false; rerender(); }
   }
   function updateSyncPill() {
-    const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length, p = $("syncPill");
+    const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length
+      + store.get("resolveq", []).length, p = $("syncPill");
     p.hidden = !n; p.textContent = n + " waiting to send";
   }
   $("syncPill").onclick = () => syncAll(true);
@@ -1763,7 +1827,8 @@
     show("home"); await refresh(); syncAll();
   }
   // ---------------------------------------------------------------- switch between ranches (one login, several ranches)
-  const unsent = () => store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length;
+  const unsent = () => store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length
+    + store.get("resolveq", []).length;
   async function switchRanch(workspaceId) {
     if (!me || workspaceId === me.workspace_id) { closeSheet(); return; }
     if (unsent()) { await syncAll(true); if (unsent()) { toast("Some photos or entries for this ranch haven't sent yet. Switch once they have."); return; } }

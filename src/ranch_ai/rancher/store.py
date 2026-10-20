@@ -177,6 +177,19 @@ class AppStore:
                     prev TEXT
                 );
                 CREATE INDEX IF NOT EXISTS ix_task_ops ON task_ops(workspace_id, task_id, at);
+                -- A problem report or photo marked resolved (or reopened). Last change wins. via_task: resolved by checking off
+                -- the job that was made from it, so undoing that check-off reopens it.
+                CREATE TABLE IF NOT EXISTS resolutions (
+                    workspace_id TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    resolved INTEGER NOT NULL,
+                    at TEXT NOT NULL,
+                    user_id TEXT,
+                    user_name TEXT,
+                    note TEXT,
+                    via_task TEXT,
+                    PRIMARY KEY (workspace_id, item_id)
+                );
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -301,7 +314,40 @@ class AppStore:
                 "SELECT * FROM logs WHERE workspace_id = ? AND deleted = 0 ORDER BY logged_at DESC LIMIT ?",
                 (workspace_id, int(limit)),
             ).fetchall()
-        return [self._row_to_log(row) for row in rows]
+        res = self.resolutions(workspace_id)
+        return [{**self._row_to_log(row), **res.get(row["client_id"], {})} for row in rows]
+
+    # -- resolving problems ------------------------------------------------------------
+    def resolutions(self, workspace_id: str) -> dict[str, dict[str, Any]]:
+        """{item_id: {resolved_at, resolved_by, resolve_note, resolved_via}} for items currently resolved."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM resolutions WHERE workspace_id = ? AND resolved = 1", (workspace_id,)).fetchall()
+        return {r["item_id"]: {"resolved_at": r["at"], "resolved_by": r["user_name"], "resolve_note": r["note"], "resolved_via": r["via_task"]}
+                for r in rows}
+
+    @staticmethod
+    def _set_resolution(conn: sqlite3.Connection, workspace_id: str, item_id: str, resolved: bool, at: str, user_id: str | None,
+                        user_name: str | None, note: str | None = None, via_task: str | None = None) -> bool:
+        old = conn.execute("SELECT at FROM resolutions WHERE workspace_id = ? AND item_id = ?", (workspace_id, item_id)).fetchone()
+        if old is not None and str(old["at"]) > at:          # a newer change already arrived (phones sync late)
+            return False
+        conn.execute("INSERT OR REPLACE INTO resolutions(workspace_id, item_id, resolved, at, user_id, user_name, note, via_task) "
+                     "VALUES (?,?,?,?,?,?,?,?)", (workspace_id, item_id, 1 if resolved else 0, at, user_id, user_name,
+                                                  (note or "").strip()[:1000] or None, via_task))
+        return True
+
+    def resolve(self, workspace_id: str, item_id: str, resolved: bool, *, user_id: str, user_name: str, at: str | None = None,
+                note: str | None = None) -> bool:
+        """Mark a report (log entry) or a photo resolved, or reopen it. Anyone on the ranch may do this."""
+        at = str(at or _iso(utc_now()))
+        datetime.fromisoformat(at.replace("Z", "+00:00"))       # ValueError on junk
+        with self._connect() as conn:
+            found = conn.execute("SELECT 1 FROM logs WHERE workspace_id = ? AND client_id = ? AND deleted = 0 UNION "
+                                 "SELECT 1 FROM photos WHERE workspace_id = ? AND client_id = ? AND deleted = 0",
+                                 (workspace_id, item_id, workspace_id, item_id)).fetchone()
+            if found is None:
+                raise LookupError("No such report or photo (it may not have reached the server yet).")
+            return self._set_resolution(conn, workspace_id, item_id, resolved, at, user_id, user_name, note)
 
     @staticmethod
     def _row_to_log(row: sqlite3.Row) -> dict[str, Any]:
@@ -378,7 +424,8 @@ class AppStore:
             rows = conn.execute(
                 "SELECT * FROM photos WHERE workspace_id = ? AND deleted = 0 ORDER BY taken_at DESC LIMIT ?", (workspace_id, int(limit))
             ).fetchall()
-        return [self._row_to_photo(r) for r in rows]
+        res = self.resolutions(workspace_id)
+        return [{**self._row_to_photo(r), **res.get(r["client_id"], {})} for r in rows]
 
     def photo(self, workspace_id: str, client_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -722,6 +769,12 @@ class AppStore:
                         elif task["done_at"] is None:
                             conn.execute("UPDATE tasks SET done_at = ?, done_by = ?, done_by_name = ? WHERE task_id = ?",
                                          (at, user_id, user_name, task_id))
+                        if task["source_id"]:      # the job came from a report or photo: doing it resolves that problem
+                            cur = conn.execute("SELECT resolved FROM resolutions WHERE workspace_id = ? AND item_id = ?",
+                                               (workspace_id, task["source_id"])).fetchone()
+                            if cur is None or not cur["resolved"]:
+                                self._set_resolution(conn, workspace_id, task["source_id"], True, at, user_id, user_name,
+                                                     f"Job done: {task['title']}", via_task=task_id)
                     elif kind == "undo":
                         last = conn.execute("SELECT * FROM task_ops WHERE task_id = ? AND op = 'done' ORDER BY at DESC LIMIT 1",
                                             (task_id,)).fetchone()
@@ -734,6 +787,11 @@ class AppStore:
                         else:
                             conn.execute("UPDATE tasks SET done_at = NULL, done_by = NULL, done_by_name = NULL WHERE task_id = ?", (task_id,))
                         conn.execute("UPDATE task_ops SET op = 'done-undone' WHERE op_id = ?", (last["op_id"],))
+                        if task["source_id"]:      # reopen the problem only if this job is what resolved it
+                            cur = conn.execute("SELECT resolved, via_task FROM resolutions WHERE workspace_id = ? AND item_id = ?",
+                                               (workspace_id, task["source_id"])).fetchone()
+                            if cur is not None and cur["resolved"] and cur["via_task"] == task_id:
+                                self._set_resolution(conn, workspace_id, task["source_id"], False, max(at, _iso(utc_now())), user_id, user_name)
                     elif kind == "delete":
                         if not is_owner and task["created_by"] != user_id:
                             raise PermissionError("Only the owner or whoever added it can delete a job.")
