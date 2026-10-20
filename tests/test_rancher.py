@@ -828,3 +828,12 @@ def test_file_pastures_start_locked_and_new_drawing_keeps_them(client):
     client.store.set_ranch_setting(ws, "boundaries_locked", False)          # e.g. unlocked before this fix
     client.post("/api/shapes", headers=owner, json={"shape_id": "n1", "kind": "pasture", "name": "New", "coords": sq[:3]})
     assert sorted(s["shape_id"] for s in client.get("/api/shapes", headers=owner).json()["shapes"]) == ["P1", "P2", "n1"]
+
+
+def test_3d_code_is_never_served_stale(client):
+    # The phone must not pair a new app.js with an old terrain3d.js (bug of 2026-10-20: "view3d.setLines is not a function").
+    sw = (Path(__file__).resolve().parents[1] / "web" / "app" / "sw.js").read_text()
+    assert 'terrain3d\\.js$/.test(url.pathname)' in sw and 'fetch(req, {cache: "no-cache"})' in sw
+    web = client.app.routes  # app files are served with Cache-Control: no-cache (vendor/ and images excepted)
+    r = client.get("/app/")
+    assert r.headers.get("cache-control") == "no-cache"

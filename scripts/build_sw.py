@@ -96,11 +96,21 @@ self.addEventListener("fetch", e => {{
   // Other ranch data and logs: always the network; the app keeps its own saved copy for offline use.
   if (url.pathname.includes("/api/")) return;
   if (url.origin === location.origin) {{
-    // App files: precached ones from the cache; on-demand ones (3D library) cached the first time they load.
-    e.respondWith(caches.match(req, {{ignoreSearch: true}}).then(hit => hit || fetch(req).then(r => {{
-        if (r.ok && /vendor\\/three\\/|terrain3d\\.js/.test(url.pathname)) {{ const copy = r.clone(); caches.open(LAZY).then(c => c.put(req, copy)); }}
+    // The 3D view's own code changes with the app, so get it fresh when there's signal (saved copy when there isn't);
+    // a stale copy next to a new app.js breaks the 3D view.
+    if (/terrain3d\\.js$/.test(url.pathname)) {{
+      e.respondWith(fetch(req, {{cache: "no-cache"}}).then(r => {{
+          if (r.ok) {{ const copy = r.clone(); caches.open(LAZY).then(c => c.put(req, copy)); }}
+          return r;
+        }}).catch(() => caches.open(LAZY).then(c => c.match(req, {{ignoreSearch: true}})).then(hit => hit || Response.error())));
+      return;
+    }}
+    // App files: precached ones from this release's cache; the 3D library (three.js) cached the first time it loads.
+    e.respondWith(caches.open(VERSION).then(c => c.match(req, {{ignoreSearch: true}})).then(hit => hit
+      || caches.open(LAZY).then(c => c.match(req, {{ignoreSearch: true}}))).then(hit => hit || fetch(req).then(r => {{
+        if (r.ok && /vendor\\/three\\//.test(url.pathname)) {{ const copy = r.clone(); caches.open(LAZY).then(c => c.put(req, copy)); }}
         return r;
-      }}).catch(() => req.mode === "navigate" ? caches.match("./") : Response.error())));
+      }})).catch(() => req.mode === "navigate" ? caches.match("./") : Response.error()));
     return;
   }}
   if (/nationalmap\\.gov$/.test(url.hostname)) {{
