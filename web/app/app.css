@@ -313,3 +313,25 @@ details.card summary::-webkit-details-marker{display:none}
 .wx{display:flex;align-items:center;gap:12px}
 .filebtn{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 18px;border-radius:12px;border:1px solid var(--rule);
   background:var(--surface-2);font-weight:700;cursor:pointer;justify-self:start}
+.drawbar{position:fixed;left:8px;right:8px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:45;display:grid;gap:8px;padding:12px;border-radius:16px;
+  background:var(--surface);border:2px solid #ffd84d;box-shadow:0 6px 24px rgba(0,0,0,.3)}
+.drawinfo{display:grid;gap:2px}
+.drawbar .row{gap:6px}
+.drawbar .pill{min-height:44px;padding:6px 12px}
+.pill.primarypill{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.vtx{width:22px;height:22px;border-radius:50%;background:#ffd84d;border:3px solid #1d150f;box-shadow:0 1px 4px rgba(0,0,0,.5)}
+.vtx.sel{background:#d63c2f;border-color:#fff}
+.vtx.mid{width:18px;height:18px;background:rgba(255,255,255,.85);border:2px solid #1d150f;font:700 13px/13px system-ui;text-align:center;color:#1d150f}
+.swatch{display:inline-block;width:18px;height:6px;border-radius:3px;margin-right:6px;vertical-align:middle;box-shadow:0 0 0 1px rgba(0,0,0,.35)}
+.pickbar.unlocked{background:#ffd84d;color:#1d150f}
+@media (min-width: 960px){ .drawbar{left:252px;right:24px;bottom:20px;max-width:900px} }
+/* drawing mode: map fills the screen between the header and the drawing bar */
+body.drawing .banner, body.drawing #v-map .maptools, body.drawing #lockNote, body.drawing #layerCard, body.drawing #pickBar,
+body.drawing #m-list, body.drawing #map-src, body.drawing #exagRow{display:none!important}
+body.drawing #v-map .map{height:calc(100dvh - 300px - env(safe-area-inset-bottom));min-height:300px}
+@media (min-width: 960px){ body.drawing #v-map .map{height:calc(100dvh - 260px)} }
+.me{position:relative;width:20px;height:20px;border-radius:50%;background:#2b7de9;border:3px solid #fff;box-shadow:0 0 0 6px rgba(43,125,233,.25),0 1px 4px rgba(0,0,0,.4)}
+.me i{position:absolute;left:50%;top:50%;width:0;height:0;margin:-24px 0 0 -7px;border-left:7px solid transparent;border-right:7px solid transparent;
+  border-bottom:14px solid #2b7de9;transform-origin:7px 24px}
+#exagRow{align-items:center}
+#exagSlider{flex:1;min-width:140px;accent-color:var(--accent);height:32px}

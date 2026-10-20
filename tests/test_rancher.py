@@ -778,3 +778,53 @@ def test_terrain_files_are_long_cached_and_client_errors_are_logged(client, caps
     assert r.status_code == 200 and "max-age=2592000" in r.headers["cache-control"]
     assert client.post("/api/client-error", content=b'{"where":"3d","error":"boom"}').json()["ok"] is True
     assert "[client-error]" in capsys.readouterr().out
+
+
+def test_drawn_boundaries_lock_and_replace_the_uploaded_file(client, tmp_path):
+    from ranch_ai.rancher.worker import drawn_pastures
+
+    owner = _login(client)
+    ws = client.user.workspace_id
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    hand = {"Authorization": "Bearer " + client.post("/api/join", json={"code": code, "name": "Luis", "email": "luis@example.com",
+                                                                        "password": "HandPass123"}).json()["token"]}
+    client.cookies.clear()
+    square = [[-103.70, 30.30], [-103.69, 30.30], [-103.69, 30.31], [-103.70, 30.31]]
+    client.store.save_snapshot(ws, {"generated_at": "2026-10-20T05:00:00+00:00", "ranch": {"name": "Caja Caliente"},
+                                    "pastures": [{"id": "P1", "name": "North Flat", "outline": square + [square[0]]}]})
+    # Boundaries start locked once there are pastures; unlocking copies the uploaded pastures in, keeping their ids.
+    res = client.post("/api/boundaries/lock", headers=owner, json={"locked": False}).json()
+    assert res["boundaries_locked"] is False and [s["shape_id"] for s in res["shapes"]] == ["P1"]
+    assert client.post("/api/boundaries/lock", headers=hand, json={"locked": False}).status_code == 403
+    # Owner redraws a pasture and adds one; a hand can't touch boundaries but can add a trail.
+    moved = [[-103.701, 30.30], [-103.69, 30.30], [-103.69, 30.311], [-103.701, 30.311]]
+    r = client.post("/api/shapes", headers=owner, json=[{"shape_id": "P1", "kind": "pasture", "name": "North Flat", "coords": moved},
+                                                        {"shape_id": "new1", "kind": "pasture", "name": "Trap", "coords": square[:3]},
+                                                        {"shape_id": "bad", "kind": "pasture", "name": "x", "coords": square[:2]}]).json()
+    assert r["saved"] == ["P1", "new1"] and r["errors"][0]["shape_id"] == "bad"
+    assert client.post("/api/shapes", headers=hand, json={"shape_id": "new1", "kind": "pasture", "coords": square}).json()["errors"]
+    t = client.post("/api/shapes", headers=hand, json={"shape_id": "tr1", "kind": "game_trail", "name": "Deer run",
+                                                       "coords": [[-103.70, 30.30], [-103.695, 30.305]], "source": "gps"}).json()
+    assert t["saved"] == ["tr1"]
+    assert client.post("/api/shapes", headers=hand, json={"shape_id": "tr2", "kind": "highway", "coords": square}).json()["errors"]
+    # Locked again: nobody changes boundaries.
+    client.post("/api/boundaries/lock", headers=owner, json={"locked": True})
+    locked = client.post("/api/shapes", headers=owner, json={"shape_id": "new1", "kind": "pasture", "name": "Trap", "coords": square}).json()
+    assert "locked" in locked["errors"][0]["error"]
+    data = client.get("/api/shapes", headers=hand).json()
+    assert data["boundaries_locked"] is True and data["boundary_source"] == "drawn"
+    # The worker builds the ranch from the drawn pastures.
+    pastures = drawn_pastures(ws, client.store)
+    assert sorted(pastures["pasture_id"]) == ["P1", "new1"] and pastures["acres"].min() > 0
+
+
+def test_file_pastures_start_locked_and_new_drawing_keeps_them(client):
+    owner = _login(client)
+    ws = client.user.workspace_id
+    sq = [[-103.70, 30.30], [-103.69, 30.30], [-103.69, 30.31], [-103.70, 30.31]]
+    client.store.save_snapshot(ws, {"generated_at": "2026-10-20T05:00:00+00:00", "pastures": [{"id": "P1", "name": "A", "outline": sq},
+                                                                                                {"id": "P2", "name": "B", "outline": sq}]})
+    assert client.get("/api/shapes", headers=owner).json()["boundaries_locked"] is True
+    client.store.set_ranch_setting(ws, "boundaries_locked", False)          # e.g. unlocked before this fix
+    client.post("/api/shapes", headers=owner, json={"shape_id": "n1", "kind": "pasture", "name": "New", "coords": sq[:3]})
+    assert sorted(s["shape_id"] for s in client.get("/api/shapes", headers=owner).json()["shapes"]) == ["P1", "P2", "n1"]

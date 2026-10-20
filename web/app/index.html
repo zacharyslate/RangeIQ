@@ -94,19 +94,22 @@
       </div>
       <div class="seg small" id="lookSeg" role="group" aria-label="3D look" hidden>
         <button type="button" data-look="photo" aria-pressed="true">Photo</button>
-        <button type="button" data-look="topo" aria-pressed="false">Topo</button>
+        <button type="button" data-look="relief" aria-pressed="false">Relief</button>
       </div>
       <button type="button" class="pill" id="layersBtn" aria-pressed="false" title="Choose what shows on the map">🗂 Layers</button>
       <button type="button" class="pill" id="addPlaceBtn" title="Add a water tank, pond, blind, gate…">＋ Place</button>
+      <button type="button" class="pill" id="drawBtn" title="Draw pastures, roads and trails">✏️ Draw</button>
+      <button type="button" class="pill" id="meBtn" title="Show where I am">📍 Me</button>
     </div>
     <div class="card" id="layerCard" hidden></div>
+    <div class="pickbar unlocked" id="lockNote" hidden role="status"><span>🔓 Pasture boundaries are unlocked for editing.</span> <button type="button" class="pill" id="lockNoteBtn">🔒 Lock</button></div>
     <div class="pickbar" id="pickBar" hidden role="status"><b>Tap the map where it is.</b> <button type="button" class="pill" id="pickCancel">Cancel</button></div>
     <div id="map" class="map" role="region" aria-label="Map of pastures and photos"></div>
     <div id="map3d" class="map3d" hidden role="img" aria-label="3D view of the ranch with glowing pasture boundaries"></div>
     <div class="row" id="exagRow" hidden role="group" aria-label="Height exaggeration">
       <span class="dim">Height</span>
-      <button type="button" class="pill" data-exag="1">×1</button><button type="button" class="pill" data-exag="2" aria-pressed="true">×2</button>
-      <button type="button" class="pill" data-exag="4">×4</button><button type="button" class="pill" id="resetView">Reset</button>
+      <input type="range" id="exagSlider" min="1" max="12" step="0.5" value="2" aria-label="How much to raise the hills">
+      <b id="exagVal">×2</b><button type="button" class="pill" id="resetView">Reset view</button>
     </div>
     <p class="src" id="map-src"></p>
     <ul class="plist" id="m-list"></ul>
@@ -170,6 +173,7 @@
   <button type="button" data-tab="more"><span aria-hidden="true">☰</span>More</button>
 </nav>
 
+<div class="drawbar" id="drawBar" hidden role="region" aria-label="Drawing"></div>
 <input type="file" id="camInput" accept="image/*" capture="environment" hidden>
 
 <div class="sheet-back" id="sheetBack" hidden></div>
