@@ -63,7 +63,7 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 ## 3D view
 
 - **Glowing walls**: each pasture boundary is a wall that fades upward. Green means Good, gold means Watch, red (pulsing) means Act. There is also a bright line on the ground so the boundary reads from straight above.
-- **Pasture flags**: every pasture has a flag near its middle, coloured like its status (on both the flat map and 3D). Tap the flag to open the pasture; that's the easy target on a phone. On the flat map the names appear once you zoom in far enough for them not to pile up. While you're placing a pin or drawing, tapping a flag counts as tapping the map at that spot.
+- **Pasture flags**: every pasture has a flag near its middle, coloured like its status (on both the flat map and 3D). Tap the flag to open the pasture; that's the easy target on a phone. On the flat map the names appear once you zoom in far enough for them not to pile up. While you're placing a pin or drawing, tapping a flag counts as tapping the map at that spot. Turn flags off under Layers → **Pasture flags**; tapping inside a pasture still opens it.
 - **Photo** look: the USDA NAIP aerial photo, under a low evening sun.
 - **Topo** look: earth-tone elevation colors with hillshade from the north-west and contour lines. The interval is picked to give about 10–14 lines (for example "every 20 ft"), with every fifth line darker.
 - Photo pins are placed by converting the phone's GPS to the terrain's UTM grid in the browser (Snyder 1987 formulas). This matches rasterio to under a millimetre.
@@ -167,6 +167,7 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 
 - **✏️ Draw** on the map:
   - **Pasture boundaries:** tap the corners, or walk or drive the fence with GPS.
+  - **A line drawn around a pasture** (for example as a fence line) can become its boundary: tap the line → **Use as a pasture boundary**, pick the pasture (or a new one). The line is then removed. Owner or partner only, with boundaries unlocked.
   - **Roads, trails and lines:** main road, ranch road, two-track, game trail, hunting trail, path, fence line, water line or pipe, creek or draw, other. Draw them by tapping points or record them with GPS.
 - **Editing:** drag a dot to move it, tap "+" to add a point between, or select a dot and **Delete point**. **Undo** removes the last point.
   - GPS recording keeps points within 30 m accuracy, every 4 m or more. A **📷 Photo here** button saves a photo on the line. The finished track is simplified (Douglas-Peucker, 2 m).

@@ -227,7 +227,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     return out;
   }
   const lineMats = [], roadMats = [];
-  let glowOn = true;
+  let glowOn = true, flagsOn = true;
   function tubeMaterial(color, widthMul, list = lineMats) {
     const m = new THREE.ShaderMaterial({vertexShader: TUBE_VERT, fragmentShader: TUBE_FRAG,
       uniforms: {color: {value: new THREE.Color(color)}, uRadius: {value: TUBE_R0}}});
@@ -271,7 +271,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
         labels.add(sp);
         const pole = new THREE.Line(new THREE.BufferGeometry().setFromPoints([sp.position.clone(), sp.position.clone()]),
           new THREE.LineBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false}));
-        pole.renderOrder = 9; pole.userData.isPole = true; pole.userData.flag = sp; walls.add(pole);
+        pole.renderOrder = 9; pole.userData.isPole = true; pole.userData.flag = sp; pole.visible = flagsOn; walls.add(pole);
       }
     }
   }
@@ -451,6 +451,10 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     setLook,
     setPhotos(list) { photoList = list || []; drawPins(); },
     setLines(list) { lineList = list || []; drawLines(); },
+    setFlags(on) {                                // pasture flags on/off (Layers); tapping the ground still opens a pasture
+      flagsOn = on !== false; labels.visible = flagsOn && walls.visible;
+      walls.children.forEach(o => { if (o.userData.isPole) o.visible = flagsOn; });
+    },
     setGlow(on) { glowOn = !!on; walls.children.forEach(o => { if (o.userData.isWall) o.visible = glowOn; }); },
     setHere(h) {                                   // the phone's GPS position: a blue dot on the ground
       hereObj.visible = false; if (!h) return;
@@ -469,7 +473,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
       if (!next.length || key === lastPastures) return;
       lastPastures = key; outlines = next; drawWalls();
     },
-    setPasturesVisible(on) { walls.visible = labels.visible = !!on; },
+    setPasturesVisible(on) { walls.visible = !!on; labels.visible = !!on && flagsOn; },
     pickOnce(cb) { picker = cb; renderer.domElement.style.cursor = "crosshair"; },
     cancelPick() { picker = null; renderer.domElement.style.cursor = ""; },
     flagPositions() {                              // where each pasture flag is on screen (used by the browser tests)

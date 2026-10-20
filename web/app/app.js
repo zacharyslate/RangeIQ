@@ -167,7 +167,7 @@
     building: ["Building / barn", "🏠", "ranch"], mineral: ["Mineral / salt", "🧂", "ranch"], other: ["Other", "📍", "ranch"],
     sensor_rain: ["Rain gauge sensor", "📡", "sensors"], sensor_water: ["Water-level sensor", "📡", "sensors"],
     sensor_soil: ["Soil moisture sensor", "📡", "sensors"], sensor_weather: ["Weather station", "📡", "sensors"], sensor_other: ["Other sensor", "📡", "sensors"]};
-  const LAYERS = [["pastures", "Pastures", "🟫"], ["glow", "Glowing walls (3D)", "✨"], ["colors", "Warning colors", "🚦"], ["water", "Water", "💧"], ["hunting", "Hunting", "🛖"],
+  const LAYERS = [["pastures", "Pastures", "🟫"], ["flags", "Pasture flags", "🚩"], ["glow", "Glowing walls (3D)", "✨"], ["colors", "Warning colors", "🚦"], ["water", "Water", "💧"], ["hunting", "Hunting", "🛖"],
     ["ranch", "Ranch places", "🏠"], ["usgs", "USGS water map", "🗺️"], ["sensors", "Sensors", "📡"], ["wildlife", "Wildlife & sightings", "🦌"], ["problems", "Problems", "⚠️"], ["photos", "Other photos", "📷"],
     ["jobs", "Jobs", "✅"]];
   let layers = {...Object.fromEntries(LAYERS.map(([k]) => [k, true])), ...store.get("layers", {})};
@@ -481,6 +481,7 @@
       poly.addTo(map); mapLayers.push(poly);
       // A flag in the middle of each pasture: a big, easy target for a finger (tapping inside a thin outline on a phone
       // often lands on the neighbour or starts a pan).
+      if (!layers.flags) return;
       const [fx, fy] = interiorPoint(o.ll.map(([lat, lon]) => [lon, lat]));
       const flag = L.marker([fy, fx], {keyboard: false, riseOnHover: true, title: o.name,
         icon: L.divIcon({className: "pflag-at", iconSize: null, html:
@@ -553,7 +554,7 @@
   }
   async function render3d() {
     const box = $("map3d");
-    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses?.(statusMap()); view3d.setPastures?.(pastures3d()); view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); return; }
+    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses?.(statusMap()); view3d.setPastures?.(pastures3d()); view3d.setPasturesVisible?.(layers.pastures); view3d.setFlags?.(layers.flags); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); return; }
     box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
     try {
       // The height and photo files are cached by the phone, so ask for them by build date: a rebuilt terrain gets new files.
@@ -566,7 +567,7 @@
         photos: mapItems(), onPhoto: id => { if (!picking()) openItem(id); }, onPasture: id => { if (picking()) return;
           if (snap && snap.pastures.some(p => p.id === id)) openPastureSheet(id); else if (shapes.some(s2 => s2.shape_id === id)) openShape(id); }});
       if (/^(localhost|127\.)/.test(location.hostname)) window.__riq3d = view3d;     // browser tests only
-      view3d.meta = meta; view3d.setPastures?.(pastures3d()); view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); startHere(); drawHere();
+      view3d.meta = meta; view3d.setPastures?.(pastures3d()); view3d.setPasturesVisible?.(layers.pastures); view3d.setFlags?.(layers.flags); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); startHere(); drawHere();
     } catch (e) {
       if (e.signin) { show("login"); return; }
       // No 3D yet (or no WebGL / no signal): fall back to the flat map so the console still works.
@@ -598,7 +599,7 @@
     const all = (() => { const keep = layers; layers = Object.fromEntries(LAYERS.map(([k]) => [k, true])); const x = mapItems(); layers = keep; return x; })();
     const count = k => all.filter(x => x.layer === k).length;
     $("layerCard").innerHTML = `<h2>Show on the map</h2><div class="layers">${LAYERS.map(([k, label, ic]) => `<button type="button" class="layer" data-layer="${k}"
-      aria-pressed="${!!layers[k]}"><span aria-hidden="true">${ic}</span>${esc(label)}${["pastures", "colors", "glow"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
+      aria-pressed="${!!layers[k]}"><span aria-hidden="true">${ic}</span>${esc(label)}${["pastures", "flags", "colors", "glow"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
       <h3>Roads &amp; trails</h3><div class="layers">${Object.entries(LINE_TYPES).map(([k, v]) => { const n = shapes.filter(x => x.kind === k).length;
         return `<button type="button" class="layer" data-layer="${lineLayerKey(k)}" aria-pressed="${layers[lineLayerKey(k)] !== false}"><i class="swatch" style="background:${v.color}"></i>${esc(v.label)} <span class="dim">${n}</span></button>`; }).join("")}</div>
       <label class="switchrow"><input type="checkbox" id="hideEverydayMap" ${store.get("hideEveryday", false) ? "checked" : ""}>
@@ -1381,12 +1382,53 @@
       ${pics.length ? `<div class="spotrow">${pics.map(p => `<button type="button" data-photo="${esc(p.client_id)}"><img src="${esc(thumbOf(p))}" alt=""><span>${esc(when(p.taken_at, false))}</span></button>`).join("")}</div>` : ""}
       <div class="row"><button type="button" class="secondary" id="shPhoto">📷 Add photo</button>
         ${isPasture && snap && snap.pastures.some(p => p.id === id) ? `<button type="button" class="secondary" data-pasture="${esc(id)}">Pasture details</button>` : ""}
+        ${!isPasture && x.coords.length >= 3 && isOwner() ? `<button type="button" class="secondary" id="shToPasture">🟫 Use as a pasture boundary</button>` : ""}
         ${canEditShape(x) ? `<button type="button" class="secondary" id="shEdit">✏️ Edit ${isPasture ? "boundary" : "line"}</button>
           <button type="button" class="secondary" id="shDel">Delete</button>` : ""}</div>
       ${isPasture && !canEditShape(x) && isOwner() ? `<p class="dim small">🔒 Boundaries are locked. Unlock them under ✏️ Draw to edit.</p>` : ""}`);
     $("shPhoto").onclick = async () => { const id2 = await attachPhoto({shape_id: id, near: x.coords}); if (id2) openShape(id); };
     if ($("shEdit")) $("shEdit").onclick = () => startDraw(x.kind, "tap", x);
+    if ($("shToPasture")) $("shToPasture").onclick = () => lineToPasture(x);
     if ($("shDel")) $("shDel").onclick = () => { if (confirm(`Delete ${x.name}?`)) { shapeChange({shape_id: id, kind: x.kind, deleted: true}); closeSheet(); renderMap(); } };
+  }
+  // A line drawn around a pasture (say, as a fence line) becomes that pasture's boundary, or a new pasture.
+  function inRing(x, y, ring) {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  }
+  function lineToPasture(line) {
+    if (!canEditBoundaries()) {
+      openSheet("Pasture boundaries are locked", `<p>Unlock them first: ✏️ Draw → <b>Unlock to edit</b>. Then open this line again.</p>`); return;
+    }
+    let ring = line.coords.slice();
+    if (ring.length > 3 && metres({lat: ring[0][1], lon: ring[0][0]}, {lat: ring[ring.length - 1][1], lon: ring[ring.length - 1][0]}) < 1) ring.pop();
+    const current = pastureShapes().length ? pastureShapes().map(s2 => ({id: s2.shape_id, name: s2.name, coords: s2.coords}))
+      : (snap ? snap.pastures.map(p => ({id: p.id, name: p.name, coords: p.outline})) : []);
+    // Best guess: the pasture this line mostly sits on (share of its corners inside + whether the pasture's middle is inside the line).
+    const score = p => ring.filter(([x, y]) => inRing(x, y, p.coords)).length / ring.length + (inRing(...interiorPoint(p.coords), ring) ? 1 : 0);
+    const ranked = current.map(p => ({...p, s: score(p)})).sort((a, b) => b.s - a.s);
+    openSheet("Use as a pasture boundary", `<form class="form" id="l2pForm">
+      <p>${acresOf(ring).toFixed(1)} acres · ${ring.length} corners. The line itself is removed once it becomes a boundary.</p>
+      <label>Which pasture?<select name="target">
+        ${ranked.map((p, i) => `<option value="${esc(p.id)}" ${i === 0 && p.s > 0 ? "selected" : ""}>Replace the boundary of ${esc(p.name)}</option>`).join("")}
+        <option value="" ${ranked.length && ranked[0].s > 0 ? "" : "selected"}>A new pasture</option></select></label>
+      <label id="l2pName">Name of the new pasture<input name="name" maxlength="80" value="${esc(line.name || "")}"></label>
+      <div class="row"><button type="submit" class="primary">Save boundary</button><button type="button" class="secondary" id="l2pBack">Cancel</button></div></form>`);
+    const f = $("l2pForm"), nameRow = $("l2pName");
+    const sync = () => { nameRow.hidden = !!f.target.value; f.name.required = !f.target.value; };
+    f.target.onchange = sync; sync();
+    $("l2pBack").onclick = closeSheet;
+    f.onsubmit = e => {
+      e.preventDefault();
+      const target = ranked.find(p => p.id === f.target.value);
+      const id = target ? target.id : uid();
+      shapeChange({shape_id: id, kind: "pasture", name: target ? target.name : f.name.value.trim(), coords: ring, source: line.source || "drawn", note: null});
+      shapeChange({shape_id: line.shape_id, kind: line.kind, deleted: true});
+      closeSheet(); toast(`Boundary saved${target ? " for " + target.name : ""}. Status updates in a few minutes.`); renderMap();
+    };
   }
   // A photo tied to a line or boundary: where the phone is, or the middle of the shape when there's no GPS.
   async function attachPhoto(extra) {
