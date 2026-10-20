@@ -142,8 +142,13 @@ def pasture_geometries(pastures: pd.DataFrame) -> dict[str, dict[str, Any]]:
     return {str(r["pasture_id"]): _ring_geometry(r["geometry"]) for r in pastures.to_dict("records")}
 
 
+# Bump when the way NDVI is computed changes: the stored history is then thrown away and rebuilt.
+# 2: don't apply the reflectance offset twice on Earth Search files (earthsearch:boa_offset_applied).
+NDVI_METHOD = 2
+
+
 def geometry_hash(geoms: dict[str, dict[str, Any]]) -> str:
-    return hashlib.sha256(json.dumps(geoms, sort_keys=True).encode()).hexdigest()[:16]
+    return hashlib.sha256(json.dumps({"method": NDVI_METHOD, "geoms": geoms}, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def _bbox(geoms: Iterable[dict[str, Any]]) -> list[float]:
@@ -207,9 +212,15 @@ def _asset(item: dict[str, Any], *names: str) -> dict[str, Any]:
     raise KeyError(f"scene {item.get('id')} has none of {names}")
 
 
-def _scale_offset(asset: dict[str, Any]) -> tuple[float, float]:
+def _scale_offset(asset: dict[str, Any], item: dict[str, Any] | None = None) -> tuple[float, float]:
+    """Reflectance = DN * scale + offset. Since processing baseline 04.00 ESA adds 1000 to every DN (offset -0.1). Earth Search
+    has already taken that back out of its files when the item says earthsearch:boa_offset_applied = true, but raster:bands
+    still lists the -0.1; applying it again pushes dark red pixels to zero or below and NDVI to 1.0."""
     bands = asset.get("raster:bands") or [{}]
-    return float(bands[0].get("scale", 1.0) or 1.0), float(bands[0].get("offset", 0.0) or 0.0)
+    scale, offset = float(bands[0].get("scale", 1.0) or 1.0), float(bands[0].get("offset", 0.0) or 0.0)
+    if item is not None and (item.get("properties") or {}).get("earthsearch:boa_offset_applied") is True:
+        offset = 0.0
+    return scale, offset
 
 
 # --- one scene, whole ranch -----------------------------------------------------------------------
@@ -249,11 +260,12 @@ def scene_pasture_ndvi(item: dict[str, Any], geoms: dict[str, dict[str, Any]]) -
             scl = scl_ds.read(1, window=from_bounds(*array_bounds(h, w, tfm), transform=scl_ds.transform), out_shape=(h, w),
                               resampling=Resampling.nearest)
 
-    rs, ro = _scale_offset(red_a)
-    ns, no = _scale_offset(nir_a)
+    rs, ro = _scale_offset(red_a, item)
+    ns, no = _scale_offset(nir_a, item)
     r = red.filled(0) * rs + ro
     n = nir.filled(0) * ns + no
-    clear = (~np.ma.getmaskarray(red)) & (~np.ma.getmaskarray(nir)) & np.isin(scl, CLEAR_SCL) & (red.filled(0) > 0) & ((r + n) > 0)
+    # Both reflectances must be real (> 0): a zero or negative red would make NDVI 1.0 whatever the ground looks like.
+    clear = (~np.ma.getmaskarray(red)) & (~np.ma.getmaskarray(nir)) & np.isin(scl, CLEAR_SCL) & (r > 0) & (n > 0)
     with np.errstate(divide="ignore", invalid="ignore"):
         ndvi = np.clip((n - r) / (n + r), -1.0, 1.0)
 

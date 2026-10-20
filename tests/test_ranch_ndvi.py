@@ -123,3 +123,15 @@ def test_one_read_per_band_gives_every_pasture_its_value(tmp_path):
     out = scene_pasture_ndvi(item, pasture_geometries(_pastures()))
     assert out["A"][0] == pytest.approx(0.5, abs=0.01) and out["B"][0] == pytest.approx(0.8, abs=0.01)
     assert 0.5 <= out["A"][1] < 0.95                                             # cloudy part left out
+
+    # Earth Search files that already had the offset taken out (earthsearch:boa_offset_applied): same ground, DN without +1000.
+    # raster:bands still says -0.1; applying it again used to make the red <= 0 and NDVI 1.0.
+    for name, arr in (("red", red - 1000), ("nir", nir - 1000)):
+        with rasterio.open(paths[name], "r+") as ds:
+            ds.write(arr.astype("uint16"), 1)
+    item["properties"] = {"earthsearch:boa_offset_applied": True}
+    out = scene_pasture_ndvi(item, pasture_geometries(_pastures()))
+    assert out["A"][0] == pytest.approx(0.5, abs=0.01) and out["B"][0] == pytest.approx(0.8, abs=0.01)
+    # Without the flag the offset is applied: B's red goes negative. Those pixels are now left out instead of counting as 1.0.
+    item["properties"] = {}
+    assert "B" not in scene_pasture_ndvi(item, pasture_geometries(_pastures()))

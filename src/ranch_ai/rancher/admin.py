@@ -307,7 +307,7 @@ def _offset_check(items, geoms) -> None:
         if ok.sum() < 100:
             print(f"offset check {props.get('datetime', '')[:10]}: too few clear pixels"); continue
         rd, nd = red[ok], nir[ok]
-        rs, ro = _scale_offset(red_a); ns, no = _scale_offset(nir_a)
+        rs, ro = _scale_offset(red_a, item); ns, no = _scale_offset(nir_a, item)
         r1, n1 = rd * rs + ro, nd * ns + no
         with np.errstate(divide="ignore", invalid="ignore"):
             with_off = np.clip((n1 - r1) / (n1 + r1), -1, 1)
