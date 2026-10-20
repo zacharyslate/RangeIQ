@@ -50,6 +50,14 @@ The tag list lives in two places, `TAG_LEVELS` in `src/ranch_ai/rancher/status.p
 
 A problem tag (Water low, Fence down, Dead animal…) on a photo or a report feeds the pasture status for 14 days. A serious one (concern level) makes the pasture **Act** on its own, because it is a direct observation. Satellite and weather data still need two things off before they say Act.
 
+## Photos on anything, and one log
+
+- **Add photos to anything:** a report (cow out, fence down, hogs), a rain or cattle-move entry, a job (before and after), a place, or a road, fence or pasture. Use **📷 Add photo** in the form, or open the saved item and add more later. Each photo keeps its GPS spot when the phone has one. If a report has no GPS but one of its photos does, the report takes the photo's spot.
+- **Remove a photo** with the ✕ on its thumbnail. The owner can remove any photo; everyone else can remove their own. Photos added to a form that is then cancelled are thrown away.
+- **A photo knows what it belongs to:** opening it shows **↩ Part of: …** to jump back to the report, job, place or line.
+- **The Log shows everything that was added:** reports, rain, cattle moves, loose photos, new jobs and check-offs, new places, and roads, fences or pastures people drew (pastures imported from a boundary file are left out). Photos show as small thumbnails on the item they belong to. Filters: Jobs, and Places & lines.
+- The map doesn't add a separate pin for a photo that belongs to a report or job; the report or job pin stands for it.
+
 ## Honest limits
 
 - **Green % is a color count, not a forage measurement.** Canopeo was validated for fractional green canopy cover from overhead photos, with good agreement against other methods (Patrignani & Ochsner 2015). Ranch photos are oblique, so the share of the frame that is near ground versus far ground changes the number. Shadows, low sun, and green-tinged water or algae also change it. Use it to compare **the same spot, same direction, similar time of day** (repeat photo points; Hall 2002). Don't use it to compare two different pastures.

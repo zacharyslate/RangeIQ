@@ -193,6 +193,10 @@ class AppStore:
                 conn.execute("ALTER TABLE photos ADD COLUMN place_id TEXT")
             if "shape_id" not in photo_cols:
                 conn.execute("ALTER TABLE photos ADD COLUMN shape_id TEXT")
+            # A photo can belong to a report / rain / cattle-move entry (log_id) or to a job (task_id).
+            for col in ("log_id", "task_id"):
+                if col not in photo_cols:
+                    conn.execute(f"ALTER TABLE photos ADD COLUMN {col} TEXT")
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(invites)").fetchall()}
             if "role" not in cols:
                 conn.execute("ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'crew'")
@@ -355,13 +359,16 @@ class AppStore:
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO photos(client_id, workspace_id, user_id, user_name, taken_at, lat, lon, accuracy_m, heading_deg, "
-                "pasture_id, tags, note, analysis, flagged, bytes, received_at, place_id, shape_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "pasture_id, tags, note, analysis, flagged, bytes, received_at, place_id, shape_id, log_id, task_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (client_id, workspace_id, user_id, user_name, str(meta.get("taken_at") or _iso(utc_now())),
                  num("lat"), num("lon"), num("accuracy_m"), num("heading_deg"), meta.get("pasture_id"),
                  json.dumps(tags), (str(meta.get("note") or "")[:2000]) or None, json.dumps(analysis),
                  1 if meta.get("flagged") else 0, len(image), _iso(utc_now()),
                  (str(meta.get("place_id"))[:64] if meta.get("place_id") else None),
-                 (str(meta.get("shape_id"))[:64] if meta.get("shape_id") else None)),
+                 (str(meta.get("shape_id"))[:64] if meta.get("shape_id") else None),
+                 (str(meta.get("log_id"))[:64] if meta.get("log_id") else None),
+                 (str(meta.get("task_id"))[:64] if meta.get("task_id") else None)),
             )
             row = conn.execute("SELECT * FROM photos WHERE client_id = ?", (client_id,)).fetchone()
         return self._row_to_photo(row), True
@@ -396,6 +403,7 @@ class AppStore:
             "client_id": row["client_id"], "user_id": row["user_id"], "by": row["user_name"], "taken_at": row["taken_at"],
             "lat": row["lat"], "lon": row["lon"], "accuracy_m": row["accuracy_m"], "heading_deg": row["heading_deg"],
             "pasture_id": row["pasture_id"], "tags": json.loads(row["tags"] or "[]"), "note": row["note"], "place_id": row["place_id"], "shape_id": row["shape_id"],
+            "log_id": row["log_id"], "task_id": row["task_id"],
             "analysis": json.loads(row["analysis"] or "{}"), "flagged": bool(row["flagged"]), "received_at": row["received_at"],
         }
 

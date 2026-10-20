@@ -676,6 +676,18 @@ def test_photo_keeps_its_place(client, tmp_path, monkeypatch):
     assert client.get("/api/photos", headers=owner).json()[0]["place_id"] == "pl1"
 
 
+def test_photos_can_belong_to_a_report_or_a_job(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("RANGEIQ_PHOTO_DIR", str(tmp_path / "photos"))
+    owner = _login(client)
+    assert _upload(client, owner, "rp1", log_id="report-1", lat=30.3, lon=-103.6).status_code == 200
+    assert _upload(client, owner, "jb1", task_id="job-1").status_code == 200
+    got = {p["client_id"]: p for p in client.get("/api/photos", headers=owner).json()}
+    assert (got["rp1"]["log_id"], got["rp1"]["task_id"]) == ("report-1", None)
+    assert (got["jb1"]["task_id"], got["jb1"]["log_id"]) == ("job-1", None)
+    assert client.delete("/api/photos/jb1", headers=owner).json() == {"deleted": True}      # removing a photo from a job
+    assert [p["client_id"] for p in client.get("/api/photos", headers=owner).json()] == ["rp1"]
+
+
 def test_usgs_water_map_turns_ponds_and_springs_into_pins(tmp_path):
     from ranch_ai.rancher.water_map import water_features
 
