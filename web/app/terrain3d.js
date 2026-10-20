@@ -42,6 +42,34 @@ export function fromUTM(x, y, zone, south) {
 
 // Walls and lines are sized on screen, not on the ground: their height and thickness follow the camera distance
 // (uniforms updated every frame), so they stay readable zoomed out and get out of the way zoomed in.
+
+// A point well inside a pasture for its flag: the centroid when it's inside, otherwise the middle of the widest
+// stretch across the shape (U- and L-shaped pastures have their centroid outside).
+export function interiorPoint(ring) {
+  const pts = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : ring;
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [x0, y0] = pts[i], [x1, y1] = pts[(i + 1) % pts.length], k = x0 * y1 - x1 * y0;
+    a += k; cx += (x0 + x1) * k; cy += (y0 + y1) * k;
+  }
+  if (a !== 0) { cx /= 3 * a; cy /= 3 * a; } else { cx = pts.reduce((s, p) => s + p[0], 0) / pts.length; cy = pts.reduce((s, p) => s + p[1], 0) / pts.length; }
+  const inside = (x, y) => { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+  if (inside(cx, cy)) return [cx, cy];
+  const ys = pts.map(p => p[1]), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  let best = null, bestW = -1;
+  for (const f of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+    const y = y0 + (y1 - y0) * f, xs = [];
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, yi] = pts[i], [xj, yj] = pts[j];
+      if ((yi > y) !== (yj > y)) xs.push(xi + (y - yi) * (xj - xi) / (yj - yi));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) if (xs[k + 1] - xs[k] > bestW) { bestW = xs[k + 1] - xs[k]; best = [(xs[k] + xs[k + 1]) / 2, y]; }
+  }
+  return best || [cx, cy];
+}
+
 const WALL_VERT = `
   attribute float v;
   uniform float uHeight;
@@ -165,13 +193,15 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   const walls = new THREE.Group(), labels = new THREE.Group();
   scene.add(walls); scene.add(labels);
   const wallMats = [];
-  function label(text, color) {
-    const c = document.createElement("canvas"), g = c.getContext("2d"), f = 36;
-    g.font = `700 ${f}px system-ui, sans-serif`; const w = Math.ceil(g.measureText(text).width) + 30;
+  function label(text, color) {              // a flag: status-coloured pennant + pasture name
+    const c = document.createElement("canvas"), g = c.getContext("2d"), f = 36, hex = "#" + color.toString(16).padStart(6, "0");
+    g.font = `700 ${f}px system-ui, sans-serif`; const w = Math.ceil(g.measureText(text).width) + 30 + 44;
     c.width = w; c.height = f + 22;
-    g.fillStyle = "rgba(20,22,40,.78)"; g.strokeStyle = "#" + color.toString(16).padStart(6, "0"); g.lineWidth = 5;
+    g.fillStyle = "rgba(20,22,40,.82)"; g.strokeStyle = hex; g.lineWidth = 5;
     g.beginPath(); g.roundRect(3, 3, w - 6, f + 16, 14); g.fill(); g.stroke();
-    g.fillStyle = "#fff"; g.font = `700 ${f}px system-ui, sans-serif`; g.textBaseline = "middle"; g.fillText(text, 15, (f + 22) / 2);
+    g.fillStyle = "#fff"; g.fillRect(16, 10, 4, f + 2);                                    // pole
+    g.fillStyle = hex; g.beginPath(); g.moveTo(20, 10); g.lineTo(48, 20); g.lineTo(20, 30); g.closePath(); g.fill();   // pennant
+    g.fillStyle = "#fff"; g.font = `700 ${f}px system-ui, sans-serif`; g.textBaseline = "middle"; g.fillText(text, 15 + 44, (f + 22) / 2);
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(c), depthTest: false}));
     sp.userData.aspect = w / (f + 22); sp.userData.k = 0.045; sp.renderOrder = 10; return sp;
   }
@@ -204,7 +234,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     m.userData.widthMul = widthMul; list.push(m); return m;
   }
   function drawWalls() {
-    walls.children.forEach(o => o.geometry.dispose()); walls.clear();
+    walls.children.forEach(o => { o.geometry.dispose(); if (o.userData.isPole) o.material.dispose(); }); walls.clear();
     labels.children.forEach(o => { o.material.map.dispose(); o.material.dispose(); }); labels.clear();
     wallMats.forEach(m => m.dispose()); wallMats.length = 0;
     lineMats.forEach(m => m.dispose()); lineMats.length = 0;
@@ -229,9 +259,16 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
       const path = straightPath(pts.map(([x, y]) => toScene(x, y, 0.001)), true);
       const line = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, TUBE_R0, 5, false), tubeMaterial(color, focus ? 1.6 : 1));
       line.renderOrder = 5; walls.add(line);
-      if (meta.outlines.length <= 25 || focus) {
-        let sx = 0, sy = 0; o.ring.forEach(([x, y]) => { sx += x; sy += y; }); sx /= o.ring.length; sy /= o.ring.length;
-        const sp = label(namesById[o.id] || o.name, color); sp.position.copy(toScene(sx, sy, 0.002)); sp.userData.ground = sp.position.y; labels.add(sp);
+      {                                        // every pasture gets a flag; it's also the easiest thing to tap on a phone
+        const [sx, sy] = interiorPoint(o.ring);
+        const sp = label(namesById[o.id] || o.name, color); sp.position.copy(toScene(sx, sy, 0.002));
+        sp.center.set(0.5, 0);                 // flag sits on top of its pole
+        sp.userData.ground = sp.position.y; sp.userData.pasture = o.id;
+        if (meta.outlines.length > 25) sp.userData.k = 0.032;
+        labels.add(sp);
+        const pole = new THREE.Line(new THREE.BufferGeometry().setFromPoints([sp.position.clone(), sp.position.clone()]),
+          new THREE.LineBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false}));
+        pole.renderOrder = 9; pole.userData.isPole = true; pole.userData.flag = sp; walls.add(pole);
       }
     }
   }
@@ -314,8 +351,11 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   let down = null, picker = null;
   renderer.domElement.addEventListener("pointerdown", e => { down = [e.clientX, e.clientY]; });
-  renderer.domElement.addEventListener("pointerup", e => {
-    if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 8) return;
+  // Select on "click", not "pointerup". On a touchscreen the browser sends a click after the finger lifts, aimed at
+  // whatever is on top by then; if the pasture sheet opened on pointerup, that click hit the sheet's backdrop and
+  // closed it straight away. That's why tapping pastures worked with a mouse but not on phones.
+  renderer.domElement.addEventListener("click", e => {
+    if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 14) return;     // a finger tap moves a little
     const r = renderer.domElement.getBoundingClientRect();
     ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
@@ -326,6 +366,8 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
       const cb = picker; picker = null; renderer.domElement.style.cursor = ""; cb(lat, lon); return;
     }
     const hitPin = ray.intersectObjects(pins.children.filter(o => o.isSprite))[0];
+    const hitFlag = !hitPin && labels.visible && ray.intersectObjects(labels.children)[0];
+    if (hitFlag && hitFlag.object.userData.pasture) { onPasture(hitFlag.object.userData.pasture); return; }
     if (hitPin) { onPhoto(hitPin.object.userData.photo); return; }
     const hit = ray.intersectObject(mesh)[0]; if (!hit) return;
     const x = hit.point.x / S + W / 2, y = H / 2 - hit.point.z / S;
@@ -384,6 +426,10 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     lineMats.forEach(m => { m.uniforms.uRadius.value = r * m.userData.widthMul; });
     roadMats.forEach(m => { m.uniforms.uRadius.value = r * 0.8 * m.userData.widthMul; });
     for (const sp of labels.children) sp.position.y = sp.userData.ground + wallH + d * 0.03;
+    for (const pole of walls.children) if (pole.userData.isPole) {          // flag pole from the ground up to the flag
+      const p = pole.geometry.attributes.position, sp = pole.userData.flag;
+      p.setXYZ(0, sp.position.x, sp.userData.ground, sp.position.z); p.setXYZ(1, sp.position.x, sp.position.y, sp.position.z); p.needsUpdate = true;
+    }
     wallMats.forEach(m => { m.uniforms.time.value = t; if (m.userData.pulse) m.uniforms.strength.value = 1.15 + 0.25 * Math.sin(t * 3); });
     wallMats.forEach(m => { if (!m.userData.pulse) m.uniforms.strength.value = closeFade; else m.uniforms.strength.value *= closeFade; });
     for (const sp of [...labels.children, ...pins.children.filter(o => o.isSprite)]) {
@@ -413,6 +459,11 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     setPasturesVisible(on) { walls.visible = labels.visible = !!on; },
     pickOnce(cb) { picker = cb; renderer.domElement.style.cursor = "crosshair"; },
     cancelPick() { picker = null; renderer.domElement.style.cursor = ""; },
+    flagPositions() {                              // where each pasture flag is on screen (used by the browser tests)
+      const r = renderer.domElement.getBoundingClientRect();
+      return labels.children.map(sp => { const v = sp.position.clone().project(camera);
+        return {id: sp.userData.pasture, x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height}; });
+    },
     focus(lat, lon) {                              // fly to a GPS point
       const xy = localXY(lat, lon); if (!xy) return false;
       const target = toScene(xy[0], xy[1]);

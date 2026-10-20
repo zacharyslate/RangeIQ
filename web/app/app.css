@@ -335,3 +335,12 @@ body.drawing #v-map .map{height:calc(100dvh - 300px - env(safe-area-inset-bottom
   border-bottom:14px solid #2b7de9;transform-origin:7px 24px}
 #exagRow{align-items:center}
 #exagSlider{flex:1;min-width:140px;accent-color:var(--accent);height:32px}
+
+/* pasture flags (2D map): pole + status pennant, name shows once zoomed in; the whole flag is the tap target */
+.pflag-at{width:0;height:0}
+.pflag{position:absolute;left:-3px;bottom:0;display:flex;align-items:flex-end;min-height:40px;padding:0 6px 0 0;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.pflag i{position:relative;width:3px;height:34px;background:#fff;border-radius:2px;box-shadow:0 0 2px rgba(0,0,0,.7);flex:none}
+.pflag i::after{content:"";position:absolute;left:3px;top:0;border-left:20px solid var(--c);border-top:8px solid transparent;border-bottom:8px solid transparent;filter:drop-shadow(0 0 1px rgba(0,0,0,.8))}
+.pflag span{display:none;position:absolute;left:1px;bottom:36px;transform:translateX(-50%);background:rgba(20,22,40,.82);color:#fff;border:2px solid var(--c);border-radius:8px;padding:3px 8px;font-weight:700;font-size:.8rem;white-space:nowrap}
+.flag-names .pflag span{display:block}
+.pflag::before{content:"";position:absolute;left:-14px;right:-6px;top:-4px;bottom:-8px}

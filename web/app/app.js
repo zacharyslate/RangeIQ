@@ -417,6 +417,33 @@
       <span class="go" aria-hidden="true">›</span><span class="why">${esc(p.headline)}</span></button></li>`;
   }
   function setPressed(sel, attr, val) { document.querySelectorAll(sel).forEach(b => b.setAttribute("aria-pressed", String(b.dataset[attr] === String(val)))); }
+  // A point well inside a pasture ([lon, lat] ring): the centroid if it's inside, else the middle of the widest
+  // stretch across it (U- and L-shaped pastures have their centroid outside). Same as terrain3d.js interiorPoint.
+  function interiorPoint(ring) {
+    const pts = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : ring;
+    let a = 0, cx = 0, cy = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const [x0, y0] = pts[i], [x1, y1] = pts[(i + 1) % pts.length], k = x0 * y1 - x1 * y0;
+      a += k; cx += (x0 + x1) * k; cy += (y0 + y1) * k;
+    }
+    if (a !== 0) { cx /= 3 * a; cy /= 3 * a; } else { cx = pts.reduce((s, p) => s + p[0], 0) / pts.length; cy = pts.reduce((s, p) => s + p[1], 0) / pts.length; }
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, yi] = pts[i], [xj, yj] = pts[j]; if ((yi > cy) !== (yj > cy) && cx < (xj - xi) * (cy - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    if (inside) return [cx, cy];
+    const ys = pts.map(p => p[1]), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    let best = null, bestW = -1;
+    for (const f of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+      const y = y0 + (y1 - y0) * f, xs = [];
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const [xi, yi] = pts[i], [xj, yj] = pts[j]; if ((yi > y) !== (yj > y)) xs.push(xi + (y - yi) * (xj - xi) / (yj - yi));
+      }
+      xs.sort((p, q) => p - q);
+      for (let k = 0; k + 1 < xs.length; k += 2) if (xs[k + 1] - xs[k] > bestW) { bestW = xs[k + 1] - xs[k]; best = [(xs[k] + xs[k + 1]) / 2, y]; }
+    }
+    return best || [cx, cy];
+  }
   async function renderMap() {
     setPressed("[data-mapmode]", "mapmode", mapMode); setPressed("[data-look]", "look", look);
     $("lookSeg").hidden = $("exagRow").hidden = mapMode !== "3d";
@@ -451,9 +478,26 @@
       const poly = L.polygon(o.ll, {color: canEditBoundaries() ? "#ffd84d" : "#fff", weight: 2, dashArray: canEditBoundaries() ? "6 4" : null,
         fillColor: layers.colors && st ? (COLOR[st] || "#888") : "#ffffff", fillOpacity: layers.colors && st ? .4 : .12})
         .on("click", () => { if (mapPicker || draft) return; if (o.drawn) openShape(o.id); else openPastureSheet(o.id); });
-      poly.bindTooltip(esc(o.name), {permanent: outlines.length <= 8, direction: "center", className: "maplabel"});
       poly.addTo(map); mapLayers.push(poly);
+      // A flag in the middle of each pasture: a big, easy target for a finger (tapping inside a thin outline on a phone
+      // often lands on the neighbour or starts a pan).
+      const [fx, fy] = interiorPoint(o.ll.map(([lat, lon]) => [lon, lat]));
+      const flag = L.marker([fy, fx], {keyboard: false, riseOnHover: true, title: o.name,
+        icon: L.divIcon({className: "pflag-at", iconSize: null, html:
+          `<div class="pflag" style="--c:${layers.colors && st ? (COLOR[st] || "#888") : "#fff"}"><i></i><span>${esc(o.name)}</span></div>`})})
+        .on("click", e => {
+          L.DomEvent.stop(e);
+          // While placing something or drawing, a tap on a flag means "here": hand the spot to the map.
+          if (mapPicker || draft) { map.fire("click", {latlng: map.mouseEventToLatLng(e.originalEvent)}); return; }
+          if (o.drawn) openShape(o.id); else openPastureSheet(o.id);
+        });
+      flag.addTo(map); mapLayers.push(flag);
     });
+    // Names show once pastures are wide enough on screen for them not to pile on top of each other.
+    const widths = () => outlines.map(o => { const b = L.latLngBounds(o.ll);
+      return map.latLngToContainerPoint(b.getNorthEast()).x - map.latLngToContainerPoint(b.getSouthWest()).x; }).sort((p, q) => p - q);
+    const names = () => { if (!map._loaded) return; const w = widths(); map.getContainer().classList.toggle("flag-names", !!w.length && w[w.length >> 1] >= 120); };
+    if (map._flagNames) map.off("zoomend", map._flagNames); map._flagNames = names; map.on("zoomend", names);
     shapes.filter(x => x.kind !== "pasture" && layers[lineLayerKey(x.kind)] !== false && !(draft && draft.shape_id === x.shape_id)).forEach(x => {
       const ln = L.polyline(x.coords.map(([lon, lat]) => [lat, lon]), lineStyle(x.kind)).on("click", e => { if (mapPicker || draft) return; L.DomEvent.stop(e); openShape(x.shape_id); });
       ln.bindTooltip(esc(x.name), {sticky: true, className: "maplabel"});
@@ -466,6 +510,7 @@
       m.addTo(map); mapLayers.push(m);
     });
     map.invalidateSize(); if (first && all.length) map.fitBounds(all, {padding: [20, 20]}); else if (first && rawSnap && rawSnap.ranch) map.setView([rawSnap.ranch.center[1], rawSnap.ranch.center[0]], 14);
+    names();
     $("lockNote").hidden = !canEditBoundaries();
     renderDraft(); startHere(); drawHere();
   }
@@ -519,6 +564,7 @@
       snap.pastures.forEach(p => { namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
       view3d = mod.mount(box, {meta, height: height.bytes, texture, statusById: statusMap(), namesById, lonlatById, look, exaggeration: exag,
         photos: mapItems(), onPhoto: id => { if (!picking()) openItem(id); }, onPasture: id => { if (!picking()) openPastureSheet(id); }});
+      if (/^(localhost|127\.)/.test(location.hostname)) window.__riq3d = view3d;     // browser tests only
       view3d.meta = meta; view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); startHere(); drawHere();
     } catch (e) {
       if (e.signin) { show("login"); return; }
