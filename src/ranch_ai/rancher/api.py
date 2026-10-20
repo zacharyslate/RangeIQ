@@ -397,6 +397,27 @@ def create_app(
                 errors.append({"client_id": entry.get("client_id"), "error": str(exc)})
         return {"saved": saved, "errors": errors}
 
+    @app.post("/api/resolve")
+    def resolve(payload: Any = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        """Mark problem reports / photos resolved or reopen them: [{item_id, resolved, at, note}]. Anyone on the ranch."""
+        items = payload if isinstance(payload, list) else [payload]
+        if len(items) > 200 or not all(isinstance(i, dict) for i in items):
+            raise HTTPException(status_code=400, detail="Send a list of at most 200 changes.")
+        saved, errors = [], []
+        for it in items:
+            item_id = str(it.get("item_id") or "")[:64]
+            try:
+                app.state.store.resolve(sess["workspace_id"], item_id, bool(it.get("resolved")), user_id=sess["user_id"], user_name=who(sess),
+                                        at=it.get("at"), note=it.get("note"))
+                saved.append(item_id)
+            except LookupError as exc:
+                errors.append({"item_id": item_id, "error": str(exc), "retry": True})
+            except ValueError as exc:
+                errors.append({"item_id": item_id, "error": str(exc)})
+        if saved:      # update pasture status soon instead of at the next hourly run
+            ranch_setup.request_refresh(sess["workspace_id"])
+        return {"saved": saved, "errors": errors}
+
     @app.delete("/api/logs/{client_id}")
     def delete_log(client_id: str, sess: dict[str, str] = Depends(session)) -> dict[str, bool]:
         if sess["role"] != "owner" and app.state.store.log_user(sess["workspace_id"], client_id) not in {None, sess["user_id"]}:

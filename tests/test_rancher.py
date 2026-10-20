@@ -879,3 +879,67 @@ def test_admin_summary_says_when_3d_is_behind_a_redrawn_boundary(tmp_path, monke
                      user_id="u", user_name="Zach", is_owner=True, boundaries_locked=False)
     admin.summary()
     assert "outlines match the current pastures: NO, waiting for a rebuild" in capsys.readouterr().out
+
+
+def test_anyone_can_resolve_a_problem_and_a_done_job_resolves_its_report(client, tmp_path, monkeypatch):
+    from ranch_ai.rancher.status import field_report_signal
+
+    monkeypatch.setenv("RANGEIQ_PHOTO_DIR", str(tmp_path / "photos"))
+    owner = _login(client)
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    hand = {"Authorization": "Bearer " + client.post("/api/join", json={"code": code, "name": "Luis", "email": "luis@example.com",
+                                                                        "password": "HandPass123"}).json()["token"]}
+    client.cookies.clear()
+    now = datetime.now(timezone.utc)
+    t0 = lambda s: (now + timedelta(seconds=s)).isoformat()   # noqa: E731
+    client.post("/api/logs", headers=owner, json=[{"client_id": "r1", "kind": "note", "tags": ["Cattle out"], "pasture_id": "P1", "logged_at": t0(0)},
+                                                  {"client_id": "r2", "kind": "note", "tags": ["Fence down"], "pasture_id": "P2", "logged_at": t0(0)}])
+    logs = lambda: {l["client_id"]: l for l in client.get("/api/logs", headers=owner).json()}   # noqa: E731
+    pasture_reports = lambda pid: [l for l in logs().values() if l["pasture_id"] == pid and not l.get("resolved_at")]   # noqa: E731
+    assert field_report_signal(pasture_reports("P1")).level == "concern"
+
+    # a hand resolves the cattle-out report (crew can); it stops counting toward the pasture's status
+    res = client.post("/api/resolve", headers=hand, json=[{"item_id": "r1", "resolved": True, "at": t0(10), "note": "All 12 back in"},
+                                                          {"item_id": "nope", "resolved": True, "at": t0(10)}]).json()
+    assert res["saved"] == ["r1"] and res["errors"][0]["retry"] is True
+    r1 = logs()["r1"]
+    assert (r1["resolved_by"], r1["resolve_note"]) == ("Luis", "All 12 back in") and field_report_signal(pasture_reports("P1")) is None
+    # a late, older change from another phone doesn't undo it; a newer reopen does
+    client.post("/api/resolve", headers=owner, json={"item_id": "r1", "resolved": False, "at": t0(5)})
+    assert logs()["r1"].get("resolved_at")
+    client.post("/api/resolve", headers=owner, json={"item_id": "r1", "resolved": False, "at": t0(20)})
+    assert not logs()["r1"].get("resolved_at")
+
+    # a job made from the fence report: checking it off resolves the report, undoing reopens it
+    client.post("/api/tasks", headers=owner, json=[{"op_id": "a1", "op": "add", "task_id": "j1", "title": "Fix fence", "source_id": "r2", "at": t0(1)}])
+    client.post("/api/tasks", headers=hand, json=[{"op_id": "d1", "op": "done", "task_id": "j1", "at": t0(30)}])
+    r2 = logs()["r2"]
+    assert r2["resolved_by"] == "Luis" and r2["resolved_via"] == "j1" and r2["resolve_note"] == "Job done: Fix fence"
+    client.post("/api/tasks", headers=hand, json=[{"op_id": "u1", "op": "undo", "task_id": "j1", "at": t0(40)}])
+    assert not logs()["r2"].get("resolved_at")
+    # photos can be resolved too
+    assert _upload(client, owner, "ph1", tags=["Water low"], pasture_id="P1").status_code == 200
+    client.post("/api/resolve", headers=hand, json={"item_id": "ph1", "resolved": True, "at": t0(50)})
+    assert client.get("/api/photos", headers=owner).json()[0]["resolved_by"] == "Luis"
+
+
+def test_snapshot_ignores_resolved_reports():
+    import pandas as pd
+    from ranch_ai.config import Settings
+    from ranch_ai.rancher import snapshot as snap_mod
+    from ranch_ai.utils.io import load_pastures
+
+    s = Settings()
+    for name in ("historical_weather", "soils", "drought", "vegetation"):
+        getattr(s.public_data, name).provider = "mock"
+    s.weather.provider = s.alerts.provider = "mock"
+    pastures = load_pastures()
+    pid = str(pastures.iloc[0]["pasture_id"])
+    now = datetime.now(timezone.utc).isoformat()
+    report = {"client_id": "r1", "kind": "note", "tags": ["Cattle out"], "pasture_id": pid, "logged_at": now}
+    field = lambda snap: [g for p in snap["pastures"] if p["id"] == pid for g in p["signals"] if g["key"] == "field"]   # noqa: E731
+    open_snap = snap_mod.build_snapshot(s, pastures, logs=[report], include_terrain=False, today=pd.Timestamp(now[:10]))
+    assert field(open_snap) and field(open_snap)[0]["level"] == "concern"
+    done_snap = snap_mod.build_snapshot(s, pastures, logs=[{**report, "resolved_at": now, "resolved_by": "Luis"}],
+                                        include_terrain=False, today=pd.Timestamp(now[:10]))
+    assert field(done_snap) == []

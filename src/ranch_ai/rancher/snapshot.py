@@ -361,8 +361,9 @@ def build_snapshot(
         occ = occupancy_signal(herd_info.get("days_in"), herd_info.get("days_rested"))
         if occ is not None:
             signals.append(occ)
-        reports = [p for p in (photos or []) if p.get("pasture_id") == pid] + \
-                  [l for l in (logs or []) if l.get("kind") == "note" and l.get("pasture_id") == pid and l.get("tags")]
+        # Resolved problems (cattle back in, fence fixed) no longer count toward the pasture's status.
+        reports = [p for p in (photos or []) if p.get("pasture_id") == pid and not p.get("resolved_at")] + \
+                  [l for l in (logs or []) if l.get("kind") == "note" and l.get("pasture_id") == pid and l.get("tags") and not l.get("resolved_at")]
         field = field_report_signal(reports)
         if field is not None:
             signals.insert(0, field)
