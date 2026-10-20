@@ -264,6 +264,10 @@ def diagnose_ranch_greenness(workspace_id: str) -> int:
                   f"read in {_time.monotonic() - t0:.1f}s (one read per band for the whole ranch)")
         except Exception as exc:  # noqa: BLE001
             print(f"FAIL scene read: {type(exc).__name__}: {str(exc)[:200]}"); return 1
+        try:
+            _offset_check(kept[:6], geoms)
+        except Exception as exc:  # noqa: BLE001 - diagnostics only
+            print(f"offset check failed: {type(exc).__name__}: {str(exc)[:200]}")
     store = RanchNDVIStore(default_settings.vegetation_cache_dir / "ranch_ndvi.sqlite")
     states = store.scene_states(workspace_id)
     done = sum(1 for st in states.values() if st["status"] in {"done", "empty"})
@@ -274,6 +278,46 @@ def diagnose_ranch_greenness(workspace_id: str) -> int:
           + f"; greenness vs. normal ready for {have}/{len(geoms)} pastures")
     _greenness_table(store.history(workspace_id), anomalies, pastures)
     return 0
+
+
+def _offset_check(items, geoms) -> None:
+    """Is the -0.1 reflectance offset (processing baseline 04.00+) already removed from the files? Prints item metadata and
+    raw red/NIR numbers inside the ranch, and NDVI computed with and without the offset (numbers only)."""
+    import numpy as np
+    import rasterio
+    from rasterio.warp import transform_geom
+    from rasterio.windows import from_bounds
+
+    from ranch_ai.vegetation.ranch_ndvi import CLEAR_SCL, _asset, _bbox, _scale_offset
+
+    for item in items:
+        props = item.get("properties", {})
+        keys = {k: v for k, v in props.items() if any(w in k.lower() for w in ("offset", "baseline", "harmon"))}
+        red_a, nir_a, scl_a = _asset(item, "red", "B04"), _asset(item, "nir", "B08"), _asset(item, "scl", "SCL")
+        with rasterio.Env(AWS_NO_SIGN_REQUEST="YES", GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"):
+            with rasterio.open(red_a["href"]) as ds:
+                proj = [transform_geom("EPSG:4326", ds.crs, g) for g in geoms.values()]
+                win = from_bounds(*_bbox(proj), transform=ds.transform)
+                red = ds.read(1, window=win, boundless=True, fill_value=0).astype("float64")
+            with rasterio.open(nir_a["href"]) as ds:
+                nir = ds.read(1, window=win, boundless=True, fill_value=0, out_shape=red.shape).astype("float64")
+            with rasterio.open(scl_a["href"]) as ds:
+                scl = ds.read(1, window=from_bounds(*_bbox(proj), transform=ds.transform), boundless=True, fill_value=0, out_shape=red.shape)
+        ok = (red > 0) & (nir > 0) & np.isin(scl, CLEAR_SCL)
+        if ok.sum() < 100:
+            print(f"offset check {props.get('datetime', '')[:10]}: too few clear pixels"); continue
+        rd, nd = red[ok], nir[ok]
+        rs, ro = _scale_offset(red_a); ns, no = _scale_offset(nir_a)
+        r1, n1 = rd * rs + ro, nd * ns + no
+        with np.errstate(divide="ignore", invalid="ignore"):
+            with_off = np.clip((n1 - r1) / (n1 + r1), -1, 1)
+            raw = (nd - rd) / (nd + rd)
+        pct = lambda a, q: float(np.nanpercentile(a, q))   # noqa: E731
+        print(f"offset check {props.get('datetime', '')[:10]} {keys} red scale/offset {rs}/{ro}")
+        print(f"   red DN p0.1/p1/p50/p99: {pct(rd, .1):.0f}/{pct(rd, 1):.0f}/{pct(rd, 50):.0f}/{pct(rd, 99):.0f}; "
+              f"nir DN p1/p50: {pct(nd, 1):.0f}/{pct(nd, 50):.0f}; red<=0 after offset: {100 * float((r1 <= 0).mean()):.1f}%")
+        print(f"   NDVI median as computed now (offset applied): {np.nanmedian(with_off):.3f}; raw DN (no offset): {np.nanmedian(raw):.3f}; "
+              f"share at 1.0 now: {100 * float((with_off >= 0.999).mean()):.1f}%")
 
 
 def _greenness_table(history, anomalies, pastures) -> None:
