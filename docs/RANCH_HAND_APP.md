@@ -63,7 +63,7 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 ## 3D view
 
 - **Glowing walls**: each pasture boundary is a wall that fades upward. Green means Good, gold means Watch, red (pulsing) means Act. There is also a bright line on the ground so the boundary reads from straight above.
-- **Pasture flags**: every pasture has a flag near its middle, coloured like its status (on both the flat map and 3D). Tap the flag to open the pasture; that's the easy target on a phone. On the flat map the names appear once you zoom in far enough for them not to pile up. While you're placing a pin or drawing, tapping a flag counts as tapping the map at that spot.
+- **Pasture flags**: every pasture has a flag near its middle, coloured like its status (on both the flat map and 3D). Tap the flag to open the pasture; that's the easy target on a phone. On the flat map the names appear once you zoom in far enough for them not to pile up. While you're placing a pin or drawing, tapping a flag counts as tapping the map at that spot. Turn flags off under Layers → **Pasture flags**; tapping inside a pasture still opens it.
 - **Photo** look: the USDA NAIP aerial photo, under a low evening sun.
 - **Topo** look: earth-tone elevation colors with hillshade from the north-west and contour lines. The interval is picked to give about 10–14 lines (for example "every 20 ft"), with every fifth line darker.
 - Photo pins are placed by converting the phone's GPS to the terrain's UTM grid in the browser (Snyder 1987 formulas). This matches rasterio to under a millimetre.
