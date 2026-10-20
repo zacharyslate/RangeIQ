@@ -88,7 +88,9 @@ class _NoStoreStatic(StaticFiles):
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
         response = await super().get_response(path, scope)
-        if path.endswith("sw.js") or path in {"", "index.html"}:
+        # App files are small and change with each release: always check with the server (the service worker keeps
+        # the offline copy). Without this, phones may reuse an old file by guesswork and mix old and new code.
+        if not path.startswith("vendor/") and not path.endswith(".png"):
             response.headers["Cache-Control"] = "no-cache"
         return response
 

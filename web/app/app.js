@@ -58,7 +58,7 @@
       signals: p.signals}))};
   }
   let rawSnap = store.get("snapshot", null), snap = viewOf(rawSnap), snapAt = store.get("snapshotAt", null);
-  function setHideEveryday(on) { store.set("hideEveryday", !!on); snap = viewOf(rawSnap); if (view3d) view3d.setStatuses(statusMap()); rerender(); }
+  function setHideEveryday(on) { store.set("hideEveryday", !!on); snap = viewOf(rawSnap); if (view3d) view3d.setStatuses?.(statusMap()); rerender(); }
   let me = store.get("me", null);
   let photos = store.get("photos", []), serverLogs = store.get("serverLogs", []);
   let pending = [];                      // photos waiting to upload (from IndexedDB), with object URLs
@@ -490,7 +490,7 @@
       hereLayers.push(L.marker([here.lat, here.lon], {interactive: false, zIndexOffset: 1000, icon: L.divIcon({className: "", iconSize: [26, 26], iconAnchor: [13, 13],
         html: `<div class="me">${here.heading != null ? `<i style="transform:rotate(${here.heading}deg)"></i>` : ""}</div>`})}).addTo(map));
     }
-    if (view3d && view3d.setHere) view3d.setHere(here);
+    if (view3d && view3d.setHere) view3d.setHere(here);   // (an older 3D file has no marker; skip it)
   }
   function centerOnMe() {
     if (!here) { hereFollowNext = true; startSensors(); startHere(); toast("Finding you…"); return; }
@@ -508,7 +508,7 @@
   }
   async function render3d() {
     const box = $("map3d");
-    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses(statusMap()); view3d.setPasturesVisible(layers.pastures); view3d.setLines(lines3d()); src3d(); return; }
+    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses?.(statusMap()); view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); src3d(); return; }
     box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
     try {
       // The height and photo files are cached by the phone, so ask for them by build date: a rebuilt terrain gets new files.
@@ -519,7 +519,7 @@
       snap.pastures.forEach(p => { namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
       view3d = mod.mount(box, {meta, height: height.bytes, texture, statusById: statusMap(), namesById, lonlatById, look, exaggeration: exag,
         photos: mapItems(), onPhoto: id => { if (!picking()) openItem(id); }, onPasture: id => { if (!picking()) openPastureSheet(id); }});
-      view3d.meta = meta; view3d.setPasturesVisible(layers.pastures); view3d.setLines(lines3d()); src3d(); startHere(); drawHere();
+      view3d.meta = meta; view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); src3d(); startHere(); drawHere();
     } catch (e) {
       if (e.signin) { show("login"); return; }
       // No 3D yet (or no WebGL / no signal): fall back to the flat map so the console still works.
