@@ -553,7 +553,7 @@
   }
   async function render3d() {
     const box = $("map3d");
-    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses?.(statusMap()); view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); return; }
+    if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses?.(statusMap()); view3d.setPastures?.(pastures3d()); view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); return; }
     box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
     try {
       // The height and photo files are cached by the phone, so ask for them by build date: a rebuilt terrain gets new files.
@@ -563,9 +563,10 @@
       const namesById = {}, lonlatById = {};
       snap.pastures.forEach(p => { namesById[p.id] = p.name; lonlatById[p.id] = p.outline; });
       view3d = mod.mount(box, {meta, height: height.bytes, texture, statusById: statusMap(), namesById, lonlatById, look, exaggeration: exag,
-        photos: mapItems(), onPhoto: id => { if (!picking()) openItem(id); }, onPasture: id => { if (!picking()) openPastureSheet(id); }});
+        photos: mapItems(), onPhoto: id => { if (!picking()) openItem(id); }, onPasture: id => { if (picking()) return;
+          if (snap && snap.pastures.some(p => p.id === id)) openPastureSheet(id); else if (shapes.some(s2 => s2.shape_id === id)) openShape(id); }});
       if (/^(localhost|127\.)/.test(location.hostname)) window.__riq3d = view3d;     // browser tests only
-      view3d.meta = meta; view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); startHere(); drawHere();
+      view3d.meta = meta; view3d.setPastures?.(pastures3d()); view3d.setPasturesVisible?.(layers.pastures); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); startHere(); drawHere();
     } catch (e) {
       if (e.signin) { show("login"); return; }
       // No 3D yet (or no WebGL / no signal): fall back to the flat map so the console still works.
@@ -587,6 +588,10 @@
       else { mapPicker = done; $("map").style.cursor = "crosshair"; }
     }, 300);
   }
+  // The pastures as they are now (drawn/edited ones win), for the 3D walls and flags.
+  const pastures3d = () => { const drawn = pastureShapes();
+    return drawn.length ? drawn.map(x => ({id: x.shape_id, name: x.name, coords: x.coords}))
+      : (snap ? snap.pastures.filter(p => p.outline && p.outline.length > 2).map(p => ({id: p.id, name: p.name, coords: p.outline})) : []); };
   const lines3d = () => shapes.filter(x => x.kind !== "pasture" && layers[lineLayerKey(x.kind)] !== false)
     .map(x => ({id: x.shape_id, coords: x.coords, color: (LINE_TYPES[x.kind] || LINE_TYPES.other_line).color, width: (LINE_TYPES[x.kind] || {}).weight || 3}));
   function renderLayerCard() {

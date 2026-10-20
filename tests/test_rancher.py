@@ -837,3 +837,33 @@ def test_3d_code_is_never_served_stale(client):
     web = client.app.routes  # app files are served with Cache-Control: no-cache (vendor/ and images excepted)
     r = client.get("/app/")
     assert r.headers.get("cache-control") == "no-cache"
+
+
+def test_admin_summary_says_when_3d_is_behind_a_redrawn_boundary(tmp_path, monkeypatch, capsys):
+    """The server summary (public CI output) reports drawn shapes by kind and whether the 3D build matches them,
+    with no names or coordinates."""
+    from ranch_ai.rancher import admin, worker
+
+    store = AppStore(tmp_path / "app.sqlite")
+    ws = "ws1"
+    store.save_snapshot(ws, {"generated_at": datetime.now(timezone.utc).isoformat(), "pastures": [], "counts": {}, "sources": []})
+    ring = [[-103.5, 29.6], [-103.49, 29.6], [-103.49, 29.61], [-103.5, 29.61]]
+    for sid, kind, coords in [("P1", "pasture", ring), ("F1", "fence", ring[:2])]:
+        store.save_shape(ws, {"shape_id": sid, "kind": kind, "name": "Secret name", "coords": coords,
+                              "updated_at": datetime.now(timezone.utc).isoformat()}, user_id="u", user_name="Zach",
+                         is_owner=True, boundaries_locked=False)
+    meta = {"nx": 2, "ny": 2, "dem_source": "usgs_3dep", "dem_resolution_m": 10, "texture_source": "naip",
+            "outline_hash": worker.outline_hash(worker.drawn_pastures(ws, store)), "updated_at": "2026-10-20T10:00:00Z"}
+    store.save_terrain(ws, meta, b"h", b"t", "image/jpeg")
+    monkeypatch.setattr(admin, "AppStore", lambda: store)
+    monkeypatch.setattr(worker, "account_workspaces", lambda _p: [ws])
+    monkeypatch.setattr(admin, "_ranch_layout", lambda *a: None)
+    admin.summary()
+    out = capsys.readouterr().out
+    assert "drawn in the app: {'fence': 1, 'pasture': 1}" in out and "outlines match the current pastures: yes" in out
+    assert "Secret name" not in out and "103.5" not in out
+    store.save_shape(ws, {"shape_id": "P1", "kind": "pasture", "name": "Secret name", "coords": ring[:3],
+                          "updated_at": (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat()},
+                     user_id="u", user_name="Zach", is_owner=True, boundaries_locked=False)
+    admin.summary()
+    assert "outlines match the current pastures: NO, waiting for a rebuild" in capsys.readouterr().out
