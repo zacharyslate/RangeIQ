@@ -214,9 +214,23 @@ def summary() -> int:
             for f in water.get("features", []):
                 kinds[f["kind"]] = kinds.get(f["kind"], 0) + 1
             print(f"   USGS water map: {len(water.get('features', []))} features {kinds}" + (f" ({water['error']})" if water.get("error") else ""))
+        shapes = store.list_shapes(workspace_id)
+        if shapes:
+            kinds: dict[str, int] = {}
+            for s in shapes:
+                kinds[s["kind"]] = kinds.get(s["kind"], 0) + 1
+            last = max(str(s.get("updated_at") or "") for s in shapes)
+            print(f"   drawn in the app: {kinds}, last change {last[:16]}")
         if terrain:
             print(f"   3D: {terrain['nx']}x{terrain['ny']} mesh, DEM {terrain['dem_source']} {terrain['dem_resolution_m']} m, "
                   f"surface {terrain['texture_source']}" + (f" ({terrain['texture_note']})" if terrain.get("texture_note") else ""))
+            try:
+                from ranch_ai.rancher.worker import drawn_pastures, outline_hash
+                drawn = drawn_pastures(workspace_id, store)
+                match = "n/a (uses the uploaded file)" if drawn is None else ("yes" if terrain.get("outline_hash") == outline_hash(drawn) else "NO, waiting for a rebuild")
+                print(f"   3D built {str(terrain.get('updated_at'))[:16]}, outlines match the current pastures: {match}")
+            except Exception as exc:  # noqa: BLE001 - diagnostics only
+                print(f"   3D outline check failed: {type(exc).__name__}")
     return 0
 
 

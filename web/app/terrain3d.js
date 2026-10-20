@@ -233,12 +233,15 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
       uniforms: {color: {value: new THREE.Color(color)}, uRadius: {value: TUBE_R0}}});
     m.userData.widthMul = widthMul; list.push(m); return m;
   }
+  // Pasture outlines: from the terrain build at first; the app then hands over the current boundaries (setPastures), so
+  // a pasture redrawn a minute ago shows straight away in the same style as the rest instead of waiting for a rebuild.
+  let outlines = meta.outlines;
   function drawWalls() {
     walls.children.forEach(o => { o.geometry.dispose(); if (o.userData.isPole) o.material.dispose(); }); walls.clear();
     labels.children.forEach(o => { o.material.map.dispose(); o.material.dispose(); }); labels.clear();
     wallMats.forEach(m => m.dispose()); wallMats.length = 0;
     lineMats.forEach(m => m.dispose()); lineMats.length = 0;
-    for (const o of meta.outlines) {
+    for (const o of outlines) {
       const status = statusById[o.id] || "unknown", color = GLOW[status] ?? GLOW.unknown, focus = o.id === focusId;
       const pts = densify(o.ring), hMul = (focus ? 1.6 : 1) * (status === "act" ? 1.3 : 1);
       const P = new Float32Array(pts.length * 6), V = new Float32Array(pts.length * 2), idx = [];
@@ -261,10 +264,10 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
       line.renderOrder = 5; walls.add(line);
       {                                        // every pasture gets a flag; it's also the easiest thing to tap on a phone
         const [sx, sy] = interiorPoint(o.ring);
-        const sp = label(namesById[o.id] || o.name, color); sp.position.copy(toScene(sx, sy, 0.002));
+        const sp = label((o.live && o.name) || namesById[o.id] || o.name, color); sp.position.copy(toScene(sx, sy, 0.002));
         sp.center.set(0.5, 0);                 // flag sits on top of its pole
         sp.userData.ground = sp.position.y; sp.userData.pasture = o.id;
-        if (meta.outlines.length > 25) sp.userData.k = 0.032;
+        if (outlines.length > 25) sp.userData.k = 0.032;
         labels.add(sp);
         const pole = new THREE.Line(new THREE.BufferGeometry().setFromPoints([sp.position.clone(), sp.position.clone()]),
           new THREE.LineBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false}));
@@ -349,7 +352,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
 
   // ---------------------------------------------------------------- tap: photo pin first, then pasture under the finger
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
-  let down = null, picker = null;
+  let down = null, picker = null, lastPastures = "";
   renderer.domElement.addEventListener("pointerdown", e => { down = [e.clientX, e.clientY]; });
   // Select on "click", not "pointerup". On a touchscreen the browser sends a click after the finger lifts, aimed at
   // whatever is on top by then; if the pasture sheet opened on pointerup, that click hit the sheet's backdrop and
@@ -371,7 +374,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     if (hitPin) { onPhoto(hitPin.object.userData.photo); return; }
     const hit = ray.intersectObject(mesh)[0]; if (!hit) return;
     const x = hit.point.x / S + W / 2, y = H / 2 - hit.point.z / S;
-    for (const o of meta.outlines) {
+    for (const o of outlines) {
       let inside = false; const ring = o.ring;
       for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
         const [xi, yi] = ring[i], [xj, yj] = ring[j];
@@ -389,7 +392,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   }
   function reset() {
     let target = new THREE.Vector3(0, (zmax - zmin) * S * exag / 2, 0), dist = fitDistance(W * S, H * S);
-    const f = focusId && meta.outlines.find(o => o.id === focusId);
+    const f = focusId && outlines.find(o => o.id === focusId);
     if (f) {
       const xs = f.ring.map(p => p[0]), ys = f.ring.map(p => p[1]);
       const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
@@ -456,6 +459,16 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
       hereArrow.visible = h.heading != null; if (h.heading != null) hereArrow.rotation.y = -h.heading * D2R;
     },
     setStatuses(map) { statusById = map || {}; drawWalls(); },
+    setPastures(list) {                           // [{id, name, coords: [[lon, lat], ...]}], the boundaries as they are now
+      if (!zoneMatch || !origin || !list || !list.length) return;
+      const next = list.map(p => ({id: p.id, name: p.name, live: true, ring: p.coords.map(([lon, lat]) => {
+        const [ux, uy] = toUTM(lat, lon, +zoneMatch[2], zoneMatch[1] === "7");
+        return [Math.min(W, Math.max(0, ux - origin[0])), Math.min(H, Math.max(0, uy - origin[1]))];   // keep on the terrain
+      })})).filter(o => o.ring.length >= 3);
+      const key = JSON.stringify(next);
+      if (!next.length || key === lastPastures) return;
+      lastPastures = key; outlines = next; drawWalls();
+    },
     setPasturesVisible(on) { walls.visible = labels.visible = !!on; },
     pickOnce(cb) { picker = cb; renderer.domElement.style.cursor = "crosshair"; },
     cancelPick() { picker = null; renderer.domElement.style.cursor = ""; },
