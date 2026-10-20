@@ -40,10 +40,19 @@ export function fromUTM(x, y, zone, south) {
   return [lat / D2R, lon / D2R];
 }
 
+// Walls and lines are sized on screen, not on the ground: their height and thickness follow the camera distance
+// (uniforms updated every frame), so they stay readable zoomed out and get out of the way zoomed in.
 const WALL_VERT = `
   attribute float v;
+  uniform float uHeight;
   varying float vV;
-  void main() { vV = v; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+  void main() { vV = v; vec3 p = position; p.y += v * uHeight; gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`;
+// A tube built with radius R0, redrawn at radius uRadius: the centre line is position - normal * R0.
+const TUBE_R0 = 0.001;
+const TUBE_VERT = `
+  uniform float uRadius;
+  void main() { vec3 c = position - normal * ${TUBE_R0.toFixed(4)}; gl_Position = projectionMatrix * modelViewMatrix * vec4(c + normal * uRadius, 1.0); }`;
+const TUBE_FRAG = `uniform vec3 color; void main() { gl_FragColor = vec4(color, 1.0); }`;
 const WALL_FRAG = `
   uniform vec3 color; uniform float time; uniform float strength;
   varying float vV;
@@ -187,36 +196,42 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     out.push(ring[ring.length - 1]);
     return out;
   }
+  const lineMats = [], roadMats = [];
+  let glowOn = true;
+  function tubeMaterial(color, widthMul, list = lineMats) {
+    const m = new THREE.ShaderMaterial({vertexShader: TUBE_VERT, fragmentShader: TUBE_FRAG,
+      uniforms: {color: {value: new THREE.Color(color)}, uRadius: {value: TUBE_R0}}});
+    m.userData.widthMul = widthMul; list.push(m); return m;
+  }
   function drawWalls() {
     walls.children.forEach(o => o.geometry.dispose()); walls.clear();
     labels.children.forEach(o => { o.material.map.dispose(); o.material.dispose(); }); labels.clear();
     wallMats.forEach(m => m.dispose()); wallMats.length = 0;
-    const wallH = 0.065;                       // ~6% of the ranch's long side, whatever the height setting
+    lineMats.forEach(m => m.dispose()); lineMats.length = 0;
     for (const o of meta.outlines) {
       const status = statusById[o.id] || "unknown", color = GLOW[status] ?? GLOW.unknown, focus = o.id === focusId;
-      const pts = densify(o.ring), h = wallH * (focus ? 1.6 : 1) * (status === "act" ? 1.3 : 1);
+      const pts = densify(o.ring), hMul = (focus ? 1.6 : 1) * (status === "act" ? 1.3 : 1);
       const P = new Float32Array(pts.length * 6), V = new Float32Array(pts.length * 2), idx = [];
       pts.forEach(([x, y], k) => {
         const b = toScene(x, y, 0.0008);
-        P.set([b.x, b.y, b.z, b.x, b.y + h, b.z], k * 6); V[k * 2] = 0; V[k * 2 + 1] = 1;
+        P.set([b.x, b.y, b.z, b.x, b.y, b.z], k * 6); V[k * 2] = 0; V[k * 2 + 1] = 1;   // top row is raised in the shader
         if (k < pts.length - 1) { const a = k * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
       });
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(P, 3)); g.setAttribute("v", new THREE.BufferAttribute(V, 1)); g.setIndex(idx);
       const mat = new THREE.ShaderMaterial({vertexShader: WALL_VERT, fragmentShader: WALL_FRAG, transparent: true, depthWrite: false,
         side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
-        uniforms: {color: {value: new THREE.Color(color)}, time: {value: 0}, strength: {value: status === "act" ? 1.25 : 1}}});
-      mat.userData.pulse = status === "act";
+        uniforms: {color: {value: new THREE.Color(color)}, time: {value: 0}, strength: {value: status === "act" ? 1.25 : 1}, uHeight: {value: 0.03}}});
+      mat.userData.pulse = status === "act"; mat.userData.hMul = hMul;
       wallMats.push(mat);
-      const wall = new THREE.Mesh(g, mat); wall.renderOrder = 4; walls.add(wall);
+      const wall = new THREE.Mesh(g, mat); wall.renderOrder = 4; wall.userData.isWall = true; wall.visible = glowOn; walls.add(wall);
       // a solid bright line on the ground so the boundary reads from straight above too
       const path = straightPath(pts.map(([x, y]) => toScene(x, y, 0.001)), true);
-      const line = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, 0.0022 * (focus ? 1.6 : 1), 5, false),
-        new THREE.MeshBasicMaterial({color, fog: false}));
+      const line = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, TUBE_R0, 5, false), tubeMaterial(color, focus ? 1.6 : 1));
       line.renderOrder = 5; walls.add(line);
       if (meta.outlines.length <= 25 || focus) {
         let sx = 0, sy = 0; o.ring.forEach(([x, y]) => { sx += x; sy += y; }); sx /= o.ring.length; sy /= o.ring.length;
-        const sp = label(namesById[o.id] || o.name, color); sp.position.copy(toScene(sx, sy, wallH + 0.03)); labels.add(sp);
+        const sp = label(namesById[o.id] || o.name, color); sp.position.copy(toScene(sx, sy, 0.002)); sp.userData.ground = sp.position.y; labels.add(sp);
       }
     }
   }
@@ -281,15 +296,16 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   const roads = new THREE.Group(); scene.add(roads);
   let lineList = [];
   function drawLines() {
-    roads.children.forEach(o => { o.geometry.dispose(); o.material.dispose(); }); roads.clear();
+    roads.children.forEach(o => o.geometry.dispose()); roads.clear();
+    roadMats.forEach(m => m.dispose()); roadMats.length = 0;
     for (const ln of lineList) {
       const pts = [];
       for (const [lon, lat] of ln.coords) { const xy = localXY(lat, lon); if (xy) pts.push(xy); }
       if (pts.length < 2) continue;
       const dense = densify(pts).map(([x, y]) => toScene(x, y, 0.0012));
       const path = straightPath(dense, false);
-      const tube = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, 0.0006 * (ln.width || 3), 6, false),
-        new THREE.MeshBasicMaterial({color: new THREE.Color(ln.color), fog: false}));
+      const tube = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, TUBE_R0, 6, false),
+        tubeMaterial(ln.color, (ln.width || 3) / 4, roadMats));
       tube.renderOrder = 5; tube.userData.shape = ln.id; roads.add(tube);
     }
   }
@@ -361,7 +377,15 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
       const d = camera.position.distanceTo(hereObj.position), sz = Math.min(6, Math.max(0.08, d * 1.7));
       hereObj.scale.set(sz, sz, sz); const k = 1 + 0.25 * Math.sin(t * 4); hereRing.scale.set(k, k, k);
     }
+    // screen-sized walls and lines: d is how far the camera is from what it looks at (about 1.2 for the whole ranch)
+    const d = camera.position.distanceTo(controls.target);
+    const wallH = Math.min(0.06, d * 0.03), closeFade = Math.min(1, Math.max(0.35, d / 0.4)), r = d * 0.0016;
+    wallMats.forEach(m => { m.uniforms.uHeight.value = wallH * m.userData.hMul; });
+    lineMats.forEach(m => { m.uniforms.uRadius.value = r * m.userData.widthMul; });
+    roadMats.forEach(m => { m.uniforms.uRadius.value = r * 0.8 * m.userData.widthMul; });
+    for (const sp of labels.children) sp.position.y = sp.userData.ground + wallH + d * 0.03;
     wallMats.forEach(m => { m.uniforms.time.value = t; if (m.userData.pulse) m.uniforms.strength.value = 1.15 + 0.25 * Math.sin(t * 3); });
+    wallMats.forEach(m => { if (!m.userData.pulse) m.uniforms.strength.value = closeFade; else m.uniforms.strength.value *= closeFade; });
     for (const sp of [...labels.children, ...pins.children.filter(o => o.isSprite)]) {
       const d = camera.position.distanceTo(sp.position), k = sp.userData.k; sp.scale.set(k * d * sp.userData.aspect, k * d, 1);
     }
@@ -378,6 +402,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     setLook,
     setPhotos(list) { photoList = list || []; drawPins(); },
     setLines(list) { lineList = list || []; drawLines(); },
+    setGlow(on) { glowOn = !!on; walls.children.forEach(o => { if (o.userData.isWall) o.visible = glowOn; }); },
     setHere(h) {                                   // the phone's GPS position: a blue dot on the ground
       hereObj.visible = false; if (!h) return;
       const xy = localXY(h.lat, h.lon); if (!xy) return;
@@ -398,7 +423,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     reset,
     dispose() {
       running = false; ro.disconnect(); controls.dispose();
-      walls.children.forEach(o => o.geometry.dispose()); wallMats.forEach(m => m.dispose());
+      walls.children.forEach(o => o.geometry.dispose()); wallMats.forEach(m => m.dispose()); lineMats.forEach(m => m.dispose()); roadMats.forEach(m => m.dispose());
       geo.dispose(); photoTex.dispose(); photoMat.dispose(); if (topoMat) { topoMat.map.dispose(); topoMat.dispose(); }
       Object.values(pinTex).forEach(t => t.dispose()); renderer.dispose(); container.innerHTML = "";
     }
