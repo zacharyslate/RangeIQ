@@ -1026,9 +1026,11 @@ def test_real_web_push_request_is_signed_and_encrypted(client, monkeypatch):
                                       "keys": {"p256dh": p256dh, "auth": base64.urlsafe_b64encode(b"0123456789abcdef").rstrip(b"=").decode()}})
     seen = {}
 
-    class Resp:
+    class Resp:                       # enough of a requests.Response for pywebpush 2.0-2.5
         status_code = 201
         text = ""
+        headers: dict = {}
+        content = b""
     def fake_post(self, url, data=None, headers=None, timeout=None, **kw):
         seen.update(url=url, data=data, headers=headers); return Resp()
     monkeypatch.setattr(requests.Session, "post", fake_post)
