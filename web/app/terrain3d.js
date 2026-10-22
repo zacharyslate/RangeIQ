@@ -236,6 +236,18 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   // Pasture outlines: from the terrain build at first; the app then hands over the current boundaries (setPastures), so
   // a pasture redrawn a minute ago shows straight away in the same style as the rest instead of waiting for a rebuild.
   let outlines = meta.outlines;
+  // Boundaries and lines are draped on the ground point by point. A ring must be closed first, or its last side would be
+  // one straight segment cutting through the hills. Parts outside the 3D map (a pasture drawn past its edge, before the
+  // server has extended the map) are left out rather than squashed onto the map's edge as straight lines.
+  const closeRing = r => r.length > 2 && (r[0][0] !== r[r.length - 1][0] || r[0][1] !== r[r.length - 1][1]) ? [...r, r[0]] : r;
+  const onMap = ([x, y]) => x >= 0 && y >= 0 && x <= W && y <= H;
+  function onMapRuns(pts, closed) {
+    const runs = []; let cur = [];
+    for (const p of pts) { if (onMap(p)) cur.push(p); else { if (cur.length > 1) runs.push(cur); cur = []; } }
+    if (cur.length > 1) runs.push(cur);
+    if (closed && runs.length > 1 && onMap(pts[0]) && onMap(pts[pts.length - 1])) runs[0] = [...runs.pop(), ...runs[0]];   // wraps round
+    return runs;
+  }
   function drawWalls() {
     walls.children.forEach(o => { o.geometry.dispose(); if (o.userData.isPole) o.material.dispose(); }); walls.clear();
     labels.children.forEach(o => { o.material.map.dispose(); o.material.dispose(); }); labels.clear();
@@ -243,27 +255,34 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     lineMats.forEach(m => m.dispose()); lineMats.length = 0;
     for (const o of outlines) {
       const status = statusById[o.id] || "unknown", color = GLOW[status] ?? GLOW.unknown, focus = o.id === focusId;
-      const pts = densify(o.ring), hMul = (focus ? 1.6 : 1) * (status === "act" ? 1.3 : 1);
-      const P = new Float32Array(pts.length * 6), V = new Float32Array(pts.length * 2), idx = [];
-      pts.forEach(([x, y], k) => {
-        const b = toScene(x, y, 0.0008);
-        P.set([b.x, b.y, b.z, b.x, b.y, b.z], k * 6); V[k * 2] = 0; V[k * 2 + 1] = 1;   // top row is raised in the shader
-        if (k < pts.length - 1) { const a = k * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
-      });
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.BufferAttribute(P, 3)); g.setAttribute("v", new THREE.BufferAttribute(V, 1)); g.setIndex(idx);
+      const all = densify(closeRing(o.ring)), hMul = (focus ? 1.6 : 1) * (status === "act" ? 1.3 : 1);
+      const whole = all.every(onMap), runs = whole ? [all] : onMapRuns(all, true);
+      o.offMap = !whole;
       const mat = new THREE.ShaderMaterial({vertexShader: WALL_VERT, fragmentShader: WALL_FRAG, transparent: true, depthWrite: false,
         side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
         uniforms: {color: {value: new THREE.Color(color)}, time: {value: 0}, strength: {value: status === "act" ? 1.25 : 1}, uHeight: {value: 0.03}}});
       mat.userData.pulse = status === "act"; mat.userData.hMul = hMul;
       wallMats.push(mat);
-      const wall = new THREE.Mesh(g, mat); wall.renderOrder = 4; wall.userData.isWall = true; wall.visible = glowOn; walls.add(wall);
-      // a solid bright line on the ground so the boundary reads from straight above too
-      const path = straightPath(pts.map(([x, y]) => toScene(x, y, 0.001)), true);
-      const line = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, TUBE_R0, 5, false), tubeMaterial(color, focus ? 1.6 : 1));
-      line.renderOrder = 5; walls.add(line);
+      const lineMat = tubeMaterial(color, focus ? 1.6 : 1);
+      for (const pts of runs) {
+        const P = new Float32Array(pts.length * 6), V = new Float32Array(pts.length * 2), idx = [];
+        pts.forEach(([x, y], k) => {
+          const b = toScene(x, y, 0.0008);
+          P.set([b.x, b.y, b.z, b.x, b.y, b.z], k * 6); V[k * 2] = 0; V[k * 2 + 1] = 1;   // top row is raised in the shader
+          if (k < pts.length - 1) { const a = k * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+        });
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.BufferAttribute(P, 3)); g.setAttribute("v", new THREE.BufferAttribute(V, 1)); g.setIndex(idx);
+        const wall = new THREE.Mesh(g, mat); wall.renderOrder = 4; wall.userData.isWall = true; wall.visible = glowOn; walls.add(wall);
+        // a solid bright line on the ground so the boundary reads from straight above too
+        const path = straightPath(pts.map(([x, y]) => toScene(x, y, 0.001)), whole);
+        if (!path.segments) continue;
+        const line = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, TUBE_R0, 5, false), lineMat);
+        line.renderOrder = 5; walls.add(line);
+      }
       {                                        // every pasture gets a flag; it's also the easiest thing to tap on a phone
-        const [sx, sy] = interiorPoint(o.ring);
+        let [sx, sy] = interiorPoint(o.ring);
+        if (!onMap([sx, sy])) [sx, sy] = interiorPoint(o.ring.map(([x, y]) => [Math.min(W, Math.max(0, x)), Math.min(H, Math.max(0, y))]));  // middle of the part on the map
         const sp = label((o.live && o.name) || namesById[o.id] || o.name, color); sp.position.copy(toScene(sx, sy, 0.002));
         sp.center.set(0.5, 0);                 // flag sits on top of its pole
         sp.userData.ground = sp.position.y; sp.userData.pasture = o.id;
@@ -284,6 +303,11 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     const o = meta.outlines.find(x => (lonlatById[x.id] || []).length);
     if (o) { const [lon, lat] = lonlatById[o.id][0], [ux, uy] = toUTM(lat, lon, +zoneMatch[2], zoneMatch[1] === "7"); origin = [ux - o.ring[0][0], uy - o.ring[0][1]]; }
   }
+  const toLocal = (lat, lon) => {               // metres from the map's SW corner, even off the map
+    if (!zoneMatch || !origin) return null;
+    const [ux, uy] = toUTM(lat, lon, +zoneMatch[2], zoneMatch[1] === "7");
+    return [ux - origin[0], uy - origin[1]];
+  };
   const localXY = (lat, lon) => {
     if (!zoneMatch || !origin) return null;
     const [ux, uy] = toUTM(lat, lon, +zoneMatch[2], zoneMatch[1] === "7");
@@ -339,14 +363,15 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     roads.children.forEach(o => o.geometry.dispose()); roads.clear();
     roadMats.forEach(m => m.dispose()); roadMats.length = 0;
     for (const ln of lineList) {
-      const pts = [];
-      for (const [lon, lat] of ln.coords) { const xy = localXY(lat, lon); if (xy) pts.push(xy); }
+      const pts = ln.coords.map(([lon, lat]) => toLocal(lat, lon)).filter(Boolean);
       if (pts.length < 2) continue;
-      const dense = densify(pts).map(([x, y]) => toScene(x, y, 0.0012));
-      const path = straightPath(dense, false);
-      const tube = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, TUBE_R0, 6, false),
-        tubeMaterial(ln.color, (ln.width || 3) / 4, roadMats));
-      tube.renderOrder = 5; tube.userData.shape = ln.id; roads.add(tube);
+      const mat = tubeMaterial(ln.color, (ln.width || 3) / 4, roadMats);
+      for (const run of onMapRuns(densify(pts), false)) {
+        const path = straightPath(run.map(([x, y]) => toScene(x, y, 0.0012)), false);
+        if (!path.segments) continue;
+        const tube = new THREE.Mesh(new THREE.TubeGeometry(path.curve, path.segments, TUBE_R0, 6, false), mat);
+        tube.renderOrder = 5; tube.userData.shape = ln.id; roads.add(tube);
+      }
     }
   }
 
@@ -465,14 +490,13 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
     setStatuses(map) { statusById = map || {}; drawWalls(); },
     setPastures(list) {                           // [{id, name, coords: [[lon, lat], ...]}], the boundaries as they are now
       if (!zoneMatch || !origin || !list || !list.length) return;
-      const next = list.map(p => ({id: p.id, name: p.name, live: true, ring: p.coords.map(([lon, lat]) => {
-        const [ux, uy] = toUTM(lat, lon, +zoneMatch[2], zoneMatch[1] === "7");
-        return [Math.min(W, Math.max(0, ux - origin[0])), Math.min(H, Math.max(0, uy - origin[1]))];   // keep on the terrain
-      })})).filter(o => o.ring.length >= 3);
+      const next = list.map(p => ({id: p.id, name: p.name, live: true, ring: p.coords.map(([lon, lat]) => toLocal(lat, lon))}))
+        .filter(o => o.ring.length >= 3 && o.ring.every(Boolean));
       const key = JSON.stringify(next);
       if (!next.length || key === lastPastures) return;
       lastPastures = key; outlines = next; drawWalls();
     },
+    offMap() { return outlines.filter(o => o.offMap).map(o => o.name); },   // pastures reaching past the 3D map's edge
     setPasturesVisible(on) { walls.visible = !!on; labels.visible = !!on && flagsOn; },
     pickOnce(cb) { picker = cb; renderer.domElement.style.cursor = "crosshair"; },
     cancelPick() { picker = null; renderer.domElement.style.cursor = ""; },

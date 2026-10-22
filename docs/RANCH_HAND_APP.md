@@ -66,6 +66,19 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - The Log keeps the report (with a ✓ Resolved tag) and adds a "Resolved: …" line with who, when and the note. The Problems filter shows both.
 - Works offline: the change waits on the phone and sends with everything else. If two phones disagree, the most recent change wins.
 
+## Chat (text messages)
+
+- The **💬 Chat** tab: **Everyone** (the whole crew, owner and partners included) and a conversation with each person. Anyone on the ranch can text anyone. Text only.
+- Works without signal: a message waits on the phone ("sending…") and goes when there's signal. Tap your own message to delete it for everyone.
+- The red number on the Chat tab (and on the app icon where the phone supports it) counts unread messages. With the app open, new messages arrive within about 10 seconds on the Chat tab and within a minute elsewhere.
+- **Notifications:** Chat → **Turn on notifications** makes the phone buzz for new messages even with RangeIQ closed. On iPhone this only works once RangeIQ is added to the Home Screen (Share → Add to Home Screen, iOS 16.4 or later) and opened from there. Signing out turns notifications off for that phone. "Send a test" checks it works.
+- Privacy: messages stay on your server. The notification text passes through Apple's or Google's push service encrypted for that phone (Web Push, RFC 8291); the server signs pushes with its own key, made on the server and kept in its database.
+
+## 3D: boundaries past the edge of the map
+
+- Boundaries and roads are draped on the ground point by point, including the last side of a pasture drawn in the app (it used to be one straight line from the last corner back to the first).
+- The 3D map shows about 300 m of ground around the ranch. A pasture drawn further out reaches past the edge until the server rebuilds the map (a few minutes after saving). Until then the part outside isn't drawn (it used to be squashed onto the map's edge as straight lines), a note says so, and the 3D view reloads by itself when the new map is ready.
+
 ## Honest limits
 
 - **Green % is a color count, not a forage measurement.** Canopeo was validated for fractional green canopy cover from overhead photos, with good agreement against other methods (Patrignani & Ochsner 2015). Ranch photos are oblique, so the share of the frame that is near ground versus far ground changes the number. Shadows, low sun, and green-tinged water or algae also change it. Use it to compare **the same spot, same direction, similar time of day** (repeat photo points; Hall 2002). Don't use it to compare two different pastures.

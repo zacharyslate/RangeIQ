@@ -943,3 +943,96 @@ def test_snapshot_ignores_resolved_reports():
     done_snap = snap_mod.build_snapshot(s, pastures, logs=[{**report, "resolved_at": now, "resolved_by": "Luis"}],
                                         include_terrain=False, today=pd.Timestamp(now[:10]))
     assert field(done_snap) == []
+
+
+def test_messenger_whole_ranch_and_direct_threads(client):
+    owner = _login(client)
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    def join(name, email):
+        r = client.post("/api/join", json={"code": code, "name": name, "email": email, "password": "HandPass123"}).json()
+        client.cookies.clear()
+        return {"Authorization": "Bearer " + r["token"]}
+    luis, ana = join("Luis", "luis@example.com"), join("Ana", "ana@example.com")
+    ids = {p["name"]: p["user_id"] for p in client.get("/api/messages", headers=owner).json()["people"]}
+    assert set(ids) == {"Zach", "Luis", "Ana"}
+
+    sent = client.post("/api/messages", headers=luis, json=[
+        {"msg_id": "m1", "thread_id": "all", "text": "Gate on the county road is open", "sent_at": "2026-10-22T10:00:00Z"},
+        {"msg_id": "m2", "to_user_id": ids["Zach"], "text": "Need more mineral at Mesa"},
+        {"msg_id": "m3", "thread_id": "all", "text": "   "},
+        {"msg_id": "m4", "to_user_id": "stranger", "text": "hi"}]).json()
+    assert sent["saved"] == ["m1", "m2"] and [e["msg_id"] for e in sent["errors"]] == ["m3", "m4"]
+    assert client.post("/api/messages", headers=luis, json={"msg_id": "m1", "thread_id": "all", "text": "dup"}).json()["saved"] == ["m1"]
+
+    owner_view = client.get("/api/messages", headers=owner).json()
+    dm = "dm:" + "|".join(sorted([ids["Luis"], ids["Zach"]]))
+    assert [(m["msg_id"], m["thread_id"]) for m in owner_view["messages"]] == [("m1", "all"), ("m2", dm)]
+    # Ana sees the ranch-wide message but not Luis's direct message to the owner, and can't post into it
+    assert [m["msg_id"] for m in client.get("/api/messages", headers=ana).json()["messages"]] == ["m1"]
+    assert client.post("/api/messages", headers=ana, json={"msg_id": "x", "thread_id": dm, "text": "hi"}).json()["errors"]
+    # replies and "since": only what's new
+    since = owner_view["now"]
+    client.post("/api/messages", headers=owner, json={"msg_id": "m5", "thread_id": dm, "text": "I'll bring some Friday"})
+    newer = client.get("/api/messages", headers=luis, params={"since": since}).json()["messages"]
+    assert [m["msg_id"] for m in newer] == ["m5"] and newer[0]["from_name"] == "Zach"
+    # read state: replying in a conversation marks it read for you
+    store = client.store
+    ws = client.user.workspace_id
+    assert store.unread_count(ws, ids["Zach"]) == 1 and store.unread_count(ws, ids["Luis"]) == 1 and store.unread_count(ws, ids["Ana"]) == 1
+    client.post("/api/messages/read", headers=owner, json={"thread_id": "all", "at": owner_view["messages"][0]["created_at"]})
+    assert store.unread_count(ws, ids["Zach"]) == 0
+    # delete: only your own (or the owner); deletions reach other phones through "since"
+    assert client.delete("/api/messages/m1", headers=ana).status_code == 403
+    assert client.delete("/api/messages/m1", headers=luis).json() == {"deleted": True}
+    gone = client.get("/api/messages", headers=ana, params={"since": since}).json()["messages"]
+    assert {"msg_id": "m1", "deleted": True} in [{k: m[k] for k in ("msg_id", "deleted") if k in m} for m in gone]
+    assert "m1" not in [m["msg_id"] for m in client.get("/api/messages", headers=ana).json()["messages"]]
+
+
+def test_push_subscriptions_and_sending(client):
+    from ranch_ai.rancher import push
+
+    owner = _login(client)
+    key = client.get("/api/push/key", headers=owner).json()["key"]
+    import base64
+    raw = base64.urlsafe_b64decode(key + "=" * (-len(key) % 4))
+    assert len(raw) == 65 and raw[0] == 4                                     # uncompressed P-256 point
+    assert client.get("/api/push/key", headers=owner).json()["key"] == key    # same key every time (kept in the database)
+    assert client.post("/api/push/subscribe", headers=owner, json={"endpoint": "http://evil", "keys": {}}).status_code == 400
+    sub = {"endpoint": "https://push.example/abc", "keys": {"p256dh": "BPk", "auth": "xyz"}}
+    assert client.post("/api/push/subscribe", headers=owner, json=sub).json() == {"ok": True}
+    uid = client.user.user_id if hasattr(client.user, "user_id") else client.get("/api/me", headers=owner).json()["user_id"]
+    got = []
+    counts = push.send(client.store, [uid], {"title": "t", "body": "b"}, sender=lambda info, data, key: got.append(info) or 201)
+    assert counts == {"sent": 1, "dropped": 0, "failed": 0} and got[0]["endpoint"] == sub["endpoint"]
+    # an expired subscription is dropped
+    assert push.send(client.store, [uid], {"title": "t"}, sender=lambda *a: 410)["dropped"] == 1
+    assert client.store.push_subs_for([uid]) == []
+
+
+def test_real_web_push_request_is_signed_and_encrypted(client, monkeypatch):
+    """With pywebpush: the request carries a VAPID signature and an aes128gcm-encrypted body (nothing in clear)."""
+    pytest.importorskip("pywebpush")
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    import base64
+    import requests
+    from ranch_ai.rancher import push
+
+    phone = ec.generate_private_key(ec.SECP256R1())
+    p256dh = base64.urlsafe_b64encode(phone.public_key().public_bytes(serialization.Encoding.X962,
+                                      serialization.PublicFormat.UncompressedPoint)).rstrip(b"=").decode()
+    client.store.save_push_sub("u1", {"endpoint": "https://fcm.googleapis.com/fcm/send/abc",
+                                      "keys": {"p256dh": p256dh, "auth": base64.urlsafe_b64encode(b"0123456789abcdef").rstrip(b"=").decode()}})
+    seen = {}
+
+    class Resp:
+        status_code = 201
+        text = ""
+    def fake_post(self, url, data=None, headers=None, timeout=None, **kw):
+        seen.update(url=url, data=data, headers=headers); return Resp()
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+    monkeypatch.setattr(requests, "post", lambda url, **kw: fake_post(None, url, **kw))
+    assert push.send(client.store, ["u1"], {"title": "Luis", "body": "Cattle out on the county road"})["sent"] == 1
+    assert seen["url"].startswith("https://fcm.googleapis.com/") and seen["headers"]["Content-Encoding"] == "aes128gcm"
+    assert seen["headers"]["Authorization"].startswith("vapid t=") and b"Cattle" not in seen["data"]

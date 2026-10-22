@@ -24,6 +24,7 @@ from ranch_ai.rancher.store import AppStore
 from ranch_ai.utils.io import load_pastures
 
 DEFAULT_WORKSPACE = "default"
+TERRAIN_BUFFER_M = 300.0     # ground shown around the ranch in 3D
 
 
 def account_workspaces(auth_db_path: Path, store: AppStore | None = None) -> list[str]:
@@ -212,7 +213,9 @@ def build_workspace(
     if include_terrain:
         from ranch_ai.terrain import TerrainService
 
-        terrain_result = TerrainService(app_settings).load(pastures)
+        # 300 m of ground around the ranch (not 120 m), so a boundary nudged a little past the edge still lands on the
+        # 3D map until the next rebuild.
+        terrain_result = TerrainService(app_settings).load(pastures, buffer_m=TERRAIN_BUFFER_M)
         report["terrain"] = {k: terrain_result.status.get(k) for k in ("mode", "resolution_m", "width_px", "height_px", "error")}
 
     greenness = None
