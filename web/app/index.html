@@ -131,12 +131,13 @@
   <!-- ============================== CHAT (text messages: everyone on the ranch, or one person) -->
   <section class="view" id="v-chat" hidden aria-labelledby="c-h">
     <div id="c-list">
-      <div class="hero"><h1 id="c-h">Chat</h1><p class="dim">Text the whole crew, or one person.</p></div>
+      <div class="hero chathero"><div><h1 id="c-h">Chat</h1><p class="dim">Text the whole crew, or one person.</p></div>
+        <button type="button" class="mepic" id="c-mepic" aria-label="Your profile picture"></button></div>
       <div id="c-notify"></div>
       <ul class="threads" id="c-threads"></ul>
     </div>
     <div id="c-thread" hidden>
-      <div class="chathead"><button type="button" class="pill" id="c-back" aria-label="Back to all chats">‹ Chats</button><h2 id="c-title"></h2></div>
+      <div class="chathead"><button type="button" class="pill" id="c-back" aria-label="Back to all chats">‹ Chats</button><span id="c-headpic"></span><h2 id="c-title"></h2></div>
       <ol class="bubbles" id="c-msgs" aria-live="polite"></ol>
       <form class="composer" id="c-form" autocomplete="off">
         <textarea id="c-text" rows="1" maxlength="2000" placeholder="Message" enterkeyhint="send" aria-label="Message"></textarea>
@@ -164,7 +165,8 @@
 
   <!-- ============================== MORE -->
   <section class="view" id="v-more" hidden aria-labelledby="o-h">
-    <div class="hero"><h1 id="o-h">More</h1><p class="dim" id="o-who"></p></div>
+    <div class="hero chathero"><div><h1 id="o-h">More</h1><p class="dim" id="o-who"></p></div>
+      <button type="button" class="mepic" id="o-mepic" aria-label="Your profile picture"></button></div>
     <div class="card" id="o-ranch" hidden></div>
     <div class="card" id="o-setup" hidden></div>
     <div class="card" id="o-crew" hidden></div>
@@ -195,6 +197,7 @@
 
 <div class="drawbar" id="drawBar" hidden role="region" aria-label="Drawing"></div>
 <input type="file" id="camInput" accept="image/*" capture="environment" hidden>
+<input type="file" id="picInput" accept="image/*" hidden>
 
 <div class="sheet-back" id="sheetBack" hidden></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden>

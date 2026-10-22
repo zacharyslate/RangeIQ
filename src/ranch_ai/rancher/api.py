@@ -29,6 +29,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any
 
 from fastapi import Body, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
@@ -195,6 +196,38 @@ def create_app(
                 "image_url": f"{base}?kind=image&exp={exp}&sig={sign(workspace_id, cid, 'image', exp)}",
                 "thumb_url": f"{base}?kind=thumb&exp={exp}&sig={sign(workspace_id, cid, 'thumb', exp)}"}
 
+    MAX_AVATAR_BYTES = 300 * 1024
+
+    def avatar_url(user_id: str, version: str | None) -> str | None:
+        """Private, signed, cache-friendly link to someone's profile picture (changes when they change it)."""
+        if not version:
+            return None
+        exp = (int(time.time()) + 7 * 86400) // 86400 * 86400 + 86400
+        return f"/api/avatar/{user_id}?v={quote(version)}&exp={exp}&sig={sign('avatar', user_id, version, exp)}"
+
+    @app.get("/api/avatar/{user_id}")
+    def avatar_file(user_id: str, v: str = "", exp: int = 0, sig: str = "") -> Response:
+        if exp < time.time() or not hmac.compare_digest(sig, sign("avatar", user_id, v, exp)):
+            raise HTTPException(status_code=403, detail="Link expired.")
+        path = app.state.store.avatar_path(user_id)
+        if not path.exists():
+            raise HTTPException(status_code=404)
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=604800"})
+
+    @app.post("/api/me/avatar")
+    async def set_avatar(photo: UploadFile = File(...), sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        data = await photo.read(MAX_AVATAR_BYTES + 1)
+        if len(data) > MAX_AVATAR_BYTES:
+            raise HTTPException(status_code=413, detail="That picture is too large.")
+        if data[:3] != b"\xff\xd8\xff":
+            raise HTTPException(status_code=400, detail="Profile pictures must be JPEG.")
+        version = app.state.store.set_avatar(sess["user_id"], data)
+        return {"avatar_url": avatar_url(sess["user_id"], version)}
+
+    @app.delete("/api/me/avatar")
+    def remove_avatar(sess: dict[str, str] = Depends(session)) -> dict[str, bool]:
+        return {"removed": app.state.store.remove_avatar(sess["user_id"])}
+
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -281,7 +314,8 @@ def create_app(
         if user is None:
             raise HTTPException(status_code=401, detail="Please sign in.")
         return {"name": user.full_name, "email": user.email, "ranch": ranch_name(sess["workspace_id"], user.ranch_name),
-                "role": sess["role"], "user_id": sess["user_id"], "workspace_id": sess["workspace_id"], "ranches": ranches_of(user)}
+                "role": sess["role"], "user_id": sess["user_id"], "workspace_id": sess["workspace_id"], "ranches": ranches_of(user),
+                "avatar_url": avatar_url(sess["user_id"], app.state.store.avatar_versions([sess["user_id"]]).get(sess["user_id"]))}
 
     # -- crew -------------------------------------------------------------------------
     @app.get("/api/crew")
@@ -537,6 +571,9 @@ def create_app(
         for p in owners + crew:
             if p["user_id"] not in seen:
                 seen.add(p["user_id"]); out.append(p)
+        versions = app.state.store.avatar_versions(seen)
+        for p in out:
+            p["avatar_url"] = avatar_url(p["user_id"], versions.get(p["user_id"]))
         return out
 
     # -- messenger --------------------------------------------------------------------
