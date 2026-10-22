@@ -220,6 +220,28 @@ class AppStore:
                     at TEXT NOT NULL,
                     PRIMARY KEY (workspace_id, user_id, thread_id)
                 );
+                -- SOS: someone on the ranch needs help. Location is updated while it's active; others can say "on my way".
+                CREATE TABLE IF NOT EXISTS sos (
+                    sos_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    user_name TEXT,
+                    kind TEXT,
+                    note TEXT,
+                    lat REAL, lon REAL, accuracy_m REAL,
+                    located_at TEXT,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    resolved_by TEXT,
+                    resolve_note TEXT
+                );
+                CREATE TABLE IF NOT EXISTS sos_acks (
+                    sos_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    user_name TEXT,
+                    at TEXT NOT NULL,
+                    PRIMARY KEY (sos_id, user_id)
+                );
                 -- Profile pictures (one per person, used on every ranch they're on). The file is <photo dir>/avatars/<user>.jpg.
                 CREATE TABLE IF NOT EXISTS avatars (
                     user_id TEXT PRIMARY KEY,
@@ -535,6 +557,87 @@ class AppStore:
             out = {"msg_id": row["msg_id"], "thread_id": row["thread_id"], "deleted": True, "created_at": row["created_at"],
                    "deleted_at": row["deleted_at"]}
         return out
+
+    # -- SOS ----------------------------------------------------------------------------
+    SOS_KINDS = {"injury", "vehicle", "fire", "animal", "lost", "other"}
+
+    @staticmethod
+    def _loc(data: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+        try:
+            lat, lon = float(data["lat"]), float(data["lon"])
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            return None, None, None
+        try:
+            acc = float(data.get("accuracy_m")) if data.get("accuracy_m") is not None else None
+        except (TypeError, ValueError):
+            acc = None
+        return lat, lon, acc
+
+    def create_sos(self, workspace_id: str, data: dict[str, Any], *, user_id: str, user_name: str) -> tuple[dict[str, Any], bool]:
+        sos_id = str(data.get("sos_id") or "").strip()
+        if not sos_id or len(sos_id) > 64:
+            raise ValueError("sos_id is required.")
+        kind = str(data.get("kind") or "other")
+        kind = kind if kind in self.SOS_KINDS else "other"
+        lat, lon, acc = self._loc(data)
+        now = utc_now().isoformat(timespec="microseconds")
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM sos WHERE sos_id = ?", (sos_id,)).fetchone()
+            if row is not None:
+                if row["workspace_id"] != workspace_id or row["user_id"] != user_id:
+                    raise ValueError("sos_id already used.")
+                return self._sos_row(conn, row), False
+            conn.execute("INSERT INTO sos(sos_id, workspace_id, user_id, user_name, kind, note, lat, lon, accuracy_m, located_at, created_at) "
+                         "VALUES (?,?,?,?,?,?,?,?,?,?,?)", (sos_id, workspace_id, user_id, user_name, kind,
+                                                           (str(data.get("note") or "").strip()[:500] or None), lat, lon, acc,
+                                                           now if lat is not None else None, now))
+            return self._sos_row(conn, conn.execute("SELECT * FROM sos WHERE sos_id = ?", (sos_id,)).fetchone()), True
+
+    def update_sos_location(self, workspace_id: str, sos_id: str, data: dict[str, Any], *, user_id: str) -> bool:
+        lat, lon, acc = self._loc(data)
+        if lat is None:
+            raise ValueError("lat and lon are required.")
+        with self._connect() as conn:
+            cur = conn.execute("UPDATE sos SET lat = ?, lon = ?, accuracy_m = ?, located_at = ? WHERE sos_id = ? AND workspace_id = ? "
+                               "AND user_id = ? AND resolved_at IS NULL",
+                               (lat, lon, acc, utc_now().isoformat(timespec="microseconds"), sos_id, workspace_id, user_id))
+        return cur.rowcount > 0
+
+    def ack_sos(self, workspace_id: str, sos_id: str, *, user_id: str, user_name: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM sos WHERE sos_id = ? AND workspace_id = ?", (sos_id, workspace_id)).fetchone()
+            if row is None or row["resolved_at"] or row["user_id"] == user_id:
+                return False
+            conn.execute("INSERT OR IGNORE INTO sos_acks(sos_id, user_id, user_name, at) VALUES (?,?,?,?)",
+                         (sos_id, user_id, user_name, utc_now().isoformat(timespec="microseconds")))
+        return True
+
+    def resolve_sos(self, workspace_id: str, sos_id: str, *, user_name: str, note: str | None = None) -> dict[str, Any] | None:
+        """Anyone on the ranch can close an SOS (the person themselves: "I'm OK"; or whoever reached them)."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM sos WHERE sos_id = ? AND workspace_id = ?", (sos_id, workspace_id)).fetchone()
+            if row is None or row["resolved_at"]:
+                return None
+            conn.execute("UPDATE sos SET resolved_at = ?, resolved_by = ?, resolve_note = ? WHERE sos_id = ?",
+                         (utc_now().isoformat(timespec="microseconds"), user_name, (note or "").strip()[:500] or None, sos_id))
+            return self._sos_row(conn, conn.execute("SELECT * FROM sos WHERE sos_id = ?", (sos_id,)).fetchone())
+
+    def list_sos(self, workspace_id: str, days: int = 7) -> list[dict[str, Any]]:
+        """Active SOS calls, plus ones closed in the last `days` (for the Log)."""
+        since = (utc_now() - timedelta(days=days)).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM sos WHERE workspace_id = ? AND (resolved_at IS NULL OR resolved_at > ?) ORDER BY created_at DESC",
+                                (workspace_id, since)).fetchall()
+            return [self._sos_row(conn, r) for r in rows]
+
+    @staticmethod
+    def _sos_row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+        acks = conn.execute("SELECT user_id, user_name, at FROM sos_acks WHERE sos_id = ? ORDER BY at", (row["sos_id"],)).fetchall()
+        return {**{k: row[k] for k in ("sos_id", "user_id", "user_name", "kind", "note", "lat", "lon", "accuracy_m", "located_at",
+                                       "created_at", "resolved_at", "resolved_by", "resolve_note")},
+                "acks": [dict(a) for a in acks]}
 
     # -- profile pictures ---------------------------------------------------------------
     def avatar_path(self, user_id: str) -> Path:

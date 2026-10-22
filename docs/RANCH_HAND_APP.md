@@ -66,6 +66,19 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - The Log keeps the report (with a ✓ Resolved tag) and adds a "Resolved: …" line with who, when and the note. The Problems filter shows both.
 - Works offline: the change waits on the phone and sends with everything else. If two phones disagree, the most recent change wins.
 
+## SOS (emergency alert to the crew)
+
+- The red **SOS** button is always in the top bar. Pick what happened (injury, vehicle, fire, animal, lost, other), add a note if you can, then **hold the big red button for 2 seconds** (a quick tap does nothing, so it can't go off in a pocket).
+- Everyone on the ranch gets an urgent notification that stays on screen until tapped, with a long vibration (where the phone allows), and a full-screen red alert in the app on top of everything: who, what, how far and which way from them, and the spot. **Show on map**, **I'm on my way** (the person in trouble sees who's coming), **They're OK — end SOS**, or **Minimize** (a red bar stays at the top until it's over).
+- Your location keeps updating (every 10 m moved or 30 s) while the SOS is open and RangeIQ is open on your phone. The SOS pin is always on the map, whatever the layers, and the SOS goes in the Everyone chat and the Log.
+- **No signal:** the SOS waits on the phone and the screen says so plainly ("not sent yet"); it goes the moment there's signal.
+- It does **not** call 911 (by choice). It only reaches people who have RangeIQ; with notifications off, they see it next time they open the app (the app checks every 10–20 s while open).
+- Limits: phones stop sending location when the screen locks or the browser is closed. iPhones can't break through Silent / Focus for a web app. Notifications need the Home Screen app on iPhone.
+
+## Map style
+
+- The map opens the way you last chose it (3D or flat; Photo or Relief), on each phone.
+
 ## Chat (text messages)
 
 - The **💬 Chat** tab: **Everyone** (the whole crew, owner and partners included) and a conversation with each person. Anyone on the ranch can text anyone. Text only.

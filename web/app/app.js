@@ -64,7 +64,9 @@
   let pending = [];                      // photos waiting to upload (from IndexedDB), with object URLs
   let currentPasture = null, photoHere = null;
   let map = null, mapLayers = [], view3d = null;
-  let mapMode = "3d", look = store.get("look", "photo") === "photo" ? "photo" : "relief", exag = Number(store.get("exag", 2)) || 2, logFilter = "all";   // the map always opens in 3D
+  // The map opens the way you last chose it (3D or flat, Photo or Relief); 3D the very first time.
+  const savedMode = () => store.get("mapMode", "3d") === "2d" ? "2d" : "3d";
+  let mapMode = savedMode(), look = store.get("look", "photo") === "photo" ? "photo" : "relief", exag = Number(store.get("exag", 2)) || 2, logFilter = "all";
 
   // ---------------------------------------------------------------- small helpers
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9-]/g, "").slice(0, 36);
@@ -195,9 +197,12 @@
     const USGS_ICON = {tank: "💧", pond: "💧", playa: "🏜️", marsh: "🌾", spring: "💦", well: "🚰", dam: "🧱"};
     (((snap && snap.water_map) || {}).features || []).forEach(w =>
       out.push({client_id: w.id, lat: w.lat, lon: w.lon, icon: USGS_ICON[w.kind] || "💧", layer: "usgs", usgs: true, title: w.name || w.label}));
+    activeSos().filter(s => s.lat != null).forEach(s =>
+      out.push({client_id: "sos:" + s.sos_id, lat: s.lat, lon: s.lon, icon: "🆘", layer: "sos", sos: true, flagged: true,
+        title: `SOS · ${s.user_name || ""} · ${sosLabel(s.kind)}`}));
     tasks.filter(t => !t.done_at && t.lat != null).forEach(t =>
       out.push({client_id: t.task_id, lat: t.lat, lon: t.lon, icon: "✅", layer: "jobs", task: true, title: t.title, flagged: taskBucket(t) === "late"}));
-    return out.filter(x => layers[x.layer]);
+    return out.filter(x => x.sos || layers[x.layer]);          // an SOS is always on the map, whatever the layers
   }
   function openWater(id) {
     const w = (((snap && snap.water_map) || {}).features || []).find(x => x.id === id); if (!w) return;
@@ -219,6 +224,7 @@
     return id ? `<p><button type="button" class="secondary" data-item="${esc(id)}">↩ Part of: ${esc(label)}</button></p>` : "";
   }
   function openItem(id) {
+    if (String(id).startsWith("sos:")) return openSos(String(id).slice(4));
     if (String(id).startsWith("nhd-")) return openWater(id);
     if (shapes.some(s2 => s2.shape_id === id)) return openShape(id);
     if (places.some(p => p.place_id === id)) return openPlace(id);
@@ -248,6 +254,7 @@
     if (view.startsWith("pasture-")) { currentPasture = decodeURIComponent(view.slice(8)); tab = "pasture"; }
     if (view === "chat") chatThread = null;
     if (view.startsWith("chat-")) { chatThread = decodeURIComponent(view.slice(5)); tab = "chat"; }
+    if (view.startsWith("sos-")) { const id = decodeURIComponent(view.slice(4)); setTimeout(() => { pollChat(); openSos(id); }, 50); view = tab = "home"; }
     if (!["login", "pasture", ...TABS].includes(tab)) tab = "home";
     if (tab !== "map" && view3d) { view3d.dispose(); view3d = null; }
     if (tab !== "map" && !(draft && draft.recording)) stopHere();
@@ -264,7 +271,7 @@
       chat: () => { $("c-msgs").dataset.shown = ""; renderChat(); pollChat(); }}[tab] || (() => {}))();
     if (tab !== "chat" || !chatThread) window.scrollTo(0, 0);
   }
-  document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => { if (b.dataset.tab === "map" && !draft) mapMode = "3d"; show(b.dataset.tab); });
+  document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => { if (b.dataset.tab === "map" && !draft) mapMode = savedMode(); show(b.dataset.tab); });
   document.addEventListener("click", e => {
     const go = e.target.closest("[data-go]"); if (go) { show(go.dataset.go); return; }
     const p = e.target.closest("[data-pasture]"); if (p) { show("pasture-" + encodeURIComponent(p.dataset.pasture)); return; }
@@ -301,7 +308,7 @@
     if (!v) return;
     ({"v-home": renderHome, "v-todo": renderTodo, "v-pasture": renderPasture, "v-log": renderLog, "v-more": renderMore, "v-chat": renderChat}[v.id] || (() => {}))();
     if (v.id === "v-map" && mapMode === "2d") renderMap();
-    updateSyncPill();
+    updateSyncPill(); renderSos();
   }
 
   // ---------------------------------------------------------------- HOME
@@ -521,7 +528,7 @@
     });
     mapItems().forEach(p => {
       const icon = L.divIcon({className: "", iconSize: [34, 34], iconAnchor: [17, 17], html:
-        `<div class="photo-pin${p.flagged ? " flag" : ""}${p.place ? " place" : p.usgs ? " usgs" : p.report || p.task ? " report" : ""}">${p.heading_deg != null ? `<i class="cone" style="transform:rotate(${p.heading_deg}deg)"></i>` : ""}${p.icon}${p.n > 1 ? `<span class="n">${p.n}</span>` : ""}</div>`});
+        `<div class="photo-pin${p.sos ? " sos" : ""}${p.flagged ? " flag" : ""}${p.place ? " place" : p.usgs ? " usgs" : p.report || p.task ? " report" : ""}">${p.heading_deg != null ? `<i class="cone" style="transform:rotate(${p.heading_deg}deg)"></i>` : ""}${p.icon}${p.n > 1 ? `<span class="n">${p.n}</span>` : ""}</div>`});
       const m = L.marker([p.lat, p.lon], {icon, title: p.title + (p.taken_at ? ", " + when(p.taken_at) : "")}).on("click", () => openItem(p.client_id));
       m.addTo(map); mapLayers.push(m);
     });
@@ -644,7 +651,7 @@
       layers[b.dataset.layer] = !layers[b.dataset.layer]; store.set("layers", layers); renderMap(); });
     $("hideEverydayMap").onchange = e => setHideEveryday(e.target.checked);
   }
-  document.querySelectorAll("[data-mapmode]").forEach(b => b.onclick = () => { mapMode = b.dataset.mapmode; renderMap(); });
+  document.querySelectorAll("[data-mapmode]").forEach(b => b.onclick = () => { mapMode = b.dataset.mapmode; store.set("mapMode", mapMode); renderMap(); });
   document.querySelectorAll("[data-look]").forEach(b => b.onclick = () => { look = b.dataset.look; store.set("look", look); setPressed("[data-look]", "look", look); if (view3d) view3d.setLook(look); renderMap(); });
   $("exagSlider").value = exag; $("exagVal").textContent = "×" + exag;
   $("exagSlider").oninput = e => { exag = Number(e.target.value); $("exagVal").textContent = "×" + exag; store.set("exag", exag); if (view3d) view3d.setExaggeration(exag); };
@@ -702,7 +709,8 @@
     // A photo that belongs to one of those shows on that item, not on its own.
     const ids = new Set([...logs.map(i => i.l.client_id), ...tasks.map(t => t.task_id), ...places.map(p => p.place_id), ...shapes.map(x => x.shape_id)]);
     const ph = allPhotos().filter(p => !PHOTO_KEYS.some(k => p[k] && ids.has(p[k]))).map(p => ({type: "photo", at: p.taken_at, p}));
-    return [...logs, ...ph, ...jobs, ...pls, ...shp, ...fixed].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    const sos = sosList().filter(s => !s._waiting).map(s => ({type: "sos", at: s.created_at, s}));
+    return [...logs, ...ph, ...jobs, ...pls, ...shp, ...fixed, ...sos].sort((a, b) => String(b.at).localeCompare(String(a.at)));
   }
   const miniPhotos = (key, id) => { const list = photosOf(key, id);
     return list.length ? `<span class="lphotos">${list.slice(0, 4).map(p => `<img src="${esc(thumbOf(p))}" alt="" loading="lazy">`).join("")}${list.length > 4 ? `<b>+${list.length - 4}</b>` : ""}</span>` : ""; };
@@ -713,6 +721,13 @@
       return `<li class="clickable" data-item="${esc(t.task_id)}"><span class="ico" aria-hidden="true">${done ? "✔️" : "📋"}</span>
         <span>${done ? "Checked off" : "New job"}: <b>${esc(t.title)}</b>${t.pasture_id ? ` <span class="dim">(${esc(pastureName(t.pasture_id))})</span>` : ""}${done ? "" : miniPhotos("task_id", t.task_id)}</span><span></span>
         <span class="meta">${esc(when(it.at))}${it.by ? " · " + esc(it.by) : ""}</span></li>`;
+    }
+    if (it.type === "sos") {
+      const s = it.s;
+      return `<li class="clickable sosrow" data-sos="${esc(s.sos_id)}"><span class="ico" aria-hidden="true">🆘</span>
+        <span><b>SOS · ${esc(s.user_name || "")}</b> · ${esc(sosLabel(s.kind))}${s.note ? " · " + esc(s.note) : ""}
+        ${s.resolved_at ? `<br><span class="dim">✅ Ended by ${esc(s.resolved_by || "?")} ${esc(when(s.resolved_at))}${s.resolve_note ? ": " + esc(s.resolve_note) : ""}</span>` : '<br><b class="sosnow">Still open</b>'}</span><span></span>
+        <span class="meta">${esc(when(it.at))}</span></li>`;
     }
     if (it.type === "resolved") {
       const x = it.x, r = it.r, what = [(x.tags || []).join(", "), x.text || x.note].filter(Boolean).join(" · ") || "Problem";
@@ -855,7 +870,7 @@
     if (store.get("pushOn", false)) await disablePush();          // this phone stops getting this person's messages
     try { await api("logout", {method: "POST"}); } catch (e) {}
     ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me", "tasks", "people", "places", "shapes", "draft", "chat", "msgq"].forEach(k => store.del(k));
-    chat = {...EMPTY_CHAT}; chatBadge(); rawSnap = snap = null; me = null; photos = []; show("login");
+    chat = {...EMPTY_CHAT}; chatBadge(); sosOpenId = null; renderSos(); rawSnap = snap = null; me = null; photos = []; show("login");
   };
 
   // ---------------------------------------------------------------- sheets
@@ -1297,6 +1312,7 @@
     if (chatBusy || !navigator.onLine || !store.get("token", null)) return;
     chatBusy = true;
     try {
+      if (sosQueue().length) await sendSos();
       const q = store.get("msgq", []);
       if (q.length) {
         const res = await api("messages", {method: "POST", body: JSON.stringify(q)});
@@ -1311,22 +1327,25 @@
       for (const [t, at] of Object.entries(r.reads || {})) if (!chat.reads[t] || at > chat.reads[t]) chat.reads[t] = at;
       chat.people = r.people || chat.people; chat.me = r.me || chat.me; if (r.now) chat.since = r.now;
       chat.receipts = r.receipts || chat.receipts || {};
+      chat.sos = r.sos || chat.sos || [];
       store.set("chat", chat);
     } catch (e) { if (e.signin) { show("login"); return; } }
     finally { chatBusy = false; }
-    chatBadge(); updateSyncPill();
+    chatBadge(); updateSyncPill(); renderSos();
     if (!$("v-chat").hidden) renderChat();
   }
+  // Check every 10 s on the Chat tab or while an SOS is open, every 20 s elsewhere (an SOS has to show up fast).
   setInterval(() => {
     if (document.hidden || !me) return;
     chatTick++;
-    if (!$("v-chat").hidden || chatTick % 6 === 0) pollChat();
+    if (!$("v-chat").hidden || activeSos().length || chatTick % 2 === 0) pollChat();
   }, 10000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && me) pollChat(); });
   if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => {
     const d = e.data || {};
     if (d.type === "chat-poll") pollChat();
     if (d.type === "open-chat") show(d.thread ? "chat-" + encodeURIComponent(d.thread) : "chat");
+    if (d.type === "open-sos" && d.sos) { pollChat(); openSos(d.sos); }
   });
   function markRead(t) {
     const last = chat.msgs.filter(m => m.thread_id === t).pop();
@@ -1369,6 +1388,182 @@
       chat.msgs = chat.msgs.filter(x => x.msg_id !== msg.msg_id); store.set("chat", chat); closeSheet(); renderChat();
     };
   }
+  // ================================================================ SOS: someone needs help
+  // Hold the red SOS button (top bar) for 2 seconds: everyone on the ranch gets an urgent notification and a full-screen
+  // alert with where you are; your location keeps updating while the SOS is open (with the app open); others can tap
+  // "On my way"; anyone can end it. Without signal the SOS waits on the phone and says so plainly.
+  const SOS_KINDS = [["injury", "🩸", "Injury"], ["vehicle", "🚙", "Vehicle accident / stuck"], ["fire", "🔥", "Fire"],
+    ["animal", "🐂", "Animal"], ["lost", "🧭", "Lost"], ["other", "🆘", "Other"]];
+  const sosLabel = k => (SOS_KINDS.find(x => x[0] === k) || SOS_KINDS[5])[2];
+  let sosOpenId = null, sosWatch = null, sosLastSent = null, sosBeeped = false;
+  const sosQueue = () => store.get("sosq", []);
+  function sosList() {                         // from the server, with what's still waiting on this phone on top
+    const list = (chat.sos || []).map(s => ({...s}));
+    for (const o of sosQueue()) {
+      let s = list.find(x => x.sos_id === o.sos_id);
+      if (o.op === "create" && !s) { s = {sos_id: o.sos_id, user_id: chatMe(), user_name: me && me.name, kind: o.kind, note: o.note, lat: o.lat ?? null,
+        lon: o.lon ?? null, accuracy_m: o.accuracy_m ?? null, created_at: o.at, resolved_at: null, acks: [], _waiting: true}; list.unshift(s); }
+      if (!s) continue;
+      if (o.op === "loc") Object.assign(s, {lat: o.lat, lon: o.lon, accuracy_m: o.accuracy_m, located_at: o.at});
+      if (o.op === "resolve") Object.assign(s, {resolved_at: o.at, resolved_by: me && me.name});
+      if (o.op === "ack" && !s.acks.some(a => a.user_id === chatMe())) s.acks = [...s.acks, {user_id: chatMe(), user_name: me && me.name, at: o.at}];
+    }
+    return list;
+  }
+  const activeSos = () => sosList().filter(s => !s.resolved_at);
+  const mySos = () => activeSos().find(s => s.user_id === chatMe());
+  function sosOp(op) {
+    const q = sosQueue(); q.push({...op, op_id: uid(), at: new Date().toISOString()}); store.set("sosq", q);
+    renderSos(); sendSos();
+  }
+  let sosSending = false;
+  async function sendSos() {
+    const q = sosQueue(); if (!q.length || sosSending || !navigator.onLine) { renderSos(); return; }
+    sosSending = true;
+    try {
+      const r = await api("sos", {method: "POST", body: JSON.stringify(q)});
+      const done = new Set([...r.done, ...r.errors.map(e => e.op_id)]);
+      store.set("sosq", sosQueue().filter(o => !done.has(o.op_id) && !done.has(o.sos_id)));
+      chat.sos = r.sos; store.set("chat", chat);
+    } catch (e) { /* no signal yet: it stays on the phone and goes on the next try */ }
+    finally { sosSending = false; }
+    renderSos(); updateSyncPill();
+  }
+  function ago(iso) { const m = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000)); return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; }
+  function bearing(a, b) {
+    const r = Math.PI / 180, y = Math.sin((b.lon - a.lon) * r) * Math.cos(b.lat * r);
+    const x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lon - a.lon) * r);
+    return (Math.atan2(y, x) / r + 360) % 360;
+  }
+  function fromMe(s) {
+    const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : (here || null);
+    if (!fx || s.lat == null) return "";
+    const d = metres(fx, s), km = d / 1000;
+    return `${km >= 1 ? km.toFixed(1) + " km" : Math.round(d) + " m"} ${compass(bearing(fx, s))} of you`;
+  }
+  // Watch my position while my SOS is open; send it when it moves 10 m or every 30 s.
+  function sosTrack(on) {
+    if (!on) { if (sosWatch != null) navigator.geolocation.clearWatch(sosWatch); sosWatch = null; return; }
+    if (sosWatch != null || !navigator.geolocation) return;
+    sosWatch = navigator.geolocation.watchPosition(p => {
+      const fix = {lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy), at: Date.now()};
+      cam.fix = fix;
+      const mine = mySos(); if (!mine) { sosTrack(false); return; }
+      const moved = !sosLastSent || metres(sosLastSent, fix) > 10 || Date.now() - sosLastSent.at > 30000 || mine.lat == null;
+      if (moved) { sosLastSent = fix; sosOp({op: "loc", sos_id: mine.sos_id, lat: fix.lat, lon: fix.lon, accuracy_m: fix.acc}); }
+    }, () => {}, {enableHighAccuracy: true, maximumAge: 5000, timeout: 30000});
+  }
+  function alarm() {                            // a short alarm where the phone allows it (sound needs a tap first on some phones)
+    try { navigator.vibrate && navigator.vibrate([600, 200, 600, 200, 600]); } catch (e) {}
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)(), g = ctx.createGain(); g.connect(ctx.destination); g.gain.value = 0.25;
+      [0, 0.45, 0.9].forEach(t => { const o = ctx.createOscillator(); o.type = "square"; o.frequency.value = 880; o.connect(g); o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.3); });
+      setTimeout(() => ctx.close(), 1600);
+    } catch (e) {}
+  }
+  function openSos(id) { sosOpenId = id; renderSos(); }
+  function renderSos() {
+    const btn = $("sosBtn"); btn.hidden = !me;
+    const act = activeSos(), mine = mySos(), others = act.filter(s => s.user_id !== chatMe());
+    btn.classList.toggle("live", !!mine);
+    sosTrack(!!mine);
+    // A new SOS from someone else pops up on top of everything (once per SOS on this phone).
+    const seen = new Set(store.get("sosSeen", []));
+    const fresh = others.find(s => !seen.has(s.sos_id));
+    if (fresh) { seen.add(fresh.sos_id); store.set("sosSeen", [...seen].slice(-50)); sosOpenId = fresh.sos_id; alarm(); }
+    // banner for every open SOS while the full screen is closed
+    const bar = $("sosBar");
+    bar.hidden = !act.length || !!sosOpenId;
+    bar.innerHTML = act.map(s => `<button type="button" data-sos="${esc(s.sos_id)}">🆘 <b>${s.user_id === chatMe() ? "Your SOS is on" : esc(s.user_name || "Someone") + " needs help"}</b>
+      · ${esc(sosLabel(s.kind))} · ${esc(ago(s.created_at))}${s._waiting ? " · ⏳ not sent yet" : ""} <span class="go">Open ›</span></button>`).join("");
+    const scr = $("sosScreen");
+    if (sosOpenId === "new") return sosSendScreen();
+    const s = sosOpenId && sosList().find(x => x.sos_id === sosOpenId);
+    if (!s) { scr.hidden = true; sosOpenId = null; bar.hidden = !act.length; return; }
+    scr.hidden = false;
+    const coming = (s.acks || []).map(a => `${esc(a.user_name || "Someone")} <span class="dim">(${esc(ago(a.at))})</span>`).join(", ");
+    const where = s.lat != null ? `📍 ${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}${s.accuracy_m ? ` (±${Math.round(s.accuracy_m)} m)` : ""}${s.located_at ? " · updated " + esc(ago(s.located_at)) : ""}` : "📍 Location not known yet";
+    if (s.resolved_at) {
+      scr.innerHTML = `<div class="sosbox over"><h2 id="sosTitle">✅ SOS over</h2><p><b>${esc(s.user_name || "")}</b> · ${esc(sosLabel(s.kind))}</p>
+        <p>Ended by ${esc(s.resolved_by || "?")} ${esc(ago(s.resolved_at))}${s.resolve_note ? ": " + esc(s.resolve_note) : ""}</p>
+        <div class="row"><button type="button" class="secondary" data-sosclose>Close</button></div></div>`;
+    } else if (s.user_id === chatMe()) {
+      scr.innerHTML = `<div class="sosbox mine"><h2 id="sosTitle">🆘 Your SOS ${s._waiting ? "is waiting" : "is sent"}</h2>
+        ${s._waiting ? `<p class="sosfail">⏳ <b>No signal: not sent yet.</b> It goes the moment this phone gets signal. Keep RangeIQ open and move to higher ground if you can.</p>`
+          : `<p class="sosok">✓ Everyone on the ranch has been alerted.</p>`}
+        <p>${esc(sosLabel(s.kind))}${s.note ? " · " + esc(s.note) : ""}</p>
+        <p class="dim">${where}. Your location keeps updating while RangeIQ is open.</p>
+        <p>${coming ? "🚙 <b>On the way:</b> " + coming : "Nobody has answered yet."}</p>
+        <div class="row"><button type="button" class="primary okbtn" data-sosok="${esc(s.sos_id)}">✅ I'm OK — end SOS</button>
+        <button type="button" class="secondary" data-sosmin>Minimize</button></div></div>`;
+    } else {
+      const imComing = (s.acks || []).some(a => a.user_id === chatMe());
+      scr.innerHTML = `<div class="sosbox alert"><h2 id="sosTitle">🆘 ${esc(s.user_name || "Someone")} needs help</h2>
+        <p class="sosbig">${esc(sosLabel(s.kind))}${s.note ? " · " + esc(s.note) : ""}</p>
+        <p>${esc(ago(s.created_at))}${fromMe(s) ? " · <b>" + esc(fromMe(s)) + "</b>" : ""}</p>
+        <p class="dim">${where}</p>
+        <p>${coming ? "🚙 On the way: " + coming : "Nobody is on the way yet."}</p>
+        <div class="sosbtns">${s.lat != null ? `<button type="button" class="primary" data-sosmap="${esc(s.sos_id)}">🗺 Show on map</button>` : ""}
+          ${imComing ? `<p class="sosok">✓ You're on the way.</p>` : `<button type="button" class="primary onway" data-sosack="${esc(s.sos_id)}">🚙 I'm on my way</button>`}
+          <button type="button" class="secondary" data-sosok="${esc(s.sos_id)}">✅ They're OK — end SOS</button>
+          <button type="button" class="secondary" data-sosmin>Minimize</button></div></div>`;
+    }
+  }
+  function sosSendScreen() {
+    const scr = $("sosScreen"); scr.hidden = false;
+    startSensors();
+    let kind = scr.dataset.kind || "injury";
+    const fx = () => cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
+    scr.innerHTML = `<div class="sosbox send"><h2 id="sosTitle">Send an SOS to your crew</h2>
+      <p class="dim">Everyone on the ranch gets an alert with where you are.</p>
+      <div class="soskinds">${SOS_KINDS.map(([k, ic, l]) => `<button type="button" data-soskind="${k}" aria-pressed="${k === kind}">${ic} ${esc(l)}</button>`).join("")}</div>
+      <label>What happened? (optional)<input id="sosNote" maxlength="200" placeholder="Fell off the horse by the north tank" value="${esc(scr.dataset.note || "")}"></label>
+      <p class="dim" id="sosGps">📍 Getting your location…</p>
+      ${navigator.onLine ? "" : `<p class="sosfail">⏳ No signal right now. The SOS will wait on this phone and go the moment there's signal.</p>`}
+      <button type="button" class="sosHold" id="sosHold"><span class="fill"></span><span class="lbl">Hold for 2 seconds to send SOS</span></button>
+      <div class="row"><button type="button" class="secondary" data-sosclose>Cancel</button></div></div>`;
+    const gps = () => { const g = $("sosGps"); if (!g) return; const f = fx(); g.textContent = f ? `📍 Location ready (±${f.acc} m)` : "📍 Getting your location… (it sends without it and adds it when the GPS finds you)"; };
+    gps(); const t = setInterval(() => { if (!$("sosGps")) return clearInterval(t); gps(); }, 1000);
+    scr.querySelectorAll("[data-soskind]").forEach(b => b.onclick = () => { scr.dataset.kind = b.dataset.soskind; scr.dataset.note = $("sosNote").value; sosSendScreen(); });
+    const hold = $("sosHold");
+    let timer = null;
+    const stop = () => { clearTimeout(timer); timer = null; hold.classList.remove("holding"); };
+    hold.addEventListener("pointerdown", e => {
+      e.preventDefault(); hold.classList.add("holding");
+      timer = setTimeout(() => {
+        stop(); clearInterval(t);
+        const f = fx(), id = uid();
+        try { navigator.vibrate && navigator.vibrate(300); } catch (err) {}
+        sosOpenId = id; delete scr.dataset.kind; const note = $("sosNote").value.trim(); delete scr.dataset.note;
+        sosOp({op: "create", sos_id: id, kind, note: note || null, lat: f ? f.lat : null, lon: f ? f.lon : null, accuracy_m: f ? f.acc : null});
+        if (f) sosLastSent = f;
+      }, 2000);
+    });
+    ["pointerup", "pointerleave", "pointercancel"].forEach(ev => hold.addEventListener(ev, stop));
+    hold.addEventListener("contextmenu", e => e.preventDefault());
+  }
+  $("sosBtn").onclick = () => { const mine = mySos(); openSos(mine ? mine.sos_id : "new"); };
+  document.addEventListener("click", e => {
+    const t = e.target;
+    const b = t.closest("[data-sos]"); if (b) { openSos(b.dataset.sos); return; }
+    if (t.closest("[data-sosclose]")) { if (sosOpenId === "new") stopSensors(); sosOpenId = null; renderSos(); return; }
+    if (t.closest("[data-sosmin]")) { sosOpenId = null; renderSos(); return; }
+    const m = t.closest("[data-sosmap]");
+    if (m) { const s = sosList().find(x => x.sos_id === m.dataset.sosmap); sosOpenId = null; renderSos(); if (s && s.lat != null) showOnMap(s.lat, s.lon); return; }
+    const a = t.closest("[data-sosack]"); if (a) { sosOp({op: "ack", sos_id: a.dataset.sosack}); startSensors(); return; }
+    const ok = t.closest("[data-sosok]");
+    if (ok) {
+      const s = sosList().find(x => x.sos_id === ok.dataset.sosok); if (!s) return;
+      const mine = s.user_id === chatMe();
+      const note = prompt(mine ? "End your SOS? Add a note for the crew (optional):" : `End ${s.user_name || "their"}'s SOS? What happened (optional):`, "");
+      if (note === null) return;
+      sosOp({op: "resolve", sos_id: s.sos_id, note: note.trim() || null});
+      if (mine) sosTrack(false);
+      sosOpenId = null; renderSos(); toast("SOS ended.");
+    }
+  });
+  setInterval(() => { if (activeSos().length) renderSos(); }, 30000);   // keep "x min ago" and distances fresh
+
   // ---- profile pictures
   function personOf(uid) { return chat.people.find(p => p.user_id === uid) || (me && uid === me.user_id ? {user_id: uid, name: me.name, avatar_url: me.avatar_url} : null); }
   function avatar(person, cls = "av") {
@@ -2085,7 +2280,7 @@
   }
   function updateSyncPill() {
     const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length
-      + store.get("resolveq", []).length + store.get("msgq", []).length, p = $("syncPill");
+      + store.get("resolveq", []).length + store.get("msgq", []).length + store.get("sosq", []).length, p = $("syncPill");
     p.hidden = !n; p.textContent = n + " waiting to send";
   }
   $("syncPill").onclick = () => syncAll(true);
@@ -2103,7 +2298,7 @@
   }
   // ---------------------------------------------------------------- switch between ranches (one login, several ranches)
   const unsent = () => store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length
-    + store.get("resolveq", []).length + store.get("msgq", []).length;
+    + store.get("resolveq", []).length + store.get("msgq", []).length + store.get("sosq", []).length;
   async function switchRanch(workspaceId) {
     if (!me || workspaceId === me.workspace_id) { closeSheet(); return; }
     if (unsent()) { await syncAll(true); if (unsent()) { toast("Some photos or entries for this ranch haven't sent yet. Switch once they have."); return; } }

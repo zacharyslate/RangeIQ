@@ -20,12 +20,15 @@
 <header class="top">
   <button type="button" class="brand" id="brandBtn" aria-label="Ranch name. Tap to switch ranch"><img src="icon-192.png" alt="" width="30" height="30"><span id="brandName">RangeIQ</span><span id="brandCaret" aria-hidden="true" hidden>▾</span></button>
   <div class="top-actions">
+    <button type="button" id="sosBtn" class="sosbtn" hidden aria-label="SOS: send an emergency alert to your crew">SOS</button>
     <button type="button" id="installBtn" class="pill" hidden>Install</button>
     <button type="button" id="syncPill" class="pill warn" hidden></button>
   </div>
 </header>
 
 <div id="banner" class="banner" role="status" hidden></div>
+<div id="sosBar" class="sosbar" role="alert" hidden></div>
+<div id="sosScreen" class="sosscreen" role="dialog" aria-modal="true" aria-labelledby="sosTitle" hidden></div>
 
 <main id="views">
   <!-- ============================== SIGN IN / JOIN -->

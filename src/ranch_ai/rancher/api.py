@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import threading
 import time
 from collections import defaultdict, deque
@@ -604,7 +605,8 @@ def create_app(
         everyone = people(ws)
         threads = ["all"] + [app.state.store.dm_thread(uid, p["user_id"]) for p in everyone if p["user_id"] != uid]
         return {"messages": msgs, "reads": app.state.store.reads(ws, uid), "people": everyone, "me": uid,
-                "receipts": app.state.store.receipts(ws, threads), "now": max(marks) if marks else None}
+                "receipts": app.state.store.receipts(ws, threads), "now": max(marks) if marks else None,
+                "sos": app.state.store.list_sos(ws)}
 
     @app.post("/api/messages/delivered")
     def message_delivered(payload: dict[str, Any] = Body(...)) -> dict[str, bool]:
@@ -665,6 +667,77 @@ def create_app(
                                                               is_owner=sess["role"] == "owner")}
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from None
+
+    # -- SOS --------------------------------------------------------------------------
+    # Someone in trouble holds the SOS button: everyone on the ranch gets an urgent notification and a full-screen alert
+    # with where they are; the location keeps updating while it's open; others tap "On my way"; anyone can close it.
+    SOS_LABEL = {"injury": "Injury", "vehicle": "Vehicle accident / stuck", "fire": "Fire", "animal": "Animal",
+                 "lost": "Lost", "other": "Needs help"}
+
+    def sos_post(ws: str, sess: dict[str, str], text: str) -> None:
+        """Put an SOS line in the Everyone chat so the history is in one place (no separate chat push)."""
+        try:
+            app.state.store.add_message(ws, {"msg_id": "sos-" + secrets.token_hex(8), "thread_id": "all", "text": text},
+                                        user_id=sess["user_id"], user_name=who(sess), members={p["user_id"] for p in people(ws)})
+        except ValueError:
+            pass
+
+    def where_text(s: dict[str, Any]) -> str:
+        return f"{s['lat']:.5f}, {s['lon']:.5f}" + (f" (±{round(s['accuracy_m'])} m)" if s.get("accuracy_m") else "") if s.get("lat") is not None \
+            else "location not known yet"
+
+    @app.get("/api/sos")
+    def list_sos(sess: dict[str, str] = Depends(session)) -> list[dict[str, Any]]:
+        return app.state.store.list_sos(sess["workspace_id"])
+
+    @app.post("/api/sos")
+    def sos_ops(payload: Any = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        """Ops in order (they may have waited on a phone without signal):
+        {op:"create", sos_id, kind, note, lat, lon, accuracy_m} | {op:"loc", sos_id, lat, lon, accuracy_m} |
+        {op:"ack", sos_id} | {op:"resolve", sos_id, note}"""
+        ops = payload if isinstance(payload, list) else [payload]
+        if len(ops) > 200 or not all(isinstance(o, dict) for o in ops):
+            raise HTTPException(status_code=400, detail="Send at most 200 changes at a time.")
+        ws, uid, name, store = sess["workspace_id"], sess["user_id"], who(sess), app.state.store
+        everyone = [p["user_id"] for p in people(ws) if p["user_id"] != uid]
+        done, errors = [], []
+        for o in ops:
+            sid, op = str(o.get("sos_id") or ""), o.get("op")
+            try:
+                if op == "create":
+                    s, fresh = store.create_sos(ws, o, user_id=uid, user_name=name)
+                    if fresh:
+                        what = SOS_LABEL.get(s["kind"], "Needs help")
+                        sos_post(ws, sess, f"🆘 SOS: {what}{' · ' + s['note'] if s['note'] else ''}. Where: {where_text(s)}")
+                        webpush_mod.send_in_background(store, everyone, {
+                            "type": "sos", "sos": True, "title": f"🆘 SOS · {name}", "tag": "sos-" + sid,
+                            "body": f"{what}{' · ' + s['note'] if s['note'] else ''}. Tap to see where.", "url": f"/app/#sos-{sid}"})
+                elif op == "loc":
+                    if not store.update_sos_location(ws, sid, o, user_id=uid):
+                        raise ValueError("That SOS is closed or isn't yours.")
+                elif op == "ack":
+                    if store.ack_sos(ws, sid, user_id=uid, user_name=name):
+                        s = next((x for x in store.list_sos(ws) if x["sos_id"] == sid), None)
+                        if s:
+                            sos_post(ws, sess, f"🚙 On my way to {s['user_name'] or 'them'}.")
+                            webpush_mod.send_in_background(store, [s["user_id"]], {
+                                "type": "sos-ack", "title": f"🚙 {name} is on the way", "body": "Stay where you are if you can.",
+                                "tag": "sos-" + sid + "-ack", "url": f"/app/#sos-{sid}"})
+                elif op == "resolve":
+                    s = store.resolve_sos(ws, sid, user_name=name, note=o.get("note"))
+                    if s:
+                        own = s["user_id"] == uid
+                        sos_post(ws, sess, f"✅ SOS over: {'I’m OK' if own else (s['user_name'] or 'They') + ' is OK'}"
+                                           f"{' · ' + s['resolve_note'] if s['resolve_note'] else ''}")
+                        webpush_mod.send_in_background(store, everyone, {
+                            "type": "sos-over", "title": f"✅ SOS over · {s['user_name']}", "tag": "sos-" + sid,
+                            "body": (s["resolve_note"] or ("They're OK." if not own else "I'm OK.")), "url": "/app/#chat-all"})
+                else:
+                    raise ValueError("Unknown change.")
+                done.append(o.get("op_id") or sid)
+            except ValueError as exc:
+                errors.append({"op_id": o.get("op_id"), "sos_id": sid, "error": str(exc)})
+        return {"done": done, "errors": errors, "sos": store.list_sos(ws)}
 
     @app.get("/api/push/key")
     def push_key(sess: dict[str, str] = Depends(session)) -> dict[str, str]:
