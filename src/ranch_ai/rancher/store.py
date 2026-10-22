@@ -220,6 +220,11 @@ class AppStore:
                     at TEXT NOT NULL,
                     PRIMARY KEY (workspace_id, user_id, thread_id)
                 );
+                -- Profile pictures (one per person, used on every ranch they're on). The file is <photo dir>/avatars/<user>.jpg.
+                CREATE TABLE IF NOT EXISTS avatars (
+                    user_id TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL
+                );
                 -- Phones that asked for notifications (Web Push). One row per phone/browser.
                 CREATE TABLE IF NOT EXISTS push_subs (
                     endpoint TEXT PRIMARY KEY,
@@ -530,6 +535,32 @@ class AppStore:
             out = {"msg_id": row["msg_id"], "thread_id": row["thread_id"], "deleted": True, "created_at": row["created_at"],
                    "deleted_at": row["deleted_at"]}
         return out
+
+    # -- profile pictures ---------------------------------------------------------------
+    def avatar_path(self, user_id: str) -> Path:
+        base = Path(os.getenv("RANGEIQ_PHOTO_DIR", PROJECT_ROOT / "data" / "photos")) / "avatars"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / ("".join(ch for ch in user_id if ch.isalnum() or ch in "-_") + ".jpg")
+
+    def set_avatar(self, user_id: str, jpeg: bytes) -> str:
+        self.avatar_path(user_id).write_bytes(jpeg)
+        stamp = utc_now().isoformat(timespec="seconds")
+        with self._connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO avatars(user_id, updated_at) VALUES (?, ?)", (user_id, stamp))
+        return stamp
+
+    def remove_avatar(self, user_id: str) -> bool:
+        self.avatar_path(user_id).unlink(missing_ok=True)
+        with self._connect() as conn:
+            return conn.execute("DELETE FROM avatars WHERE user_id = ?", (user_id,)).rowcount > 0
+
+    def avatar_versions(self, user_ids: Iterable[str]) -> dict[str, str]:
+        ids = list(set(user_ids))
+        if not ids:
+            return {}
+        with self._connect() as conn:
+            rows = conn.execute(f"SELECT user_id, updated_at FROM avatars WHERE user_id IN ({','.join('?' * len(ids))})", ids).fetchall()
+        return {r["user_id"]: r["updated_at"] for r in rows}
 
     # -- push notifications (Web Push) ------------------------------------------------
     def save_push_sub(self, user_id: str, sub: dict[str, Any]) -> None:

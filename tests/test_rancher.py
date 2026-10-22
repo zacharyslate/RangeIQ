@@ -1073,3 +1073,28 @@ def test_message_ticks_sent_delivered_seen(client, monkeypatch):
     assert rec(luis)[dm][ids["Zach"]]["read"] == msg["a"]["created_at"]
     # Ana can't see receipts of a direct conversation she isn't in
     assert dm not in rec(ana)
+
+
+def test_profile_pictures_private_and_shown_to_the_crew(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("RANGEIQ_PHOTO_DIR", str(tmp_path / "photos"))
+    owner = _login(client)
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    luis = {"Authorization": "Bearer " + client.post("/api/join", json={"code": code, "name": "Luis", "email": "luis@example.com",
+                                                                        "password": "HandPass123"}).json()["token"]}
+    client.cookies.clear()
+    files = lambda data: {"photo": ("a.jpg", data, "image/jpeg")}   # noqa: E731
+    assert client.post("/api/me/avatar", headers=luis, files=files(b"GIF89a")).status_code == 400
+    assert client.post("/api/me/avatar", headers=luis, files=files(JPEG + b"0" * 400_000)).status_code == 413
+    url = client.post("/api/me/avatar", headers=luis, files=files(JPEG)).json()["avatar_url"]
+    assert url.startswith("/api/avatar/")
+    people = {p["name"]: p for p in client.get("/api/messages", headers=owner).json()["people"]}
+    assert people["Luis"]["avatar_url"] == url and people["Zach"]["avatar_url"] is None
+    assert client.get(url).content == JPEG                                       # signed link works without sign-in (for <img>)
+    assert client.get(url.replace("sig=", "sig=0")).status_code == 403           # but can't be guessed
+    assert client.get("/api/me", headers=luis).json()["avatar_url"] == url
+    # a new picture gets a new link (phones don't keep showing the old one)
+    import time as _t; _t.sleep(1.1)
+    url2 = client.post("/api/me/avatar", headers=luis, files=files(JPEG + b"x")).json()["avatar_url"]
+    assert url2 != url
+    assert client.delete("/api/me/avatar", headers=luis).json() == {"removed": True}
+    assert client.get("/api/me", headers=luis).json()["avatar_url"] is None and client.get(url2).status_code == 404

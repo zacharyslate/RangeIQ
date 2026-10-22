@@ -366,7 +366,7 @@ body.drawing #v-map .map{height:calc(100dvh - 300px - env(safe-area-inset-bottom
 .tabbadge{position:absolute;top:2px;right:calc(50% - 22px);min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#c0392b;color:#fff;font-size:.72rem;line-height:18px;font-weight:800}
 .threads{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .threads button{width:100%;display:grid;grid-template-columns:44px 1fr auto;gap:2px 12px;align-items:center;text-align:left;background:var(--surface);border:1px solid var(--rule);border-radius:14px;padding:10px 12px;color:inherit;cursor:pointer}
-.threads .av{grid-row:span 2;width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1.05rem;background:var(--surface-2)}
+.threads .av{grid-row:span 2}
 .threads .who{font-weight:800}
 .threads .last{color:var(--muted);font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;grid-column:2}
 .threads .when{color:var(--muted);font-size:.8rem;grid-row:1;grid-column:3;text-align:right}
@@ -395,3 +395,29 @@ body.drawing #v-map .map{height:calc(100dvh - 300px - env(safe-area-inset-bottom
 .tick.read,.bubbles .msg.mine .tick.read{color:#53bdeb;opacity:1;font-weight:800}
 .threads .last .tick{color:var(--muted)} .threads .last .tick.read{color:#2a9fd6}
 .msginfo{background:var(--surface);border:1px solid var(--rule);border-radius:12px;padding:10px 12px;white-space:pre-wrap}
+
+/* ---- chat look: RangeIQ logo behind conversations; profile pictures */
+.av{width:44px;height:44px;border-radius:50%;object-fit:cover;flex:none;display:inline-flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:1.05rem;background:var(--surface-2);color:var(--ink-2)}
+.av.logo{object-fit:contain;background:#fbf6ed;padding:3px;box-sizing:border-box}
+.av.small{width:34px;height:34px;font-size:.9rem}
+.av.mini{width:20px;height:20px;font-size:.65rem;vertical-align:-5px;margin-right:6px}
+.av.big{width:52px;height:52px;font-size:1.3rem}
+.av.huge{width:144px;height:144px;font-size:3rem}
+.picprev{display:flex;justify-content:center;margin:6px 0 10px}
+.chathero{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.mepic{position:relative;background:none;border:0;padding:0;cursor:pointer;border-radius:50%;margin-top:6px}
+.mepic .av{box-shadow:0 0 0 2px var(--surface),0 0 0 3px var(--rule)}
+.mepic .edit{position:absolute;right:-2px;bottom:-2px;width:22px;height:22px;border-radius:50%;background:var(--accent,#1f5e3b);color:#fff;font-size:.75rem;
+  display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px var(--bg)}
+.chathead .av{margin-left:2px}
+#c-thread{position:relative}
+#c-thread::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:url(chat-bg.png) center 46% / min(78vw, 440px) no-repeat;opacity:.11}
+#c-thread > *{position:relative;z-index:1}
+#c-thread .composer{position:fixed;z-index:5}
+#c-thread .chathead{z-index:3;background:color-mix(in srgb, var(--bg) 92%, transparent);backdrop-filter:blur(6px)}
+@media (prefers-color-scheme: dark){ #c-thread::before{opacity:.24} .av.logo{background:#fbf6ed} }
+@media (min-width: 960px){ #c-thread::before{left:240px} }
+.mepic{flex:none;width:52px;height:52px;line-height:0;align-self:flex-start}
+.mepic .av.big{width:52px;height:52px;min-height:0;font-size:1.3rem;line-height:1}

@@ -766,6 +766,7 @@
 
   // ---------------------------------------------------------------- MORE (crew, settings)
   async function renderMore() {
+    renderMePic();
     $("o-who").textContent = me ? `${me.name}${me.role === "crew" ? " · crew" : ""} · ${me.ranch}` : "";
     $("o-everyday").checked = store.get("hideEveryday", false);
     $("o-everyday").onchange = e => setHideEveryday(e.target.checked);
@@ -1368,6 +1369,47 @@
       chat.msgs = chat.msgs.filter(x => x.msg_id !== msg.msg_id); store.set("chat", chat); closeSheet(); renderChat();
     };
   }
+  // ---- profile pictures
+  function personOf(uid) { return chat.people.find(p => p.user_id === uid) || (me && uid === me.user_id ? {user_id: uid, name: me.name, avatar_url: me.avatar_url} : null); }
+  function avatar(person, cls = "av") {
+    const name = (person && person.name) || "?";
+    return person && person.avatar_url ? `<img class="${cls}" src="${esc(fileUrl(person.avatar_url))}" alt="" loading="lazy">`
+      : `<span class="${cls} initial" aria-hidden="true">${esc(name.trim()[0] ? name.trim()[0].toUpperCase() : "?")}</span>`;
+  }
+  function renderMePic() {
+    const html = avatar(me ? {name: me.name, avatar_url: me.avatar_url} : null, "av big") + '<span class="edit" aria-hidden="true">✎</span>';
+    ["c-mepic", "o-mepic"].forEach(id => { if ($(id)) $(id).innerHTML = html; });
+  }
+  function pictureSheet() {
+    openSheet("Your profile picture", `<div class="picprev">${avatar(me ? {name: me.name, avatar_url: me.avatar_url} : null, "av huge")}</div>
+      <p class="dim small">Everyone on your ranch sees it next to your name in Chat.</p>
+      <div class="row"><button type="button" class="primary" id="picPick">📷 Take or choose a photo</button>
+        ${me && me.avatar_url ? `<button type="button" class="secondary" id="picDel">Remove</button>` : ""}</div>`);
+    $("picPick").onclick = () => { const i = $("picInput"); i.value = ""; i.click(); };
+    if ($("picDel")) $("picDel").onclick = async () => {
+      try { await api("me/avatar", {method: "DELETE"}); me.avatar_url = null; store.set("me", me); afterPic(); toast("Picture removed."); }
+      catch (e) { toast(navigator.onLine ? e.message : "Changing your picture needs signal."); }
+    };
+  }
+  function afterPic() {
+    const p = chat.people.find(x => x.user_id === (me && me.user_id)); if (p) { p.avatar_url = me.avatar_url; store.set("chat", chat); }
+    renderMePic(); closeSheet(); if (!$("v-chat").hidden) renderChat();
+  }
+  $("picInput").onchange = async e => {
+    const file = e.target.files && e.target.files[0]; if (!file) return;
+    try {
+      const img = await loadImage(file), side = Math.min(img.naturalWidth || img.width, img.naturalHeight || img.height);
+      const c = document.createElement("canvas"); c.width = c.height = 320;            // square, from the middle of the photo
+      c.getContext("2d").drawImage(img, ((img.naturalWidth || img.width) - side) / 2, ((img.naturalHeight || img.height) - side) / 2, side, side, 0, 0, 320, 320);
+      URL.revokeObjectURL(img.src);
+      const blob = await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.85));
+      const fd = new FormData(); fd.append("photo", blob, "me.jpg");
+      const r = await api("me/avatar", {method: "POST", body: fd});
+      me.avatar_url = r.avatar_url; store.set("me", me); afterPic(); toast("Picture updated.");
+    } catch (err) { toast(navigator.onLine ? "Couldn't use that picture: " + err.message : "Changing your picture needs signal."); }
+  };
+  ["c-mepic", "o-mepic"].forEach(id => { if ($(id)) $(id).onclick = pictureSheet; });
+
   const dayOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"}); };
   const timeOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}); };
   function renderChat() {
@@ -1375,7 +1417,7 @@
     $("c-list").hidden = inThread; $("c-thread").hidden = !inThread;
     const mine = chatMe(), all = chatAll();
     if (!inThread) {
-      renderNotify();
+      renderNotify(); renderMePic();
       const others = chat.people.filter(p => p.user_id !== mine);
       const threads = ["all", ...others.map(p => dmThread(mine || "", p.user_id))];
       const lastOf = t => all.filter(m => m.thread_id === t).pop();
@@ -1383,7 +1425,7 @@
         .sort((a, b) => (a.t === "all" ? -1 : b.t === "all" ? 1 : String((b.last || {}).created_at || "").localeCompare(String((a.last || {}).created_at || "")) || threadName(a.t).localeCompare(threadName(b.t))));
       $("c-threads").innerHTML = rows.map(({t, last, n}) => {
         const name = threadName(t), person = t === "all" ? null : chat.people.find(p => p.user_id === t.slice(3).split("|").find(u => u !== mine));
-        return `<li><button type="button" data-thread="${esc(t)}"><span class="av" aria-hidden="true">${t === "all" ? "👥" : esc((name[0] || "?").toUpperCase())}</span>
+        return `<li><button type="button" data-thread="${esc(t)}">${t === "all" ? '<img class="av logo" src="chat-bg.png" alt="">' : avatar(person)}
           <span class="who">${esc(name)}${person && person.role === "crew" ? ' <span class="dim small">crew</span>' : ""}</span>
           <span class="when">${last ? esc(timeOf(last.created_at)) : ""}</span>
           <span class="last">${last ? (last.from_user === mine ? TICK[tickOf(last)] + " " : t === "all" ? esc(last.from_name || "") + ": " : "") + esc(last.text) : t === "all" ? "Messages to the whole crew" : "No messages yet"}</span>
@@ -1392,6 +1434,8 @@
       return;
     }
     $("c-title").textContent = threadName(chatThread);
+    $("c-headpic").innerHTML = chatThread === "all" ? '<img class="av small logo" src="chat-bg.png" alt="">'
+      : avatar(personOf(chatThread.slice(3).split("|").find(u => u !== mine)), "av small");
     const list = all.filter(m => m.thread_id === chatThread), box = $("c-msgs");
     const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
     let day = "";
@@ -1399,7 +1443,7 @@
       const d = dayOf(m.created_at), head = d !== day ? `<li class="day">${esc(d)}</li>` : ""; day = d;
       const isMine = m.from_user === mine;
       return `${head}<li class="msg${isMine ? " mine" : ""}${m._pending ? " pending" : ""}" ${isMine ? `data-msg="${esc(m.msg_id)}"` : ""}>
-        ${!isMine && chatThread === "all" ? `<span class="from">${esc(m.from_name || "")}</span>` : ""}<span class="body">${esc(m.text)}</span><span class="t">${esc(timeOf(m.created_at))}${isMine ? " " + TICK[tickOf(m)] : ""}</span></li>`;
+        ${!isMine && chatThread === "all" ? `<span class="from">${avatar(personOf(m.from_user) || {name: m.from_name}, "av mini")}${esc(m.from_name || "")}</span>` : ""}<span class="body">${esc(m.text)}</span><span class="t">${esc(timeOf(m.created_at))}${isMine ? " " + TICK[tickOf(m)] : ""}</span></li>`;
     }).join("") || `<li class="day">${chatThread === "all" ? "Say something to the whole crew." : "Start the conversation."}</li>`;
     if (nearBottom || !box.dataset.shown) { box.dataset.shown = "1"; window.scrollTo(0, document.body.scrollHeight); }
     markRead(chatThread);
