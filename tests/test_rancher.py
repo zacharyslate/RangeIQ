@@ -1098,3 +1098,42 @@ def test_profile_pictures_private_and_shown_to_the_crew(client, tmp_path, monkey
     assert url2 != url
     assert client.delete("/api/me/avatar", headers=luis).json() == {"removed": True}
     assert client.get("/api/me", headers=luis).json()["avatar_url"] is None and client.get(url2).status_code == 404
+
+
+def test_sos_alerts_everyone_tracks_location_and_closes(client, monkeypatch):
+    from ranch_ai.rancher import push
+
+    owner = _login(client)
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    def join(name, email):
+        r = client.post("/api/join", json={"code": code, "name": name, "email": email, "password": "HandPass123"}).json()
+        client.cookies.clear()
+        return {"Authorization": "Bearer " + r["token"]}
+    luis, ana = join("Luis", "luis@example.com"), join("Ana", "ana@example.com")
+    pushed = []
+    monkeypatch.setattr(push, "send_in_background", lambda store, ids, payload: pushed.append((sorted(ids), payload)))
+    ids = {p["name"]: p["user_id"] for p in client.get("/api/messages", headers=owner).json()["people"]}
+
+    # Luis holds SOS with no GPS fix yet, then the location arrives; a re-send (from the offline queue) is harmless
+    r = client.post("/api/sos", headers=luis, json=[{"op": "create", "sos_id": "s1", "kind": "injury", "note": "Fell off the horse"},
+                                                    {"op": "loc", "sos_id": "s1", "lat": 30.31, "lon": -103.69, "accuracy_m": 8}]).json()
+    assert r["errors"] == [] and r["sos"][0]["lat"] == 30.31 and r["sos"][0]["resolved_at"] is None
+    client.post("/api/sos", headers=luis, json={"op": "create", "sos_id": "s1", "kind": "injury"})
+    urgent = [p for i, p in pushed if p.get("type") == "sos"]
+    assert len(urgent) == 1 and pushed[0][0] == sorted([ids["Zach"], ids["Ana"]]) and urgent[0]["title"] == "🆘 SOS · Luis"
+    # everyone sees it in the poll and in the Everyone chat
+    poll = client.get("/api/messages", headers=ana).json()
+    assert poll["sos"][0]["sos_id"] == "s1" and any(m["text"].startswith("🆘 SOS: Injury · Fell off the horse") for m in poll["messages"])
+    # someone else can't move Luis's pin
+    assert client.post("/api/sos", headers=ana, json={"op": "loc", "sos_id": "s1", "lat": 1, "lon": 1}).json()["errors"]
+    # Zach is on the way: Luis is told, and it shows on the SOS
+    client.post("/api/sos", headers=owner, json={"op": "ack", "sos_id": "s1"})
+    assert [a["user_name"] for a in client.get("/api/sos", headers=luis).json()[0]["acks"]] == ["Zach"]
+    assert any(i == [ids["Luis"]] and p["type"] == "sos-ack" for i, p in pushed)
+    # Zach reaches him and closes it; the SOS stays in the list (for the Log) but isn't active
+    client.post("/api/sos", headers=owner, json={"op": "resolve", "sos_id": "s1", "note": "Sprained wrist, driving him in"})
+    s = client.get("/api/sos", headers=ana).json()[0]
+    assert s["resolved_by"] == "Zach" and s["resolve_note"] == "Sprained wrist, driving him in"
+    assert client.post("/api/sos", headers=luis, json={"op": "loc", "sos_id": "s1", "lat": 30.3, "lon": -103.6}).json()["errors"]
+    texts = [m["text"] for m in client.get("/api/messages", headers=luis).json()["messages"]]
+    assert any(t.startswith("✅ SOS over: Luis is OK") for t in texts) and any(t.startswith("🚙 On my way to Luis") for t in texts)

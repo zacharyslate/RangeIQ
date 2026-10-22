@@ -139,6 +139,14 @@ self.addEventListener("push", e => {{
       body: JSON.stringify({{receipt: d.receipt}})}}).catch(() => {{}});
     const wins = await self.clients.matchAll({{type: "window", includeUncontrolled: true}});
     wins.forEach(w => w.postMessage({{type: "chat-poll"}}));
+    // SOS: stays on screen until tapped, long vibration, shown even if the app is open.
+    if (d.type === "sos") {{
+      wins.forEach(w => w.postMessage({{type: "open-sos", sos: (d.tag || "").replace(/^sos-/, "")}}));
+      await self.registration.showNotification(d.title || "SOS", {{body: d.body || "", tag: d.tag || "sos", renotify: true,
+        requireInteraction: true, vibrate: [800, 250, 800, 250, 800, 250, 1200], icon: "icon-192.png", badge: "badge-96.png",
+        data: {{url: d.url || "./", sos: (d.tag || "").replace(/^sos-/, "")}}}});
+      return;
+    }}
     // If the app is open on that conversation, the message shows there; no need to buzz.
     if (wins.some(w => w.focused && w.visibilityState === "visible" && d.thread && (w.url || "").endsWith("#chat-" + encodeURIComponent(d.thread)))) return;
     await self.registration.showNotification(d.title || "RangeIQ", {{body: d.body || "", tag: d.tag || "rangeiq", renotify: true,
@@ -149,10 +157,10 @@ self.addEventListener("push", e => {{
 }});
 self.addEventListener("notificationclick", e => {{
   e.notification.close();
-  const d = e.notification.data || {{}}, hash = d.thread ? "#chat-" + encodeURIComponent(d.thread) : "#chat";
+  const d = e.notification.data || {{}}, hash = d.sos ? "#sos-" + encodeURIComponent(d.sos) : d.thread ? "#chat-" + encodeURIComponent(d.thread) : "#chat";
   e.waitUntil(self.clients.matchAll({{type: "window", includeUncontrolled: true}}).then(wins => {{
     const w = wins.find(x => (x.url || "").includes("/app/"));
-    if (w) {{ w.postMessage({{type: "open-chat", thread: d.thread}}); return w.focus(); }}
+    if (w) {{ w.postMessage(d.sos ? {{type: "open-sos", sos: d.sos}} : {{type: "open-chat", thread: d.thread}}); return w.focus(); }}
     return self.clients.openWindow(new URL("./" + hash, self.registration.scope).href);
   }}));
 }});
