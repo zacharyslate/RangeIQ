@@ -20,6 +20,7 @@ Routes
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -543,14 +544,44 @@ def create_app(
     # write to anyone. Phones poll while the app is open; with notifications on, a push wakes the phone otherwise.
     from ranch_ai.rancher import push as webpush_mod
 
+    def receipt_token(ws: str, uid: str, thread: str, at: str) -> str:
+        """Lets the phone's service worker say "this notification arrived" without the sign-in token."""
+        body = base64.urlsafe_b64encode(json.dumps([ws, uid, thread, at, int(time.time()) + 7 * 86400]).encode()).decode().rstrip("=")
+        return body + "." + hmac.new(app.state.store.secret(), b"rcpt|" + body.encode(), hashlib.sha256).hexdigest()[:32]
+
+    def delivered_now(ws: str, uid: str, msgs: list[dict[str, Any]]) -> None:
+        newest: dict[str, str] = {}
+        for m in msgs:
+            if not m.get("deleted") and m.get("from_user") != uid and m["created_at"] > newest.get(m["thread_id"], ""):
+                newest[m["thread_id"]] = m["created_at"]
+        for thread, at in newest.items():
+            app.state.store.mark_delivered(ws, uid, thread, at)
+
     @app.get("/api/messages")
     def list_messages(since: str | None = None, sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
         ws, uid = sess["workspace_id"], sess["user_id"]
         msgs = app.state.store.list_messages(ws, uid, since=since)
+        delivered_now(ws, uid, msgs)                 # these reached this phone: the senders' second tick
         # "now": where the phone should ask from next time (newest message or deletion it has seen)
         marks = [m.get("deleted_at") or m["created_at"] for m in msgs] + [m["created_at"] for m in msgs] + ([since] if since else [])
-        return {"messages": msgs, "reads": app.state.store.reads(ws, uid), "people": people(ws), "me": uid,
-                "now": max(marks) if marks else None}
+        everyone = people(ws)
+        threads = ["all"] + [app.state.store.dm_thread(uid, p["user_id"]) for p in everyone if p["user_id"] != uid]
+        return {"messages": msgs, "reads": app.state.store.reads(ws, uid), "people": everyone, "me": uid,
+                "receipts": app.state.store.receipts(ws, threads), "now": max(marks) if marks else None}
+
+    @app.post("/api/messages/delivered")
+    def message_delivered(payload: dict[str, Any] = Body(...)) -> dict[str, bool]:
+        """From the service worker when a notification arrives (signed receipt from the push itself, no sign-in)."""
+        token = str(payload.get("receipt") or "")
+        body, _, sig = token.partition(".")
+        good = hmac.new(app.state.store.secret(), b"rcpt|" + body.encode(), hashlib.sha256).hexdigest()[:32]
+        if not body or not hmac.compare_digest(sig, good):
+            raise HTTPException(status_code=403, detail="Bad receipt.")
+        ws, uid, thread, at, exp = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        if exp < time.time():
+            raise HTTPException(status_code=403, detail="Receipt expired.")
+        app.state.store.mark_delivered(ws, uid, thread, at)
+        return {"ok": True}
 
     @app.post("/api/messages")
     def send_messages(payload: Any = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
@@ -574,9 +605,10 @@ def create_app(
             to = [p for p in (pair or members) if p != uid]
             ranch = ranch_name(ws)
             title = f"{row['from_name'] or 'Someone'}" + ("" if pair else f" → everyone{' · ' + ranch if ranch else ''}")
-            webpush_mod.send_in_background(app.state.store, to, {
-                "title": title, "body": row["text"][:180], "thread": row["thread_id"], "ws": ws, "tag": row["thread_id"],
-                "url": "/app/#messages"})
+            for person in to:                      # one push each: each carries that person's signed delivery receipt
+                webpush_mod.send_in_background(app.state.store, [person], {
+                    "title": title, "body": row["text"][:180], "thread": row["thread_id"], "ws": ws, "tag": row["thread_id"],
+                    "url": "/app/#chat", "receipt": receipt_token(ws, person, row["thread_id"], row["created_at"])})
         if fresh:
             app.state.store.mark_read(ws, uid, fresh[-1]["thread_id"], fresh[-1]["created_at"])
         return {"saved": saved, "errors": errors}
