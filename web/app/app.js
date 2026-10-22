@@ -1273,7 +1273,7 @@
   // "all" = everyone on the ranch; "dm:<a>|<b>" = two people. Anyone can write to anyone. Messages wait on the phone
   // without signal and send later. The app checks for new ones every 10 s on the Chat tab and every minute elsewhere;
   // with notifications on, a push makes the phone buzz and the open app fetch at once.
-  const EMPTY_CHAT = {msgs: [], reads: {}, people: [], me: null, since: null};
+  const EMPTY_CHAT = {msgs: [], reads: {}, people: [], me: null, since: null, receipts: {}};
   let chat = store.get("chat", EMPTY_CHAT), chatThread = null, chatTick = 0;
   const chatMe = () => chat.me || (me && me.user_id) || null;
   const dmThread = (a, b) => "dm:" + [a, b].sort().join("|");
@@ -1309,6 +1309,7 @@
       chat.msgs = [...byId.values()].sort((a, b) => a.created_at.localeCompare(b.created_at)).slice(-1500);
       for (const [t, at] of Object.entries(r.reads || {})) if (!chat.reads[t] || at > chat.reads[t]) chat.reads[t] = at;
       chat.people = r.people || chat.people; chat.me = r.me || chat.me; if (r.now) chat.since = r.now;
+      chat.receipts = r.receipts || chat.receipts || {};
       store.set("chat", chat);
     } catch (e) { if (e.signin) { show("login"); return; } }
     finally { chatBusy = false; }
@@ -1332,6 +1333,41 @@
     chat.reads[t] = last.created_at; store.set("chat", chat); chatBadge();
     api("messages/read", {method: "POST", body: JSON.stringify({thread_id: t, at: last.created_at})}).catch(() => {});
   }
+  // Ticks, like WhatsApp: 🕓 waiting on this phone · ✓ on the server · ✓✓ reached their phone · blue ✓✓ seen.
+  // In "Everyone", ✓✓ and blue only once it has reached / been seen by everyone (tap the message to see who).
+  function recipientsOf(m) {
+    const mine = chatMe();
+    return m.thread_id === "all" ? chat.people.filter(p => p.user_id !== mine).map(p => p.user_id) : m.thread_id.slice(3).split("|").filter(u => u !== mine);
+  }
+  function tickOf(m) {
+    if (m._pending) return "pending";
+    const rs = recipientsOf(m), per = (chat.receipts || {})[m.thread_id] || {};
+    if (!rs.length) return "sent";
+    if (rs.every(u => (per[u] || {}).read >= m.created_at)) return "read";
+    if (rs.every(u => (per[u] || {}).delivered >= m.created_at)) return "delivered";
+    return "sent";
+  }
+  const TICK = {pending: '<span class="tick" aria-label="Waiting to send">🕓</span>', sent: '<span class="tick" aria-label="Sent">✓</span>',
+    delivered: '<span class="tick" aria-label="Delivered">✓✓</span>', read: '<span class="tick read" aria-label="Seen">✓✓</span>'};
+  function messageInfo(msg) {
+    const per = (chat.receipts || {})[msg.thread_id] || {}, name = u => (chat.people.find(p => p.user_id === u) || {}).name || "Someone";
+    const rs = msg._pending ? [] : recipientsOf(msg);
+    const seen = rs.filter(u => (per[u] || {}).read >= msg.created_at), got = rs.filter(u => !seen.includes(u) && (per[u] || {}).delivered >= msg.created_at);
+    const not = rs.filter(u => !seen.includes(u) && !got.includes(u));
+    const row = (label, list, tick) => list.length ? `<p><b>${tick} ${label}</b><br>${list.map(u => esc(name(u))).join(", ")}</p>` : "";
+    openSheet("Message info", `<p class="msginfo">${esc(msg.text)}</p>
+      <p class="dim small">${msg._pending ? "🕓 Waiting on this phone; it sends when there's signal." : "✓ Sent " + esc(when(msg.created_at))}</p>
+      ${row("Seen by", seen, '<span class="tick read">✓✓</span>')}${row("Delivered to", got, '<span class="tick">✓✓</span>')}
+      ${row("Not delivered yet", not, '<span class="tick">✓</span>')}
+      ${not.length ? `<p class="dim small">"Delivered" means it reached their phone: they opened RangeIQ, or a notification arrived.</p>` : ""}
+      <div class="row"><button type="button" class="secondary" id="msgDel">Delete for everyone</button></div>`);
+    $("msgDel").onclick = () => {
+      if (!confirm("Delete this message for everyone?")) return;
+      if (msg._pending) store.set("msgq", store.get("msgq", []).filter(x => x.msg_id !== msg.msg_id));
+      else api("messages/" + encodeURIComponent(msg.msg_id), {method: "DELETE"}).then(() => pollChat()).catch(err => toast(err.message));
+      chat.msgs = chat.msgs.filter(x => x.msg_id !== msg.msg_id); store.set("chat", chat); closeSheet(); renderChat();
+    };
+  }
   const dayOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"}); };
   const timeOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}); };
   function renderChat() {
@@ -1350,7 +1386,7 @@
         return `<li><button type="button" data-thread="${esc(t)}"><span class="av" aria-hidden="true">${t === "all" ? "👥" : esc((name[0] || "?").toUpperCase())}</span>
           <span class="who">${esc(name)}${person && person.role === "crew" ? ' <span class="dim small">crew</span>' : ""}</span>
           <span class="when">${last ? esc(timeOf(last.created_at)) : ""}</span>
-          <span class="last">${last ? (last.from_user === mine ? "You: " : t === "all" ? esc(last.from_name || "") + ": " : "") + esc(last.text) : t === "all" ? "Messages to the whole crew" : "No messages yet"}</span>
+          <span class="last">${last ? (last.from_user === mine ? TICK[tickOf(last)] + " " : t === "all" ? esc(last.from_name || "") + ": " : "") + esc(last.text) : t === "all" ? "Messages to the whole crew" : "No messages yet"}</span>
           ${n ? `<span class="n">${n}</span>` : ""}</button></li>`;
       }).join("") || "<li class='dim'>Sign in to see your crew.</li>";
       return;
@@ -1363,7 +1399,7 @@
       const d = dayOf(m.created_at), head = d !== day ? `<li class="day">${esc(d)}</li>` : ""; day = d;
       const isMine = m.from_user === mine;
       return `${head}<li class="msg${isMine ? " mine" : ""}${m._pending ? " pending" : ""}" ${isMine ? `data-msg="${esc(m.msg_id)}"` : ""}>
-        ${!isMine && chatThread === "all" ? `<span class="from">${esc(m.from_name || "")}</span>` : ""}${esc(m.text)}<span class="t">${esc(timeOf(m.created_at))}</span></li>`;
+        ${!isMine && chatThread === "all" ? `<span class="from">${esc(m.from_name || "")}</span>` : ""}<span class="body">${esc(m.text)}</span><span class="t">${esc(timeOf(m.created_at))}${isMine ? " " + TICK[tickOf(m)] : ""}</span></li>`;
     }).join("") || `<li class="day">${chatThread === "all" ? "Say something to the whole crew." : "Start the conversation."}</li>`;
     if (nearBottom || !box.dataset.shown) { box.dataset.shown = "1"; window.scrollTo(0, document.body.scrollHeight); }
     markRead(chatThread);
@@ -1371,13 +1407,7 @@
   document.addEventListener("click", e => {
     const t = e.target.closest("[data-thread]"); if (t) { show("chat-" + encodeURIComponent(t.dataset.thread)); return; }
     const m = e.target.closest("#c-msgs [data-msg]");
-    if (m) {
-      const msg = chatAll().find(x => x.msg_id === m.dataset.msg); if (!msg) return;
-      if (!confirm("Delete this message for everyone?")) return;
-      if (msg._pending) store.set("msgq", store.get("msgq", []).filter(x => x.msg_id !== msg.msg_id));
-      else api("messages/" + encodeURIComponent(msg.msg_id), {method: "DELETE"}).then(() => pollChat()).catch(err => toast(err.message));
-      chat.msgs = chat.msgs.filter(x => x.msg_id !== msg.msg_id); store.set("chat", chat); renderChat();
-    }
+    if (m) { const msg = chatAll().find(x => x.msg_id === m.dataset.msg); if (msg) messageInfo(msg); }
   });
   $("c-back").onclick = () => show("chat");
   function sendChatText() {

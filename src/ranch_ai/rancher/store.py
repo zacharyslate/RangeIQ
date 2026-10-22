@@ -211,6 +211,15 @@ class AppStore:
                     read_at TEXT NOT NULL,
                     PRIMARY KEY (workspace_id, user_id, thread_id)
                 );
+                -- "Delivered" ticks: the newest message in a thread that reached this person's phone (the app fetched it,
+                -- or a notification for it arrived).
+                CREATE TABLE IF NOT EXISTS message_delivered (
+                    workspace_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    at TEXT NOT NULL,
+                    PRIMARY KEY (workspace_id, user_id, thread_id)
+                );
                 -- Phones that asked for notifications (Web Push). One row per phone/browser.
                 CREATE TABLE IF NOT EXISTS push_subs (
                     endpoint TEXT PRIMARY KEY,
@@ -476,6 +485,32 @@ class AppStore:
             conn.execute("INSERT INTO message_reads(workspace_id, user_id, thread_id, read_at) VALUES (?,?,?,?) "
                          "ON CONFLICT(workspace_id, user_id, thread_id) DO UPDATE SET read_at = MAX(read_at, excluded.read_at)",
                          (workspace_id, user_id, thread_id, read_at))
+
+    def mark_delivered(self, workspace_id: str, user_id: str, thread_id: str, at: str) -> None:
+        with self._connect() as conn:
+            conn.execute("INSERT INTO message_delivered(workspace_id, user_id, thread_id, at) VALUES (?,?,?,?) "
+                         "ON CONFLICT(workspace_id, user_id, thread_id) DO UPDATE SET at = MAX(at, excluded.at)",
+                         (workspace_id, user_id, thread_id, at))
+
+    def receipts(self, workspace_id: str, thread_ids: Iterable[str]) -> dict[str, dict[str, dict[str, str]]]:
+        """{thread: {user_id: {"delivered": at, "read": at}}}: how far each person has received and read each thread.
+        Reading implies delivered."""
+        ids = list(set(thread_ids))
+        out: dict[str, dict[str, dict[str, str]]] = {t: {} for t in ids}
+        if not ids:
+            return out
+        q = ",".join("?" * len(ids))
+        with self._connect() as conn:
+            for table, key in (("message_delivered", "delivered"), ("message_reads", "read")):
+                col = "at" if table == "message_delivered" else "read_at"
+                for r in conn.execute(f"SELECT user_id, thread_id, {col} AS at FROM {table} WHERE workspace_id = ? AND thread_id IN ({q})",
+                                      (workspace_id, *ids)).fetchall():
+                    out[r["thread_id"]].setdefault(r["user_id"], {})[key] = r["at"]
+        for per in out.values():
+            for v in per.values():
+                if v.get("read") and v["read"] > v.get("delivered", ""):
+                    v["delivered"] = v["read"]
+        return out
 
     def reads(self, workspace_id: str, user_id: str) -> dict[str, str]:
         with self._connect() as conn:

@@ -69,7 +69,9 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 ## Chat (text messages)
 
 - The **💬 Chat** tab: **Everyone** (the whole crew, owner and partners included) and a conversation with each person. Anyone on the ranch can text anyone. Text only.
-- Works without signal: a message waits on the phone ("sending…") and goes when there's signal. Tap your own message to delete it for everyone.
+- Works without signal: a message waits on the phone and goes when there's signal.
+- **Ticks, like WhatsApp:** 🕓 waiting on your phone (no signal) · ✓ reached the server · ✓✓ reached their phone (they opened RangeIQ, or the notification arrived) · **blue ✓✓** seen (they opened the conversation). In Everyone, ✓✓ and blue only once it has reached / been seen by everyone. Tap your own message for **Message info** (who has seen it, who has it, who doesn't yet) and to delete it for everyone.
+- Read receipts can't be turned off yet (WhatsApp lets you); say if the crew wants that.
 - The red number on the Chat tab (and on the app icon where the phone supports it) counts unread messages. With the app open, new messages arrive within about 10 seconds on the Chat tab and within a minute elsewhere.
 - **Notifications:** Chat → **Turn on notifications** makes the phone buzz for new messages even with RangeIQ closed. On iPhone this only works once RangeIQ is added to the Home Screen (Share → Add to Home Screen, iOS 16.4 or later) and opened from there. Signing out turns notifications off for that phone. "Send a test" checks it works.
 - Privacy: messages stay on your server. The notification text passes through Apple's or Google's push service encrypted for that phone (Web Push, RFC 8291); the server signs pushes with its own key, made on the server and kept in its database.

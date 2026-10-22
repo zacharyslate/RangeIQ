@@ -1038,3 +1038,38 @@ def test_real_web_push_request_is_signed_and_encrypted(client, monkeypatch):
     assert push.send(client.store, ["u1"], {"title": "Luis", "body": "Cattle out on the county road"})["sent"] == 1
     assert seen["url"].startswith("https://fcm.googleapis.com/") and seen["headers"]["Content-Encoding"] == "aes128gcm"
     assert seen["headers"]["Authorization"].startswith("vapid t=") and b"Cattle" not in seen["data"]
+
+
+def test_message_ticks_sent_delivered_seen(client, monkeypatch):
+    from ranch_ai.rancher import push
+
+    owner = _login(client)
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    def join(name, email):
+        r = client.post("/api/join", json={"code": code, "name": name, "email": email, "password": "HandPass123"}).json()
+        client.cookies.clear()
+        return {"Authorization": "Bearer " + r["token"]}
+    luis, ana = join("Luis", "luis@example.com"), join("Ana", "ana@example.com")
+    pushed = []
+    monkeypatch.setattr(push, "send_in_background", lambda store, ids, payload: pushed.append((ids, payload)))
+    ids = {p["name"]: p["user_id"] for p in client.get("/api/messages", headers=owner).json()["people"]}
+    dm = "dm:" + "|".join(sorted([ids["Luis"], ids["Zach"]]))
+    client.post("/api/messages", headers=luis, json=[{"msg_id": "a", "to_user_id": ids["Zach"], "text": "Cattle out at the county road"},
+                                                     {"msg_id": "b", "thread_id": "all", "text": "Heading to the windmill"}])
+    rec = lambda h: client.get("/api/messages", headers=h).json()["receipts"]   # noqa: E731
+    msg = {m["msg_id"]: m for m in client.get("/api/messages", headers=luis).json()["messages"]}
+    # sent only: Zach's phone hasn't fetched yet (Luis's own fetch doesn't count)
+    assert rec(luis)[dm].get(ids["Zach"], {}).get("delivered", "") < msg["a"]["created_at"]
+    # each recipient got their own push with a signed receipt; the service worker posts it -> delivered
+    by_person = {tuple(i)[0]: p for i, p in pushed}
+    assert set(by_person) == {ids["Zach"], ids["Ana"]} and all(p["receipt"] for p in by_person.values())
+    assert client.post("/api/messages/delivered", json={"receipt": by_person[ids["Ana"]]["receipt"]}).json() == {"ok": True}
+    assert client.post("/api/messages/delivered", json={"receipt": by_person[ids["Ana"]]["receipt"][:-2] + "00"}).status_code == 403
+    assert rec(luis)["all"][ids["Ana"]]["delivered"] == msg["b"]["created_at"]
+    # Zach opens the app: everything he fetched is delivered; then he reads the DM -> seen
+    client.get("/api/messages", headers=owner)
+    assert rec(luis)[dm][ids["Zach"]]["delivered"] >= msg["a"]["created_at"] and "read" not in rec(luis)[dm][ids["Zach"]]
+    client.post("/api/messages/read", headers=owner, json={"thread_id": dm, "at": msg["a"]["created_at"]})
+    assert rec(luis)[dm][ids["Zach"]]["read"] == msg["a"]["created_at"]
+    # Ana can't see receipts of a direct conversation she isn't in
+    assert dm not in rec(ana)
