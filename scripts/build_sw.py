@@ -122,6 +122,30 @@ self.addEventListener("fetch", e => {{
     }}));
   }}
 }});
+
+// ---- messenger notifications (Web Push). The server encrypts each message for this phone; show it, and open the
+// conversation when it's tapped. Open copies of the app are told to fetch new messages at once.
+self.addEventListener("push", e => {{
+  let d = {{}};
+  try {{ d = e.data ? e.data.json() : {{}}; }} catch (err) {{ d = {{body: e.data ? e.data.text() : ""}}; }}
+  e.waitUntil((async () => {{
+    const wins = await self.clients.matchAll({{type: "window", includeUncontrolled: true}});
+    wins.forEach(w => w.postMessage({{type: "chat-poll"}}));
+    // If the app is open on that conversation, the message shows there; no need to buzz.
+    if (wins.some(w => w.focused && w.visibilityState === "visible" && d.thread && (w.url || "").endsWith("#chat-" + encodeURIComponent(d.thread)))) return;
+    await self.registration.showNotification(d.title || "RangeIQ", {{body: d.body || "", tag: d.tag || "rangeiq", renotify: true,
+      icon: "icon-192.png", badge: "icon-192.png", data: {{url: d.url || "./#chat", thread: d.thread || null}}}});
+  }})());
+}});
+self.addEventListener("notificationclick", e => {{
+  e.notification.close();
+  const d = e.notification.data || {{}}, hash = d.thread ? "#chat-" + encodeURIComponent(d.thread) : "#chat";
+  e.waitUntil(self.clients.matchAll({{type: "window", includeUncontrolled: true}}).then(wins => {{
+    const w = wins.find(x => (x.url || "").includes("/app/"));
+    if (w) {{ w.postMessage({{type: "open-chat", thread: d.thread}}); return w.focus(); }}
+    return self.clients.openWindow(new URL("./" + hash, self.registration.scope).href);
+  }}));
+}});
 """
     (APP / "sw.js").write_text(js, encoding="utf-8")
     size_kb = sum((APP / rel).stat().st_size for rel in precache) / 1024

@@ -238,7 +238,7 @@
   const imageOf = p => p._pending ? p.imageUrl : fileUrl(p.image_url);
 
   // ---------------------------------------------------------------- views
-  const TABS = ["home", "todo", "map", "log", "more"];
+  const TABS = ["home", "todo", "map", "chat", "log", "more"];
   const OLD = {today: "home", pastures: "map", terrain: "map"};
   function show(view) {
     view = OLD[view] || view || "home";
@@ -246,6 +246,8 @@
     if (view.startsWith("log-")) { setTimeout(() => act(view.slice(4)), 80); view = "home"; }
     let tab = view;
     if (view.startsWith("pasture-")) { currentPasture = decodeURIComponent(view.slice(8)); tab = "pasture"; }
+    if (view === "chat") chatThread = null;
+    if (view.startsWith("chat-")) { chatThread = decodeURIComponent(view.slice(5)); tab = "chat"; }
     if (!["login", "pasture", ...TABS].includes(tab)) tab = "home";
     if (tab !== "map" && view3d) { view3d.dispose(); view3d = null; }
     if (tab !== "map" && !(draft && draft.recording)) stopHere();
@@ -256,10 +258,11 @@
     });
     document.querySelector(".tabs").hidden = tab === "login";
     $("drawBar").hidden = tab !== "map" || !draft;
-    const hash = tab === "pasture" ? "pasture-" + encodeURIComponent(currentPasture) : tab;
+    const hash = tab === "pasture" ? "pasture-" + encodeURIComponent(currentPasture) : tab === "chat" && chatThread ? "chat-" + encodeURIComponent(chatThread) : tab;
     if (location.hash !== "#" + hash) history.replaceState(null, "", "#" + hash);
-    ({home: renderHome, todo: renderTodo, map: renderMap, pasture: renderPasture, log: renderLog, more: renderMore}[tab] || (() => {}))();
-    window.scrollTo(0, 0);
+    ({home: renderHome, todo: renderTodo, map: renderMap, pasture: renderPasture, log: renderLog, more: renderMore,
+      chat: () => { $("c-msgs").dataset.shown = ""; renderChat(); pollChat(); }}[tab] || (() => {}))();
+    if (tab !== "chat" || !chatThread) window.scrollTo(0, 0);
   }
   document.querySelectorAll(".tabs [data-tab]").forEach(b => b.onclick = () => { if (b.dataset.tab === "map" && !draft) mapMode = "3d"; show(b.dataset.tab); });
   document.addEventListener("click", e => {
@@ -277,7 +280,7 @@
     if (!navigator.onLine) parts.push("No signal. Showing what was saved " + (snapAt ? when(snapAt) : "earlier") + ". Photos and logs will send later.");
     b.hidden = !parts.length; b.textContent = parts.join(" "); b.classList.toggle("demo", !!(snap && snap.demo) && navigator.onLine);
   }
-  window.addEventListener("online", () => { setBanner(); refresh(); syncAll(); });
+  window.addEventListener("online", () => { setBanner(); refresh(); syncAll(); pollChat(); });
   window.addEventListener("offline", setBanner);
 
   // ---------------------------------------------------------------- data
@@ -296,7 +299,7 @@
   function rerender() {
     const v = [...document.querySelectorAll(".view")].find(x => !x.hidden);
     if (!v) return;
-    ({"v-home": renderHome, "v-todo": renderTodo, "v-pasture": renderPasture, "v-log": renderLog, "v-more": renderMore}[v.id] || (() => {}))();
+    ({"v-home": renderHome, "v-todo": renderTodo, "v-pasture": renderPasture, "v-log": renderLog, "v-more": renderMore, "v-chat": renderChat}[v.id] || (() => {}))();
     if (v.id === "v-map" && mapMode === "2d") renderMap();
     updateSyncPill();
   }
@@ -562,7 +565,28 @@
     const ground = meta.dem_source === "usgs_3dep" ? `USGS lidar (${meta.dem_resolution_m} m)` : "EXAMPLE terrain, not your land";
     const skin = look === "relief" ? "Relief: land colored by height and slope, lit by the sun."
       : meta.texture_source === "naip" ? "Aerial photo: USDA NAIP." : "Aerial photo unavailable; showing relief.";
-    $("map-src").textContent = `Ground: ${ground}. ${skin} ${layers.glow ? (layers.colors ? "Glowing walls are pasture lines, colored by status." : "Pasture lines without warning colors.") : "Pasture lines on the ground (glow off in Layers)."} Drag to turn, pinch to zoom.`;
+    const off = (view3d.offMap && view3d.offMap()) || [];
+    if (off.length) watchTerrain();
+    $("map-src").textContent = (off.length ? `⏳ ${off.slice(0, 3).join(", ")} reach${off.length === 1 ? "es" : ""} past the edge of the 3D map. `
+      + "The server is extending the map; it reloads here by itself in a few minutes. " : "") + `Ground: ${ground}. ${skin} ${layers.glow ? (layers.colors ? "Glowing walls are pasture lines, colored by status." : "Pasture lines without warning colors.") : "Pasture lines on the ground (glow off in Layers)."} Drag to turn, pinch to zoom.`;
+  }
+  // After a boundary is drawn past the edge of the 3D map the server rebuilds the map; check every minute (for up to
+  // 20 minutes) and reload the 3D view when the new one is ready.
+  let terrainWatch = null;
+  function watchTerrain() {
+    if (terrainWatch) return;
+    const started = Date.now();
+    terrainWatch = setInterval(async () => {
+      if (!view3d || !view3d.meta || Date.now() - started > 20 * 6e4) { clearInterval(terrainWatch); terrainWatch = null; return; }
+      if (document.hidden || $("v-map").hidden || mapMode !== "3d") return;
+      try {
+        const m = await api("terrain/meta");
+        if (m.updated_at && m.updated_at !== view3d.meta.updated_at) {
+          clearInterval(terrainWatch); terrainWatch = null;
+          view3d.dispose(); view3d = null; toast("The 3D map has been updated."); render3d();
+        }
+      } catch (e) { /* no signal: try again next minute */ }
+    }, 60000);
   }
   async function render3d() {
     const box = $("map3d");
@@ -827,8 +851,10 @@
   setSize(store.get("scale", "1"));
   $("logoutBtn").onclick = async () => {
     if ((store.get("queue", []).length || pending.length) && !confirm("Some photos or entries haven't been sent yet. Sign out anyway? They stay on this phone.")) return;
+    if (store.get("pushOn", false)) await disablePush();          // this phone stops getting this person's messages
     try { await api("logout", {method: "POST"}); } catch (e) {}
-    ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me", "tasks", "people", "places", "shapes", "draft"].forEach(k => store.del(k)); rawSnap = snap = null; me = null; photos = []; show("login");
+    ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me", "tasks", "people", "places", "shapes", "draft", "chat", "msgq"].forEach(k => store.del(k));
+    chat = {...EMPTY_CHAT}; chatBadge(); rawSnap = snap = null; me = null; photos = []; show("login");
   };
 
   // ---------------------------------------------------------------- sheets
@@ -1242,6 +1268,181 @@
   };
 
 
+
+  // ================================================================ CHAT: text messages on the ranch
+  // "all" = everyone on the ranch; "dm:<a>|<b>" = two people. Anyone can write to anyone. Messages wait on the phone
+  // without signal and send later. The app checks for new ones every 10 s on the Chat tab and every minute elsewhere;
+  // with notifications on, a push makes the phone buzz and the open app fetch at once.
+  const EMPTY_CHAT = {msgs: [], reads: {}, people: [], me: null, since: null};
+  let chat = store.get("chat", EMPTY_CHAT), chatThread = null, chatTick = 0;
+  const chatMe = () => chat.me || (me && me.user_id) || null;
+  const dmThread = (a, b) => "dm:" + [a, b].sort().join("|");
+  const chatPending = () => store.get("msgq", []).map(m => ({...m, from_user: chatMe(), from_name: me && me.name, created_at: "~" + m.sent_at, _pending: true}));
+  const chatAll = () => { const q = chatPending(); return [...chat.msgs.filter(m => !q.some(x => x.msg_id === m.msg_id)), ...q]; };
+  function threadName(t) {
+    if (t === "all") return "Everyone";
+    const other = t.slice(3).split("|").find(u => u !== chatMe());
+    return (chat.people.find(p => p.user_id === other) || {}).name || "Someone";
+  }
+  const unreadIn = t => { const r = chat.reads[t] || ""; return chat.msgs.filter(m => m.thread_id === t && m.from_user !== chatMe() && m.created_at > r).length; };
+  function unreadTotal() { return [...new Set(chat.msgs.map(m => m.thread_id))].reduce((n, t) => n + unreadIn(t), 0); }
+  function chatBadge() {
+    const n = unreadTotal(), b = $("chatBadge");
+    b.hidden = !n; b.textContent = n > 99 ? "99+" : String(n);
+    try { if (navigator.setAppBadge) { if (n) navigator.setAppBadge(n); else navigator.clearAppBadge(); } } catch (e) {}
+  }
+  let chatBusy = false;
+  async function pollChat() {
+    if (chatBusy || !navigator.onLine || !store.get("token", null)) return;
+    chatBusy = true;
+    try {
+      const q = store.get("msgq", []);
+      if (q.length) {
+        const res = await api("messages", {method: "POST", body: JSON.stringify(q)});
+        const done = new Set([...res.saved, ...res.errors.map(e => e.msg_id)]);
+        store.set("msgq", store.get("msgq", []).filter(m => !done.has(m.msg_id)));
+        if (res.errors.length) toast(res.errors[0].error);
+      }
+      const r = await api("messages" + (chat.since ? "?since=" + encodeURIComponent(chat.since) : ""));
+      const byId = new Map(chat.msgs.map(m => [m.msg_id, m]));
+      for (const m of r.messages) { if (m.deleted) byId.delete(m.msg_id); else byId.set(m.msg_id, m); }
+      chat.msgs = [...byId.values()].sort((a, b) => a.created_at.localeCompare(b.created_at)).slice(-1500);
+      for (const [t, at] of Object.entries(r.reads || {})) if (!chat.reads[t] || at > chat.reads[t]) chat.reads[t] = at;
+      chat.people = r.people || chat.people; chat.me = r.me || chat.me; if (r.now) chat.since = r.now;
+      store.set("chat", chat);
+    } catch (e) { if (e.signin) { show("login"); return; } }
+    finally { chatBusy = false; }
+    chatBadge(); updateSyncPill();
+    if (!$("v-chat").hidden) renderChat();
+  }
+  setInterval(() => {
+    if (document.hidden || !me) return;
+    chatTick++;
+    if (!$("v-chat").hidden || chatTick % 6 === 0) pollChat();
+  }, 10000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && me) pollChat(); });
+  if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => {
+    const d = e.data || {};
+    if (d.type === "chat-poll") pollChat();
+    if (d.type === "open-chat") show(d.thread ? "chat-" + encodeURIComponent(d.thread) : "chat");
+  });
+  function markRead(t) {
+    const last = chat.msgs.filter(m => m.thread_id === t).pop();
+    if (!last || (chat.reads[t] || "") >= last.created_at) return;
+    chat.reads[t] = last.created_at; store.set("chat", chat); chatBadge();
+    api("messages/read", {method: "POST", body: JSON.stringify({thread_id: t, at: last.created_at})}).catch(() => {});
+  }
+  const dayOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"}); };
+  const timeOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}); };
+  function renderChat() {
+    const inThread = !!chatThread;
+    $("c-list").hidden = inThread; $("c-thread").hidden = !inThread;
+    const mine = chatMe(), all = chatAll();
+    if (!inThread) {
+      renderNotify();
+      const others = chat.people.filter(p => p.user_id !== mine);
+      const threads = ["all", ...others.map(p => dmThread(mine || "", p.user_id))];
+      const lastOf = t => all.filter(m => m.thread_id === t).pop();
+      const rows = threads.map(t => ({t, last: lastOf(t), n: unreadIn(t)}))
+        .sort((a, b) => (a.t === "all" ? -1 : b.t === "all" ? 1 : String((b.last || {}).created_at || "").localeCompare(String((a.last || {}).created_at || "")) || threadName(a.t).localeCompare(threadName(b.t))));
+      $("c-threads").innerHTML = rows.map(({t, last, n}) => {
+        const name = threadName(t), person = t === "all" ? null : chat.people.find(p => p.user_id === t.slice(3).split("|").find(u => u !== mine));
+        return `<li><button type="button" data-thread="${esc(t)}"><span class="av" aria-hidden="true">${t === "all" ? "👥" : esc((name[0] || "?").toUpperCase())}</span>
+          <span class="who">${esc(name)}${person && person.role === "crew" ? ' <span class="dim small">crew</span>' : ""}</span>
+          <span class="when">${last ? esc(timeOf(last.created_at)) : ""}</span>
+          <span class="last">${last ? (last.from_user === mine ? "You: " : t === "all" ? esc(last.from_name || "") + ": " : "") + esc(last.text) : t === "all" ? "Messages to the whole crew" : "No messages yet"}</span>
+          ${n ? `<span class="n">${n}</span>` : ""}</button></li>`;
+      }).join("") || "<li class='dim'>Sign in to see your crew.</li>";
+      return;
+    }
+    $("c-title").textContent = threadName(chatThread);
+    const list = all.filter(m => m.thread_id === chatThread), box = $("c-msgs");
+    const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+    let day = "";
+    box.innerHTML = list.map(m => {
+      const d = dayOf(m.created_at), head = d !== day ? `<li class="day">${esc(d)}</li>` : ""; day = d;
+      const isMine = m.from_user === mine;
+      return `${head}<li class="msg${isMine ? " mine" : ""}${m._pending ? " pending" : ""}" ${isMine ? `data-msg="${esc(m.msg_id)}"` : ""}>
+        ${!isMine && chatThread === "all" ? `<span class="from">${esc(m.from_name || "")}</span>` : ""}${esc(m.text)}<span class="t">${esc(timeOf(m.created_at))}</span></li>`;
+    }).join("") || `<li class="day">${chatThread === "all" ? "Say something to the whole crew." : "Start the conversation."}</li>`;
+    if (nearBottom || !box.dataset.shown) { box.dataset.shown = "1"; window.scrollTo(0, document.body.scrollHeight); }
+    markRead(chatThread);
+  }
+  document.addEventListener("click", e => {
+    const t = e.target.closest("[data-thread]"); if (t) { show("chat-" + encodeURIComponent(t.dataset.thread)); return; }
+    const m = e.target.closest("#c-msgs [data-msg]");
+    if (m) {
+      const msg = chatAll().find(x => x.msg_id === m.dataset.msg); if (!msg) return;
+      if (!confirm("Delete this message for everyone?")) return;
+      if (msg._pending) store.set("msgq", store.get("msgq", []).filter(x => x.msg_id !== msg.msg_id));
+      else api("messages/" + encodeURIComponent(msg.msg_id), {method: "DELETE"}).then(() => pollChat()).catch(err => toast(err.message));
+      chat.msgs = chat.msgs.filter(x => x.msg_id !== msg.msg_id); store.set("chat", chat); renderChat();
+    }
+  });
+  $("c-back").onclick = () => show("chat");
+  function sendChatText() {
+    const box = $("c-text"), text = box.value.trim();
+    if (!text || !chatThread) return;
+    const q = store.get("msgq", []); q.push({msg_id: uid(), thread_id: chatThread, text, sent_at: new Date().toISOString()}); store.set("msgq", q);
+    box.value = ""; box.style.height = ""; $("c-msgs").dataset.shown = ""; renderChat(); updateSyncPill();
+    if (navigator.onLine) pollChat(); else toast("Saved on this phone. It sends when there's signal.");
+  }
+  $("c-form").onsubmit = e => { e.preventDefault(); sendChatText(); $("c-text").focus(); };
+  $("c-text").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChatText(); } });
+  $("c-text").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = Math.min(140, e.target.scrollHeight) + "px"; });
+
+  // ---- notifications (Web Push)
+  const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const b64uBytes = s => { const p = s + "=".repeat((4 - s.length % 4) % 4), raw = atob(p.replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, c => c.charCodeAt(0)); };
+  async function pushSubscribe(quiet) {
+    const reg = await navigator.serviceWorker.ready;
+    const {key} = await api("push/key"), want = b64uBytes(key);
+    let sub = await reg.pushManager.getSubscription();
+    if (sub && sub.options && sub.options.applicationServerKey) {
+      const have = new Uint8Array(sub.options.applicationServerKey);
+      if (have.length !== want.length || have.some((v, i) => v !== want[i])) { await sub.unsubscribe(); sub = null; }   // server key changed
+    }
+    if (!sub) sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: want});
+    await api("push/subscribe", {method: "POST", body: JSON.stringify(sub.toJSON())});
+    store.set("pushOn", true);
+    if (!quiet) toast("Notifications on. New messages will buzz this phone.");
+  }
+  async function enablePush() {
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { toast("Notifications weren't allowed. You can change that in the phone's settings for this app."); renderChat(); return; }
+      await pushSubscribe(false);
+    } catch (e) { toast("Couldn't turn on notifications: " + e.message); }
+    renderChat();
+  }
+  async function disablePush() {
+    try {
+      const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+      if (sub) { await api("push/unsubscribe", {method: "POST", body: JSON.stringify({endpoint: sub.endpoint})}).catch(() => {}); await sub.unsubscribe(); }
+    } catch (e) {}
+    store.set("pushOn", false); toast("Notifications off."); renderChat();
+  }
+  function renderNotify() {
+    const el = $("c-notify");
+    if (!pushSupported()) {
+      el.innerHTML = isIOS && !standalone() ? `<div class="card"><p>🔔 <b>To get a buzz when a message comes in</b> on iPhone: tap <b>Share</b> → <b>Add to Home Screen</b>, then open RangeIQ from the Home Screen and turn notifications on here.</p></div>` : "";
+      return;
+    }
+    const perm = Notification.permission, on = store.get("pushOn", false) && perm === "granted";
+    el.innerHTML = perm === "denied" ? `<div class="card"><p class="dim">🔕 Notifications are blocked for RangeIQ. Turn them on in the phone's settings for this app (or the browser's site settings).</p></div>`
+      : on ? `<p class="dim small">🔔 Notifications are on for this phone. <button type="button" class="linkbtn" id="pushTest">Send a test</button> · <button type="button" class="linkbtn" id="pushOff">Turn off</button></p>`
+      : `<div class="card"><p>🔔 <b>Get a buzz when a message comes in</b>, even with RangeIQ closed.</p><button type="button" class="primary" id="pushOn">Turn on notifications</button></div>`;
+    if ($("pushOn")) $("pushOn").onclick = enablePush;
+    if ($("pushOff")) $("pushOff").onclick = disablePush;
+    if ($("pushTest")) $("pushTest").onclick = async () => {
+      try { const r = await api("push/test", {method: "POST"}); toast(r.sent ? "Test sent. It should buzz in a few seconds." : "No phone to send to. Turn notifications off and on again."); }
+      catch (e) { toast(e.message); }
+    };
+  }
+  // Keep this phone's subscription fresh (phones sometimes renew it); no prompt, only if already allowed.
+  function refreshPush() { if (pushSupported() && store.get("pushOn", false) && Notification.permission === "granted") pushSubscribe(true).catch(() => {}); }
 
   // ================================================================ DRAWN SHAPES: pasture boundaries (lockable) and roads / trails
   const LINE_TYPES = {
@@ -1810,7 +2011,7 @@
   }
   function updateSyncPill() {
     const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length
-      + store.get("resolveq", []).length, p = $("syncPill");
+      + store.get("resolveq", []).length + store.get("msgq", []).length, p = $("syncPill");
     p.hidden = !n; p.textContent = n + " waiting to send";
   }
   $("syncPill").onclick = () => syncAll(true);
@@ -1824,17 +2025,18 @@
     if (who.token) store.set("token", who.token);
     me = {name: who.name, ranch: who.ranch, role: who.role || "owner", workspace_id: who.workspace_id, ranches: who.ranches || []}; store.set("me", me);
     if (who.workspace_id) store.set("lastRanch", who.workspace_id);
-    show("home"); await refresh(); syncAll();
+    show("home"); await refresh(); syncAll(); pollChat(); refreshPush();
   }
   // ---------------------------------------------------------------- switch between ranches (one login, several ranches)
   const unsent = () => store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length
-    + store.get("resolveq", []).length;
+    + store.get("resolveq", []).length + store.get("msgq", []).length;
   async function switchRanch(workspaceId) {
     if (!me || workspaceId === me.workspace_id) { closeSheet(); return; }
     if (unsent()) { await syncAll(true); if (unsent()) { toast("Some photos or entries for this ranch haven't sent yet. Switch once they have."); return; } }
     try {
       const who = await api("switch", {method: "POST", body: JSON.stringify({workspace_id: workspaceId})});
-      ["snapshot", "snapshotAt", "serverLogs", "photos", "tasks", "people", "places", "shapes", "draft"].forEach(k => store.del(k));
+      ["snapshot", "snapshotAt", "serverLogs", "photos", "tasks", "people", "places", "shapes", "draft", "chat"].forEach(k => store.del(k));
+      chat = {...EMPTY_CHAT}; chatBadge();
       rawSnap = snap = null; photos = []; serverLogs = []; tasks = []; people = []; places = []; shapes = []; draft = null; stopGps();
       if (view3d) { view3d.dispose(); view3d = null; }
       closeSheet(); toast("Now on " + who.ranch); await signedIn(who);
@@ -1883,6 +2085,7 @@
     await loadPending();
     updateSyncPill(); setBanner();
     show(store.get("token", null) || snap ? (location.hash.slice(1) || "home") : "login");
-    refresh().then(() => syncAll());
+    refresh().then(() => { syncAll(); if (me) { pollChat(); refreshPush(); } });
+    chatBadge();
   })();
 })();

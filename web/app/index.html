@@ -128,6 +128,23 @@
     <div class="card" id="d-land"></div>
   </section>
 
+  <!-- ============================== CHAT (text messages: everyone on the ranch, or one person) -->
+  <section class="view" id="v-chat" hidden aria-labelledby="c-h">
+    <div id="c-list">
+      <div class="hero"><h1 id="c-h">Chat</h1><p class="dim">Text the whole crew, or one person.</p></div>
+      <div id="c-notify"></div>
+      <ul class="threads" id="c-threads"></ul>
+    </div>
+    <div id="c-thread" hidden>
+      <div class="chathead"><button type="button" class="pill" id="c-back" aria-label="Back to all chats">‹ Chats</button><h2 id="c-title"></h2></div>
+      <ol class="bubbles" id="c-msgs" aria-live="polite"></ol>
+      <form class="composer" id="c-form" autocomplete="off">
+        <textarea id="c-text" rows="1" maxlength="2000" placeholder="Message" enterkeyhint="send" aria-label="Message"></textarea>
+        <button type="submit" class="primary" id="c-send">Send</button>
+      </form>
+    </div>
+  </section>
+
   <!-- ============================== LOG -->
   <section class="view" id="v-log" hidden aria-labelledby="g-h">
     <div class="hero"><h1 id="g-h">Log</h1></div>
@@ -171,6 +188,7 @@
   <button type="button" data-tab="home"><span aria-hidden="true">🏠</span>Home</button>
   <button type="button" data-tab="todo"><span aria-hidden="true">✅</span>To do</button>
   <button type="button" data-tab="map"><span aria-hidden="true">🗺️</span>Map</button>
+  <button type="button" data-tab="chat"><span aria-hidden="true">💬</span>Chat<b class="tabbadge" id="chatBadge" hidden></b></button>
   <button type="button" data-tab="log"><span aria-hidden="true">📋</span>Log</button>
   <button type="button" data-tab="more"><span aria-hidden="true">☰</span>More</button>
 </nav>

@@ -538,6 +538,87 @@ def create_app(
                 seen.add(p["user_id"]); out.append(p)
         return out
 
+    # -- messenger --------------------------------------------------------------------
+    # Text only. "all" = everyone on the ranch; or a direct conversation between two people. Anyone on the ranch can
+    # write to anyone. Phones poll while the app is open; with notifications on, a push wakes the phone otherwise.
+    from ranch_ai.rancher import push as webpush_mod
+
+    @app.get("/api/messages")
+    def list_messages(since: str | None = None, sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        ws, uid = sess["workspace_id"], sess["user_id"]
+        msgs = app.state.store.list_messages(ws, uid, since=since)
+        # "now": where the phone should ask from next time (newest message or deletion it has seen)
+        marks = [m.get("deleted_at") or m["created_at"] for m in msgs] + [m["created_at"] for m in msgs] + ([since] if since else [])
+        return {"messages": msgs, "reads": app.state.store.reads(ws, uid), "people": people(ws), "me": uid,
+                "now": max(marks) if marks else None}
+
+    @app.post("/api/messages")
+    def send_messages(payload: Any = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        items = payload if isinstance(payload, list) else [payload]
+        if len(items) > 100 or not all(isinstance(i, dict) for i in items):
+            raise HTTPException(status_code=400, detail="Send at most 100 messages at a time.")
+        ws, uid = sess["workspace_id"], sess["user_id"]
+        everyone = people(ws)
+        members = {p["user_id"] for p in everyone}
+        saved, errors, fresh = [], [], []
+        for it in items:
+            try:
+                row, created = app.state.store.add_message(ws, it, user_id=uid, user_name=who(sess), members=members)
+                saved.append(row["msg_id"])
+                if created:
+                    fresh.append(row)
+            except ValueError as exc:
+                errors.append({"msg_id": it.get("msg_id"), "error": str(exc)})
+        for row in fresh:                       # buzz everyone it's for, except the sender
+            pair = app.state.store.thread_members(row["thread_id"])
+            to = [p for p in (pair or members) if p != uid]
+            ranch = ranch_name(ws)
+            title = f"{row['from_name'] or 'Someone'}" + ("" if pair else f" → everyone{' · ' + ranch if ranch else ''}")
+            webpush_mod.send_in_background(app.state.store, to, {
+                "title": title, "body": row["text"][:180], "thread": row["thread_id"], "ws": ws, "tag": row["thread_id"],
+                "url": "/app/#messages"})
+        if fresh:
+            app.state.store.mark_read(ws, uid, fresh[-1]["thread_id"], fresh[-1]["created_at"])
+        return {"saved": saved, "errors": errors}
+
+    @app.post("/api/messages/read")
+    def read_messages(payload: dict[str, Any] = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, bool]:
+        thread, at = str(payload.get("thread_id") or ""), str(payload.get("at") or "")[:40]
+        if not thread or not at:
+            raise HTTPException(status_code=400, detail="thread_id and at are required.")
+        app.state.store.mark_read(sess["workspace_id"], sess["user_id"], thread, at)
+        return {"ok": True}
+
+    @app.delete("/api/messages/{msg_id}")
+    def delete_message(msg_id: str, sess: dict[str, str] = Depends(session)) -> dict[str, bool]:
+        try:
+            return {"deleted": app.state.store.delete_message(sess["workspace_id"], msg_id, user_id=sess["user_id"],
+                                                              is_owner=sess["role"] == "owner")}
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from None
+
+    @app.get("/api/push/key")
+    def push_key(sess: dict[str, str] = Depends(session)) -> dict[str, str]:
+        return {"key": webpush_mod.vapid_public_key(app.state.store)}
+
+    @app.post("/api/push/subscribe")
+    def push_subscribe(payload: dict[str, Any] = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, bool]:
+        try:
+            app.state.store.save_push_sub(sess["user_id"], payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {"ok": True}
+
+    @app.post("/api/push/unsubscribe")
+    def push_unsubscribe(payload: dict[str, Any] = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, bool]:
+        return {"ok": app.state.store.delete_push_sub(str(payload.get("endpoint") or ""), sess["user_id"])}
+
+    @app.post("/api/push/test")
+    def push_test(sess: dict[str, str] = Depends(session)) -> dict[str, int]:
+        """Send a test notification to this person's phones (to check notifications work)."""
+        return webpush_mod.send(app.state.store, [sess["user_id"]], {"title": "RangeIQ", "body": "Notifications are working.",
+                                                                     "url": "/app/#messages", "tag": "test"})
+
     @app.get("/api/tasks")
     def list_tasks(sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
         return {"tasks": app.state.store.list_tasks(sess["workspace_id"]), "people": people(sess["workspace_id"])}

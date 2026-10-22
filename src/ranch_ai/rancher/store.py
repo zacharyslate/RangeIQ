@@ -18,7 +18,7 @@ import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB_PATH = Path(os.getenv("RANGEIQ_APP_DB", PROJECT_ROOT / "data" / "processed" / "rangeiq_app.sqlite"))
@@ -189,6 +189,35 @@ class AppStore:
                     note TEXT,
                     via_task TEXT,
                     PRIMARY KEY (workspace_id, item_id)
+                );
+                -- Messenger: "all" is the whole ranch; "dm:<a>|<b>" is two people (user ids sorted). created_at is the server's
+                -- clock and orders the conversation; sent_at is when the phone sent it (it may have been offline).
+                CREATE TABLE IF NOT EXISTS messages (
+                    msg_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    from_user TEXT NOT NULL,
+                    from_name TEXT,
+                    text TEXT NOT NULL,
+                    sent_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS ix_messages ON messages(workspace_id, created_at);
+                CREATE TABLE IF NOT EXISTS message_reads (
+                    workspace_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    read_at TEXT NOT NULL,
+                    PRIMARY KEY (workspace_id, user_id, thread_id)
+                );
+                -- Phones that asked for notifications (Web Push). One row per phone/browser.
+                CREATE TABLE IF NOT EXISTS push_subs (
+                    endpoint TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    p256dh TEXT NOT NULL,
+                    auth TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY,
@@ -370,6 +399,139 @@ class AppStore:
                 conn.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES ('signing_secret', ?)", (value,))
                 row = conn.execute("SELECT value FROM app_settings WHERE key = 'signing_secret'").fetchone()
         return bytes.fromhex(row["value"])
+
+    # -- messenger -----------------------------------------------------------------
+    MESSAGE_MAX = 2000
+
+    @staticmethod
+    def dm_thread(a: str, b: str) -> str:
+        return "dm:" + "|".join(sorted([a, b]))
+
+    @staticmethod
+    def thread_members(thread_id: str) -> list[str] | None:
+        """The two people in a direct thread, or None for the whole-ranch thread."""
+        return thread_id[3:].split("|") if thread_id.startswith("dm:") else None
+
+    def add_message(self, workspace_id: str, data: dict[str, Any], *, user_id: str, user_name: str,
+                    members: set[str]) -> tuple[dict[str, Any], bool]:
+        """Save one message (re-sends with the same msg_id are no-ops). `members` = everyone on this ranch."""
+        msg_id = str(data.get("msg_id") or "").strip()
+        if not msg_id or len(msg_id) > 64:
+            raise ValueError("msg_id is required.")
+        text = str(data.get("text") or "").strip()
+        if not text:
+            raise ValueError("A message can't be empty.")
+        if len(text) > self.MESSAGE_MAX:
+            raise ValueError(f"Keep messages under {self.MESSAGE_MAX} characters.")
+        to = data.get("to_user_id")
+        thread = str(data.get("thread_id") or "")
+        if to:
+            if to == user_id or to not in members:
+                raise ValueError("That person isn't on this ranch.")
+            thread = self.dm_thread(user_id, str(to))
+        elif thread != "all":
+            pair = self.thread_members(thread)
+            if not pair or len(pair) != 2 or user_id not in pair or any(p not in members for p in pair) or pair[0] == pair[1]:
+                raise ValueError("Unknown conversation.")
+            thread = self.dm_thread(*pair)
+        sent_at = str(data.get("sent_at") or _iso(utc_now()))[:40]
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM messages WHERE msg_id = ?", (msg_id,)).fetchone()
+            if row is not None:
+                if row["workspace_id"] != workspace_id or row["from_user"] != user_id:
+                    raise ValueError("msg_id already used.")
+                return self._row_to_message(row), False
+            created = utc_now().isoformat(timespec="microseconds")
+            conn.execute("INSERT INTO messages(msg_id, workspace_id, thread_id, from_user, from_name, text, sent_at, created_at) "
+                         "VALUES (?,?,?,?,?,?,?,?)", (msg_id, workspace_id, thread, user_id, user_name, text, sent_at, created))
+            row = conn.execute("SELECT * FROM messages WHERE msg_id = ?", (msg_id,)).fetchone()
+        return self._row_to_message(row), True
+
+    def list_messages(self, workspace_id: str, user_id: str, since: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        """Messages this person can see (the whole-ranch thread + their direct threads). With `since` (a created_at from
+        an earlier answer), only newer ones, plus any deleted since then (so phones drop them too)."""
+        mine = "(thread_id = 'all' OR thread_id LIKE ? OR thread_id LIKE ?)"
+        args: list[Any] = [workspace_id, f"dm:{user_id}|%", f"dm:%|{user_id}"]
+        with self._connect() as conn:
+            if since:
+                rows = conn.execute(f"SELECT * FROM messages WHERE workspace_id = ? AND {mine} AND (created_at > ? OR deleted_at > ?) "
+                                    "ORDER BY created_at LIMIT ?", (*args, since, since, int(limit))).fetchall()
+            else:
+                rows = conn.execute(f"SELECT * FROM (SELECT * FROM messages WHERE workspace_id = ? AND {mine} AND deleted_at IS NULL "
+                                    "ORDER BY created_at DESC LIMIT ?) ORDER BY created_at", (*args, int(limit))).fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    def delete_message(self, workspace_id: str, msg_id: str, *, user_id: str, is_owner: bool) -> bool:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM messages WHERE workspace_id = ? AND msg_id = ?", (workspace_id, msg_id)).fetchone()
+            if row is None or row["deleted_at"]:
+                return False
+            if row["from_user"] != user_id and not is_owner:
+                raise PermissionError("You can only delete your own messages.")
+            conn.execute("UPDATE messages SET deleted_at = ? WHERE msg_id = ?", (utc_now().isoformat(timespec="microseconds"), msg_id))
+        return True
+
+    def mark_read(self, workspace_id: str, user_id: str, thread_id: str, read_at: str) -> None:
+        with self._connect() as conn:
+            conn.execute("INSERT INTO message_reads(workspace_id, user_id, thread_id, read_at) VALUES (?,?,?,?) "
+                         "ON CONFLICT(workspace_id, user_id, thread_id) DO UPDATE SET read_at = MAX(read_at, excluded.read_at)",
+                         (workspace_id, user_id, thread_id, read_at))
+
+    def reads(self, workspace_id: str, user_id: str) -> dict[str, str]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT thread_id, read_at FROM message_reads WHERE workspace_id = ? AND user_id = ?",
+                                (workspace_id, user_id)).fetchall()
+        return {r["thread_id"]: r["read_at"] for r in rows}
+
+    def unread_count(self, workspace_id: str, user_id: str) -> int:
+        reads = self.reads(workspace_id, user_id)
+        return sum(1 for m in self.list_messages(workspace_id, user_id)
+                   if m["from_user"] != user_id and m["created_at"] > reads.get(m["thread_id"], ""))
+
+    @staticmethod
+    def _row_to_message(row: sqlite3.Row) -> dict[str, Any]:
+        out = {k: row[k] for k in ("msg_id", "thread_id", "from_user", "from_name", "text", "sent_at", "created_at")}
+        if row["deleted_at"]:
+            out = {"msg_id": row["msg_id"], "thread_id": row["thread_id"], "deleted": True, "created_at": row["created_at"],
+                   "deleted_at": row["deleted_at"]}
+        return out
+
+    # -- push notifications (Web Push) ------------------------------------------------
+    def save_push_sub(self, user_id: str, sub: dict[str, Any]) -> None:
+        endpoint = str(sub.get("endpoint") or "")
+        keys = sub.get("keys") or {}
+        if not endpoint.startswith("https://") or len(endpoint) > 1000 or not keys.get("p256dh") or not keys.get("auth"):
+            raise ValueError("Bad subscription.")
+        with self._connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO push_subs(endpoint, user_id, p256dh, auth, created_at) VALUES (?,?,?,?,?)",
+                         (endpoint, user_id, str(keys["p256dh"])[:200], str(keys["auth"])[:100], _iso(utc_now())))
+
+    def delete_push_sub(self, endpoint: str, user_id: str | None = None) -> bool:
+        with self._connect() as conn:
+            if user_id:
+                cur = conn.execute("DELETE FROM push_subs WHERE endpoint = ? AND user_id = ?", (endpoint, user_id))
+            else:
+                cur = conn.execute("DELETE FROM push_subs WHERE endpoint = ?", (endpoint,))
+        return cur.rowcount > 0
+
+    def push_subs_for(self, user_ids: Iterable[str]) -> list[dict[str, Any]]:
+        ids = list(set(user_ids))
+        if not ids:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(f"SELECT * FROM push_subs WHERE user_id IN ({','.join('?' * len(ids))})", ids).fetchall()
+        return [dict(r) for r in rows]
+
+    def app_value(self, key: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_app_value_once(self, key: str, value: str) -> str:
+        """Store a value unless one is there already; returns the stored one (first writer wins)."""
+        with self._connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO app_settings(key, value) VALUES (?, ?)", (key, value))
+            return conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()["value"]
 
     # -- photos ------------------------------------------------------------------
     def photo_dir(self, workspace_id: str) -> Path:

@@ -29,7 +29,7 @@ NAIP_EXPORT_URL = "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIP
 # a 3072 px NAIP photo is ~2.4 m per pixel on a 7 km ranch (the NAIP service allows up to 4000 px per request).
 MAX_VERTICES_PER_SIDE = 512
 TEXTURE_MAX_PX = 3072
-ASSET_VERSION = 2
+ASSET_VERSION = 3          # 3: 300 m of ground around the ranch (was 120 m)
 
 
 def _fill_nan(z: np.ndarray) -> np.ndarray:
