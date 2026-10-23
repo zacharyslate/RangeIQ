@@ -1153,3 +1153,76 @@ def test_every_place_kind_report_tag_and_water_feature_has_a_ranch_icon():
     missing = [k for k in kinds if k not in keys] + [t for t in TAG_LEVELS if t not in keys] + \
               ["usgs_" + k for k in KIND_LABEL if "usgs_" + k not in keys]
     assert missing == []
+
+
+# --- rain source: PRISM via ACIS, with plausibility checks --------------------------
+class _Resp:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.payload
+
+
+class _Session:
+    def __init__(self, payload):
+        self.payload, self.calls = payload, []
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.calls.append((url, json))
+        return _Resp(self.payload)
+
+
+def test_prism_provider_parses_acis_and_converts_units():
+    from ranch_ai.data.public_sources import AcisPrismHistoricalWeatherProvider
+
+    payload = {"meta": {"ll": [-99.5, 32.5]}, "data": [
+        ["2026-10-01", 25.4, 30.0, 15.0, 22.5], ["2026-10-02", 0.0, 28.0, 12.0, 20.0], ["2026-10-03", -999, -999, -999, -999]]}
+    session = _Session(payload)
+    frame = AcisPrismHistoricalWeatherProvider(session=session).get_daily_history(32.5, -99.5, "2026-10-01", "2026-10-03")
+    url, body = session.calls[0]
+    assert url == "https://data.rcc-acis.org/GridData" and body["grid"] == "21" and body["loc"] == "-99.5,32.5"
+    assert body["elems"][0] == {"name": "pcpn", "interval": "dly", "units": "mm"}
+    assert frame["public_precip_in"].tolist()[:2] == [1.0, 0.0] and np.isnan(frame["public_precip_in"].iloc[2])
+    assert frame["public_temp_max_f"].iloc[0] == 86.0 and frame["source"].iloc[0] == "PRISM via ACIS GridData"
+
+
+def test_prism_falls_back_to_nasa_outside_coverage_and_refuses_absurd_rain():
+    from ranch_ai.data.public_sources import AcisPrismHistoricalWeatherProvider, precip_problem
+
+    class Nasa:
+        provider_name = "nasa_power"
+
+        def get_daily_history(self, lat, lon, start, end):
+            return pd.DataFrame({"date": pd.date_range(start, end), "public_precip_in": 0.1, "source": "NASA POWER Daily API"})
+
+    empty = _Session({"meta": {}, "data": [["2026-10-01", -999, -999, -999, -999]]})
+    prov = AcisPrismHistoricalWeatherProvider(session=empty, fallback=Nasa())
+    frame = prov.get_daily_history(20.0, -100.0, "2026-10-01", "2026-10-03")
+    assert prov.last_used == "nasa_power" and frame["source"].iloc[0].startswith("NASA")
+    with pytest.raises(Exception):
+        AcisPrismHistoricalWeatherProvider(session=_Session({"error": "bad loc"})).get_daily_history(1, 2, "2026-10-01", "2026-10-02")
+
+    # The broken NASA POWER record seen in Oct 2026: a 1,165 mm day, and ~17,000 mm a year
+    dates = pd.date_range("2016-07-15", "2026-10-23", freq="D")
+    bad = pd.DataFrame({"date": dates, "public_precip_in": 1.9})
+    assert "a year" in precip_problem(bad)
+    spike = pd.DataFrame({"date": dates[:30], "public_precip_in": [0.0] * 29 + [45.9]})
+    assert "one day" in precip_problem(spike)
+    good = pd.DataFrame({"date": dates, "public_precip_in": 0.07})    # ~26 in a year: West Texas-ish
+    assert precip_problem(good) is None
+    assert rain_totals(bad) == {}                                    # an old bad cache shows nothing, not 107 in
+    assert rain_totals(good)["rain_90d_in"] == pytest.approx(6.3, rel=0.02)
+
+
+def test_accounts_on_nasa_power_are_moved_to_prism():
+    from ranch_ai.config import Settings
+    from ranch_ai.rancher.worker import usable_providers
+
+    s = Settings()
+    s.public_data.historical_weather.provider = "nasa_power"
+    notes = usable_providers(s, env={})
+    assert s.public_data.historical_weather.provider == "acis_prism" and any("acis_prism" in n for n in notes)

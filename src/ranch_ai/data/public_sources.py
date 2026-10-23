@@ -11,6 +11,35 @@ from ranch_ai.data.weather import celsius_to_fahrenheit, mm_to_inches, ms_to_mph
 
 
 NASA_POWER_CITATION_URL = "https://power.larc.nasa.gov/docs/services/api/"
+ACIS_PRISM_CITATION_URL = "https://www.rcc-acis.org/docs_webservices.html"
+ACIS_GRIDDATA_URL = "https://data.rcc-acis.org/GridData"
+
+# Plausibility limits for daily rain. One day above ~1,150 mm (45 in) is beyond the US 24-hour record (about 42 in,
+# Alvin TX, 1979), and a long-run average above 5,000 mm (~200 in) a year is wetter than anywhere in the lower 48.
+# Anything past these is a broken feed, not weather, so it is refused rather than shown to the crew.
+MAX_DAILY_PRECIP_MM = 1150.0
+MAX_ANNUAL_PRECIP_MM = 5000.0
+
+
+def precip_problem(frame: pd.DataFrame | None) -> str | None:
+    """Why a daily rain history can't be real, or None if it looks like weather."""
+    if frame is None or frame.empty or "public_precip_in" not in frame or "date" not in frame:
+        return None
+    df = frame[["date", "public_precip_in"]].dropna().copy()
+    if df.empty:
+        return None
+    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None).dt.normalize()
+    mm = df.groupby("date")["public_precip_in"].sum() * 25.4
+    if (mm < -0.01).any():
+        return "negative daily rain"
+    if mm.max() > MAX_DAILY_PRECIP_MM:
+        return f"{mm.max():.0f} mm of rain in one day ({mm.idxmax().date()}) is beyond any US record"
+    span = (mm.index.max() - mm.index.min()).days + 1
+    if span >= 365 and len(mm) >= 0.8 * span:
+        yearly = float(mm.sum()) / len(mm) * 365.25
+        if yearly > MAX_ANNUAL_PRECIP_MM:
+            return f"it averages {yearly:.0f} mm of rain a year, far wetter than anywhere in the lower 48"
+    return None
 USDA_SDA_CITATION_URL = "https://sdmdataaccess.nrcs.usda.gov/"
 USDM_CITATION_URL = "https://www.drought.gov/data-maps-tools/us-drought-monitor"
 CENSUS_GEOCODER_CITATION_URL = "https://geocoding.geo.census.gov/geocoder/Geocoding_Services_API.html"
@@ -267,7 +296,78 @@ class NasaPowerHistoricalWeatherProvider(HistoricalWeatherProvider):
         frame = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
         if frame.empty:
             raise ValueError("NASA POWER returned an empty daily history.")
+        problem = precip_problem(frame)
+        if problem:
+            raise ValueError(f"NASA POWER rain refused: {problem}.")
         return frame
+
+
+class AcisPrismHistoricalWeatherProvider(HistoricalWeatherProvider):
+    """Daily rain and temperature from PRISM (Oregon State's 4 km gridded analysis of US gauge networks), read
+    through the ACIS GridData service (grid "21"). PRISM covers the lower 48 only; anywhere else, or if ACIS is
+    down, it falls back to NASA POWER, which is checked for plausibility too. PRISM days run 12:00-12:00 UTC.
+    Request format: https://www.rcc-acis.org/docs_webservices.html (as used by pvlib.iotools.get_acis_prism)."""
+
+    provider_name = "acis_prism"
+    citation_url = ACIS_PRISM_CITATION_URL
+
+    def __init__(self, timeout_seconds: int = 20, fallback: HistoricalWeatherProvider | None = None, session=None):
+        self.timeout_seconds = timeout_seconds
+        self.fallback = fallback
+        self.session = session or requests
+        self.last_used = None
+
+    def _prism(self, lat: float, lon: float, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        elems = [{"name": "pcpn", "interval": "dly", "units": "mm"},
+                 {"name": "maxt", "interval": "dly", "units": "degreeC"},
+                 {"name": "mint", "interval": "dly", "units": "degreeC"},
+                 {"name": "avgt", "interval": "dly", "units": "degreeC"}]
+        response = self.session.post(ACIS_GRIDDATA_URL, json={
+            "loc": f"{lon},{lat}", "grid": "21", "elems": elems, "meta": ["ll"],
+            "sdate": start.strftime("%Y-%m-%d"), "edate": end.strftime("%Y-%m-%d"), "output": "json",
+        }, headers={"Content-Type": "application/json"}, timeout=max(self.timeout_seconds, 60))
+        response.raise_for_status()
+        payload = response.json()
+        if "error" in payload:                      # ACIS reports errors inside a 200 response
+            raise ValueError(f"ACIS: {payload['error']}")
+        raw = pd.DataFrame(payload.get("data") or [], columns=["date", "pcpn", "maxt", "mint", "avgt"])
+        if raw.empty:
+            raise ValueError("ACIS returned no PRISM days.")
+        for col in ("pcpn", "maxt", "mint", "avgt"):
+            raw[col] = pd.to_numeric(raw[col], errors="coerce").where(lambda v: v > -998)
+        if raw["pcpn"].notna().sum() == 0:
+            raise ValueError("PRISM has no data at this point (it covers the lower 48 only).")
+
+        def f(c):
+            return raw[c].map(lambda v: round(celsius_to_fahrenheit(v), 1) if pd.notna(v) else np.nan)
+
+        frame = pd.DataFrame({
+            "date": pd.to_datetime(raw["date"]),
+            "public_temp_mean_f": f("avgt"), "public_temp_max_f": f("maxt"), "public_temp_min_f": f("mint"),
+            "public_precip_in": raw["pcpn"].map(lambda v: round(mm_to_inches(v), 3) if pd.notna(v) else np.nan),
+            "public_humidity_pct": np.nan, "public_wind_speed_mph": np.nan,
+            "source": "PRISM via ACIS GridData",
+        }).sort_values("date").reset_index(drop=True)
+        problem = precip_problem(frame)
+        if problem:
+            raise ValueError(f"PRISM rain refused: {problem}.")
+        return frame
+
+    def get_daily_history(self, lat: float, lon: float, start_date, end_date) -> pd.DataFrame:
+        start, end = _normalize_start_end(start_date, end_date)
+        try:
+            frame = self._prism(lat, lon, start, end)
+            self.last_used = "acis_prism"
+            return frame
+        except Exception as exc:  # noqa: BLE001
+            if self.fallback is None:
+                raise
+            try:
+                frame = self.fallback.get_daily_history(lat, lon, start, end)
+            except Exception as exc2:  # noqa: BLE001
+                raise ValueError(f"PRISM failed ({exc}); NASA POWER failed too ({exc2})") from exc2
+            self.last_used = getattr(self.fallback, "provider_name", "fallback")
+            return frame
 
 
 class MockSoilProfileProvider(SoilProfileProvider):
