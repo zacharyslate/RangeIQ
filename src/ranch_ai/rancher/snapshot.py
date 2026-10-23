@@ -65,6 +65,10 @@ def rain_totals(history: pd.DataFrame, *, min_years: int = 3) -> dict[str, Any]:
     """90/30-day rain to the last observed day, and the 90-day normal from the same window in prior years."""
     if history is None or history.empty or "public_precip_in" not in history:
         return {}
+    from ranch_ai.data.public_sources import precip_problem
+
+    if precip_problem(history):          # a broken feed (e.g. an old cached copy): show nothing rather than nonsense
+        return {}
     df = history[["date", "public_precip_in"]].dropna().copy()
     df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None).dt.normalize()
     df = df.groupby("date", as_index=True)["public_precip_in"].sum().sort_index()
@@ -97,7 +101,7 @@ def rain_totals(history: pd.DataFrame, *, min_years: int = 3) -> dict[str, Any]:
 
 
 PROVIDER_NAMES = {
-    "nasa_power": "NASA POWER", "nws": "National Weather Service", "openmeteo": "Open-Meteo", "usdm": "U.S. Drought Monitor",
+    "nasa_power": "NASA POWER", "acis_prism": "PRISM (Oregon State, via ACIS)", "nws": "National Weather Service", "openmeteo": "Open-Meteo", "usdm": "U.S. Drought Monitor",
     "usda_sda": "USDA Soil Survey", "earth_search_stac": "Sentinel-2 (Earth Search)", "rap": "RAP", "usgs_3dep": "USGS 3DEP",
 }
 
@@ -272,7 +276,11 @@ def build_snapshot(
 
     hw = modes.get("Historical Weather")
     rain = rain_totals(bundle.historical_weather) if hw and usable(hw.mode) else {}
-    sources.append(_source_entry("Rain history", hw.mode if hw else None, hw.active_provider if hw else None, rain.get("as_of"), demo,
+    hw_provider = hw.active_provider if hw else None
+    if hw_provider == "acis_prism" and "source" in bundle.historical_weather and not bundle.historical_weather.empty and \
+            str(bundle.historical_weather["source"].iloc[-1]).startswith("NASA"):
+        hw_provider = "nasa_power"         # outside PRISM's coverage, or ACIS was down: say which source it really is
+    sources.append(_source_entry("Rain history", hw.mode if hw else None, hw_provider, rain.get("as_of"), demo,
                                  hw.status if hw else None))
 
     dr = modes.get("Drought")

@@ -48,7 +48,7 @@ public_data:
   enabled: true
   cache_enabled: true
   historical_weather:
-    provider: "nasa_power"  # mock, nasa_power
+    provider: "acis_prism"  # mock, acis_prism (PRISM, lower 48; NASA POWER fallback), nasa_power
     timeout_seconds: 20
     refresh_hours: 168
   soils:

@@ -262,7 +262,7 @@ class FireRiskConfig:
 
 @dataclass
 class HistoricalWeatherSourceConfig:
-    provider: str = "nasa_power"
+    provider: str = "acis_prism"
     timeout_seconds: int = 20
     refresh_hours: int = 168
 

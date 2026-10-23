@@ -7,6 +7,7 @@ import pandas as pd
 
 from ranch_ai.config import Settings, settings
 from ranch_ai.data.public_sources import (
+    AcisPrismHistoricalWeatherProvider,
     NASA_POWER_CITATION_URL,
     USDA_SDA_CITATION_URL,
     USDM_CITATION_URL,
@@ -23,8 +24,12 @@ from ranch_ai.vegetation.vegetation_service import VegetationService
 
 
 def _history_provider_from_name(provider_name: str, app_settings: Settings):
+    timeout = app_settings.public_data.historical_weather.timeout_seconds
     if provider_name == "nasa_power":
-        return NasaPowerHistoricalWeatherProvider(timeout_seconds=app_settings.public_data.historical_weather.timeout_seconds)
+        return NasaPowerHistoricalWeatherProvider(timeout_seconds=timeout)
+    if provider_name in ("acis_prism", "prism"):
+        return AcisPrismHistoricalWeatherProvider(timeout_seconds=timeout,
+                                                  fallback=NasaPowerHistoricalWeatherProvider(timeout_seconds=timeout))
     return MockHistoricalWeatherProvider(seed=app_settings.random_seed)
 
 

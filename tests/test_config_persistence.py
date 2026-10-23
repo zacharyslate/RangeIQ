@@ -41,7 +41,7 @@ def test_default_settings_prefer_real_public_providers(tmp_path):
 
     assert loaded.weather.provider == "openmeteo"
     assert loaded.alerts.provider == "nws"
-    assert loaded.public_data.historical_weather.provider == "nasa_power"
+    assert loaded.public_data.historical_weather.provider == "acis_prism"
     assert loaded.public_data.soils.provider == "usda_sda"
     assert loaded.public_data.drought.provider == "usdm"
     assert loaded.public_data.vegetation.provider == "earth_search_stac"

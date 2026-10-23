@@ -43,7 +43,7 @@ def account_workspaces(auth_db_path: Path, store: AppStore | None = None) -> lis
 LIVE_DEFAULTS = {
     "weather": "nws",
     "alerts": "nws",
-    "historical_weather": "nasa_power",
+    "historical_weather": "acis_prism",
     "soils": "usda_sda",
     "drought": "usdm",
     "vegetation": "earth_search_stac",
@@ -77,10 +77,17 @@ def usable_providers(app_settings: Settings, env: dict | None = None) -> list[st
         "climate_engine": not env.get(veg.climate_engine_api_key_env),
         "appeears": not (env.get(veg.appeears_username_env) and env.get(veg.appeears_password_env)),
     }
+    notes = []
+    hist = app_settings.public_data.historical_weather
+    if str(hist.provider).lower() == "nasa_power":
+        # NASA POWER's daily rain went badly wrong in Oct 2026 (a whole record inflated ~20x). PRISM is built from
+        # US gauges; it falls back to NASA POWER (plausibility-checked) outside the lower 48.
+        hist.provider = LIVE_DEFAULTS["historical_weather"]
+        notes.append("rain history: nasa_power -> acis_prism (PRISM, NASA POWER as checked fallback)")
     if missing.get(provider):
         veg.provider = LIVE_DEFAULTS["vegetation"]
-        return [f"vegetation: {provider} has no key on this server, using earth_search_stac (same Sentinel-2 imagery)"]
-    return []
+        notes.append(f"vegetation: {provider} has no key on this server, using earth_search_stac (same Sentinel-2 imagery)")
+    return notes
 
 
 def outline_hash(pastures) -> str:

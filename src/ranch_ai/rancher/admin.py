@@ -352,6 +352,20 @@ def rain_check(workspace_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"rain check: NASA POWER pull failed ({type(exc).__name__}: {str(exc)[:120]})")
     try:
+        from ranch_ai.data.public_sources import AcisPrismHistoricalWeatherProvider, precip_problem
+
+        prism = AcisPrismHistoricalWeatherProvider(timeout_seconds=60)._prism(lat, lon, start, end)
+        p = prism.dropna(subset=["public_precip_in"])
+        last90 = p[p["date"] > p["date"].max() - pd.Timedelta(days=90)]
+        top = p.sort_values("public_precip_in", ascending=False).head(5)
+        print(f"rain check (fresh PRISM via ACIS): {len(prism)} days, {int(prism['public_precip_in'].isna().sum())} missing, "
+              f"last good day {p['date'].max().date() if len(p) else None}; 90-day total {last90['public_precip_in'].sum():.2f} in "
+              f"over {len(last90)} days; biggest days (in): " + ", ".join(f"{d.date()} {v:.2f}" for d, v in zip(top['date'], top['public_precip_in'])))
+        long = AcisPrismHistoricalWeatherProvider(timeout_seconds=60)._prism(lat, lon, end - pd.DateOffset(years=10), end)
+        print(f"   PRISM 10-year: {len(long)} days, plausibility {precip_problem(long) or 'ok'}; snapshot math -> {rain_totals(long)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"rain check: PRISM pull failed ({type(exc).__name__}: {str(exc)[:160]})")
+    try:
         from ranch_ai.rancher.worker import workspace_inputs as wi
         cache_dir = wi(workspace_id)[0].public_data_cache_dir
         files = sorted(Path(cache_dir).rglob("*.json"), key=lambda p: p.stat().st_mtime)
