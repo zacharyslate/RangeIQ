@@ -238,3 +238,11 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - **📍 Me** shows where the phone is: a blue dot with an accuracy ring in 2D, and a blue marker in 3D, with a direction arrow when the compass is known. It centers the map on you. GPS runs only while the map is open.
 - **Relief** look replaces Topo: land colored by height and slope (sage flats, tan slopes, rust and rock on steep ground, greener draws), lit by the scene's sun, with no contour lines.
 - **Height slider:** ×1 to ×12.
+
+## Rain history (where the 90-day rain comes from)
+
+- **Source:** PRISM daily rain (Oregon State's 4 km analysis of US rain-gauge networks), read through the ACIS GridData service (grid 21). NASA POWER is used only outside PRISM's lower-48 coverage, or when ACIS is down.
+- **Why it changed (Oct 2026):** NASA POWER's daily rain for the ranch came back about 20× too high across its whole 10-year record (one day of 1,165 mm), so Home showed 107.4 in for the last 90 days.
+- **Plausibility check:** any source is refused if one day is beyond the US 24-hour record or the long-run average is above 5,000 mm a year. In that case the app shows no rain figure rather than a wrong one.
+- **What it means:** "Rain last 90 days" is summed over the 90 days up to the last day PRISM has (usually yesterday). "Normal" is the same 90-day window in each of the past 10 years. PRISM days run noon to noon UTC (early morning to early morning in Texas), so a storm can land on the day before or after the rain-gauge entry.
+- **Diagnose** prints a fresh PRISM pull next to NASA's (numbers only).
