@@ -320,6 +320,52 @@ def _offset_check(items, geoms) -> None:
               f"share at 1.0 now: {100 * float((with_off >= 0.999).mean()):.1f}%")
 
 
+def rain_check(workspace_id: str) -> None:
+    """Why does the 90-day rain look wrong? Fresh NASA POWER pull for the ranch's middle point (no coordinates printed):
+    units, days, duplicates, biggest days, totals; and the same from the cached copy the snapshot used."""
+    import pandas as pd
+    import requests
+
+    from ranch_ai.rancher.snapshot import rain_totals
+    from ranch_ai.rancher.worker import workspace_inputs
+
+    _, pastures, _ = workspace_inputs(workspace_id)
+    if pastures is None:
+        return
+    lat, lon = float(pastures["centroid_lat"].mean()), float(pastures["centroid_lon"].mean())
+    end = pd.Timestamp.now().normalize(); start = end - pd.Timedelta(days=130)
+    try:
+        r = requests.get("https://power.larc.nasa.gov/api/temporal/daily/point", timeout=60, params={
+            "parameters": "PRECTOTCORR", "community": "AG", "latitude": lat, "longitude": lon,
+            "start": start.strftime("%Y%m%d"), "end": end.strftime("%Y%m%d"), "format": "JSON"})
+        payload = r.json()
+        units = ((payload.get("parameters") or {}).get("PRECTOTCORR") or {}).get("units")
+        vals = (payload.get("properties", {}).get("parameter", {}).get("PRECTOTCORR") or {})
+        s = pd.Series({pd.to_datetime(k, format="%Y%m%d"): v for k, v in vals.items()}).sort_index()
+        good = s[s > -900]
+        last90 = good[good.index > good.index.max() - pd.Timedelta(days=90)]
+        top = good.sort_values(ascending=False).head(5)
+        print(f"rain check (fresh NASA POWER): units {units!r}, {len(s)} days, {int((s <= -900).sum())} missing (-999), "
+              f"last good day {good.index.max().date() if len(good) else None}")
+        print(f"   90-day total {last90.sum():.1f} mm = {last90.sum() / 25.4:.2f} in over {len(last90)} days; "
+              f"biggest days: " + ", ".join(f"{d.date()} {v:.1f}" for d, v in top.items()))
+    except Exception as exc:  # noqa: BLE001
+        print(f"rain check: NASA POWER pull failed ({type(exc).__name__}: {str(exc)[:120]})")
+    try:
+        from ranch_ai.rancher.worker import workspace_inputs as wi
+        cache_dir = wi(workspace_id)[0].public_data_cache_dir
+        files = sorted(Path(cache_dir).rglob("*.json"), key=lambda p: p.stat().st_mtime)
+        hist = [p for p in files if "historical" in str(p).lower() and not p.name.endswith(".meta.json")]
+        if hist:
+            import io
+            frame = pd.read_json(io.StringIO(hist[-1].read_text(encoding="utf-8")), orient="table")
+            dates = pd.to_datetime(frame["date"])
+            print(f"   cached copy: {len(frame)} rows, {dates.nunique()} distinct days ({dates.min().date()} to {dates.max().date()}), "
+                  f"max daily {frame['public_precip_in'].max():.2f} in; snapshot math -> {rain_totals(frame)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"   cached copy check failed: {type(exc).__name__}: {str(exc)[:150]}")
+
+
 def _greenness_table(history, anomalies, pastures) -> None:
     """Per pasture (numbered, no names): NDVI now, the same weeks in each earlier year, and how the pasture swings over a
     year (lowest / highest monthly median). Bare-soil lows (~0.1-0.2) and big swings point at cultivated fields."""
@@ -363,6 +409,7 @@ def diagnose_all(redact: bool = True) -> int:
         if workspace_inputs(workspace_id)[1] is None:
             continue
         print(f"--- ranch {index}")
+        rain_check(workspace_id)
         worst = max(worst, diagnose_ranch_greenness(workspace_id))
     return worst
 
