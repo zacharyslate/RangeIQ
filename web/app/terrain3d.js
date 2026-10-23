@@ -316,14 +316,23 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   };
   const pins = new THREE.Group(); scene.add(pins);
   const pinTex = {};
-  function pinTexture(flag, icon = "📷") {
-    const key = (flag ? "f" : "n") + icon;
+  // A white disc with the ranch icon (icons.js), ringed red when it needs attention; emoji if the icon isn't there.
+  function pinTexture(flag, icon = "📷", ikey = null) {
+    const url = ikey && window.RangeIcons && window.RangeIcons.url(ikey);
+    const key = (flag ? "f" : "n") + (url ? "#" + ikey : icon);
     if (pinTex[key]) return pinTex[key];
-    const c = document.createElement("canvas"); c.width = c.height = 96; const g = c.getContext("2d");
-    g.fillStyle = flag ? "#d63c2f" : "#ffffff"; g.strokeStyle = flag ? "#fff" : "#1d2a44"; g.lineWidth = 6;
-    g.beginPath(); g.arc(48, 48, 40, 0, Math.PI * 2); g.fill(); g.stroke();
-    g.font = "44px system-ui, 'Apple Color Emoji', 'Segoe UI Emoji'"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(icon, 48, 52);
-    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return (pinTex[key] = t);
+    const c = document.createElement("canvas"); c.width = c.height = 128; const g = c.getContext("2d");
+    g.fillStyle = "#ffffff"; g.strokeStyle = flag ? "#d63c2f" : "#1d2a44"; g.lineWidth = flag ? 10 : 7;
+    g.beginPath(); g.arc(64, 64, 56, 0, Math.PI * 2); g.fill(); g.stroke();
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+    if (url) {
+      const img = new Image();
+      img.onload = () => { g.drawImage(img, 22, 22, 84, 84); t.needsUpdate = true; };
+      img.src = url;
+    } else {
+      g.font = "60px system-ui, 'Apple Color Emoji', 'Segoe UI Emoji'"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(icon, 64, 69);
+    }
+    return (pinTex[key] = t);
   }
   let photoList = photos;
   function drawPins() {
@@ -334,7 +343,7 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
       const ground = toScene(xy[0], xy[1], 0.001), top = ground.clone(); top.y += 0.035;
       const stem = new THREE.Line(new THREE.BufferGeometry().setFromPoints([ground, top]), new THREE.LineBasicMaterial({color: 0xffffff, fog: false}));
       pins.add(stem);
-      const sp = new THREE.Sprite(new THREE.SpriteMaterial({map: pinTexture(!!p.flagged, p.icon || "📷"), depthTest: false}));
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({map: pinTexture(!!p.flagged, p.icon || "📷", p.ikey), depthTest: false}));
       sp.position.copy(top); sp.userData = {photo: p.client_id, k: 0.042, aspect: 1}; sp.renderOrder = 12; pins.add(sp);
       if (p.heading_deg != null) {            // a flat wedge on the ground pointing where the camera faced
         const th = (90 - p.heading_deg) * D2R, wedge = new THREE.CircleGeometry(0.03, 12, th - 0.5, 1.0);

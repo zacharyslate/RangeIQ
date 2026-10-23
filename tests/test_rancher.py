@@ -1137,3 +1137,19 @@ def test_sos_alerts_everyone_tracks_location_and_closes(client, monkeypatch):
     assert client.post("/api/sos", headers=luis, json={"op": "loc", "sos_id": "s1", "lat": 30.3, "lon": -103.6}).json()["errors"]
     texts = [m["text"] for m in client.get("/api/messages", headers=luis).json()["messages"]]
     assert any(t.startswith("✅ SOS over: Luis is OK") for t in texts) and any(t.startswith("🚙 On my way to Luis") for t in texts)
+
+
+def test_every_place_kind_report_tag_and_water_feature_has_a_ranch_icon():
+    import re
+    from ranch_ai.rancher.status import TAG_LEVELS
+    from ranch_ai.rancher.water_map import KIND_LABEL
+
+    app = (Path(__file__).resolve().parents[1] / "web" / "app")
+    icons = (app / "icons.js").read_text(encoding="utf-8")
+    keys = set(re.findall(r'^\s+"([^"]+)":', icons, re.M)) | set(re.findall(r"^\s+([a-z_]+):", icons, re.M)) \
+        | set(re.findall(r'I\["([^"]+)"\]\s*=', icons))
+    kinds = re.findall(r"(\w+): \[\"[^\"]+\", \"[^\"]+\", \"(?:water|hunting|ranch|sensors)\"\]", (app / "app.js").read_text(encoding="utf-8"))
+    assert len(kinds) >= 20
+    missing = [k for k in kinds if k not in keys] + [t for t in TAG_LEVELS if t not in keys] + \
+              ["usgs_" + k for k in KIND_LABEL if "usgs_" + k not in keys]
+    assert missing == []

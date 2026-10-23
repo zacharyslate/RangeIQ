@@ -36,7 +36,9 @@
   const RANK = {concern: 4, alert: 3, watch: 2, info: 1, good: 0};
   const topTag = tags => (tags || []).filter(t => TAG[t]).sort((a, b) => RANK[TAG[b].level] - RANK[TAG[a].level])[0];
   const tagClass = t => !TAG[t] ? "" : TAG[t].level === "good" ? " ok" : ["info", "alert"].includes(TAG[t].level) ? " info" : "";
-  const tagSpan = t => `<span class="tag${tagClass(t)}">${TAG[t] ? TAG[t].icon + " " : ""}${esc(t)}</span>`;
+  // Ranch icons (icons.js); the emoji stay as a fallback and in plain-text places (notifications, chat).
+  const rIcon = (key, size = 22, fallback = "") => window.RangeIcons && key && RangeIcons.has(key) ? RangeIcons.svg(key, size) : fallback;
+  const tagSpan = t => `<span class="tag${tagClass(t)}">${TAG[t] ? rIcon(t, 18, TAG[t].icon) + " " : ""}${esc(t)}</span>`;
   const COLOR = {good: "#2e9d55", watch: "#e0a21b", act: "#d63c2f", unknown: "#8a8f96"};
 
   // Drought and rain are the same for every pasture and are "pretty normal out there", so the crew can switch them off.
@@ -185,20 +187,21 @@
     for (const sp of spots(loose)) {
       const newest = loose.find(p => p.client_id === sp.client_id) || {};
       const done = !!resolution(newest), lay = (!done && layerOfTags(newest.tags)) || "photos", top = topTag(newest.tags);
-      out.push({...sp, layer: lay, icon: lay === "photos" ? "📷" : (top ? TAG[top].icon : "📷"), title: (newest.tags || []).join(", ") || "Photo"});
+      out.push({...sp, layer: lay, icon: lay === "photos" ? "📷" : (top ? TAG[top].icon : "📷"), ikey: lay === "photos" ? "photo" : (top || "photo"),
+        title: (newest.tags || []).join(", ") || "Photo"});
     }
     logItems().filter(i => i.type === "problem" && i.l.lat != null && !resolution(i.l)).forEach(i => {     // resolved: off the map
       const top = topTag(i.l.tags);
-      out.push({client_id: i.l.client_id, lat: i.l.lat, lon: i.l.lon, icon: top ? TAG[top].icon : "📝", taken_at: i.at, report: true,
+      out.push({client_id: i.l.client_id, lat: i.l.lat, lon: i.l.lon, icon: top ? TAG[top].icon : "📝", ikey: top || "note", taken_at: i.at, report: true,
         layer: layerOfTags(i.l.tags) || "problems", flagged: tagsAt(i.l.tags, HEADS_UP).length > 0, title: (i.l.tags || []).join(", ") || i.l.text || "Report"});
     });
     places.forEach(pl => { const k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
-      out.push({client_id: pl.place_id, lat: pl.lat, lon: pl.lon, icon: k[1], layer: k[2], place: true, title: pl.name}); });
+      out.push({client_id: pl.place_id, lat: pl.lat, lon: pl.lon, icon: k[1], ikey: PLACE_KINDS[pl.kind] ? pl.kind : "other", layer: k[2], place: true, title: pl.name}); });
     const USGS_ICON = {tank: "💧", pond: "💧", playa: "🏜️", marsh: "🌾", spring: "💦", well: "🚰", dam: "🧱"};
     (((snap && snap.water_map) || {}).features || []).forEach(w =>
-      out.push({client_id: w.id, lat: w.lat, lon: w.lon, icon: USGS_ICON[w.kind] || "💧", layer: "usgs", usgs: true, title: w.name || w.label}));
+      out.push({client_id: w.id, lat: w.lat, lon: w.lon, icon: USGS_ICON[w.kind] || "💧", ikey: "usgs_" + w.kind, layer: "usgs", usgs: true, title: w.name || w.label}));
     activeSos().filter(s => s.lat != null).forEach(s =>
-      out.push({client_id: "sos:" + s.sos_id, lat: s.lat, lon: s.lon, icon: "🆘", layer: "sos", sos: true, flagged: true,
+      out.push({client_id: "sos:" + s.sos_id, lat: s.lat, lon: s.lon, icon: "🆘", ikey: "sos", layer: "sos", sos: true, flagged: true,
         title: `SOS · ${s.user_name || ""} · ${sosLabel(s.kind)}`}));
     tasks.filter(t => !t.done_at && t.lat != null).forEach(t =>
       out.push({client_id: t.task_id, lat: t.lat, lon: t.lon, icon: "✅", layer: "jobs", task: true, title: t.title, flagged: taskBucket(t) === "late"}));
@@ -527,8 +530,8 @@
       ln.addTo(map); mapLayers.push(ln);
     });
     mapItems().forEach(p => {
-      const icon = L.divIcon({className: "", iconSize: [34, 34], iconAnchor: [17, 17], html:
-        `<div class="photo-pin${p.sos ? " sos" : ""}${p.flagged ? " flag" : ""}${p.place ? " place" : p.usgs ? " usgs" : p.report || p.task ? " report" : ""}">${p.heading_deg != null ? `<i class="cone" style="transform:rotate(${p.heading_deg}deg)"></i>` : ""}${p.icon}${p.n > 1 ? `<span class="n">${p.n}</span>` : ""}</div>`});
+      const icon = L.divIcon({className: "", iconSize: [40, 40], iconAnchor: [20, 20], html:
+        `<div class="photo-pin${p.sos ? " sos" : ""}${p.flagged ? " flag" : ""}${p.place ? " place" : p.usgs ? " usgs" : p.report || p.task ? " report" : ""}">${p.heading_deg != null ? `<i class="cone" style="transform:rotate(${p.heading_deg}deg)"></i>` : ""}${rIcon(p.ikey, p.sos ? 40 : 28, p.icon)}${p.n > 1 ? `<span class="n">${p.n}</span>` : ""}</div>`});
       const m = L.marker([p.lat, p.lon], {icon, title: p.title + (p.taken_at ? ", " + when(p.taken_at) : "")}).on("click", () => openItem(p.client_id));
       m.addTo(map); mapLayers.push(m);
     });
@@ -642,7 +645,7 @@
     const all = (() => { const keep = layers; layers = Object.fromEntries(LAYERS.map(([k]) => [k, true])); const x = mapItems(); layers = keep; return x; })();
     const count = k => all.filter(x => x.layer === k).length;
     $("layerCard").innerHTML = `<h2>Show on the map</h2><div class="layers">${LAYERS.map(([k, label, ic]) => `<button type="button" class="layer" data-layer="${k}"
-      aria-pressed="${!!layers[k]}"><span aria-hidden="true">${ic}</span>${esc(label)}${["pastures", "flags", "colors", "glow"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
+      aria-pressed="${!!layers[k]}"><span aria-hidden="true">${rIcon(k, 24, ic)}</span>${esc(label)}${["pastures", "flags", "colors", "glow"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
       <h3>Roads &amp; trails</h3><div class="layers">${Object.entries(LINE_TYPES).map(([k, v]) => { const n = shapes.filter(x => x.kind === k).length;
         return `<button type="button" class="layer" data-layer="${lineLayerKey(k)}" aria-pressed="${layers[lineLayerKey(k)] !== false}"><i class="swatch" style="background:${v.color}"></i>${esc(v.label)} <span class="dim">${n}</span></button>`; }).join("")}</div>
       <label class="switchrow"><input type="checkbox" id="hideEverydayMap" ${store.get("hideEveryday", false) ? "checked" : ""}>
@@ -718,13 +721,13 @@
     const by = x => x.by ? " · " + esc(x.by) : "";
     if (it.type === "job") {
       const t = it.t, done = it.what === "done";
-      return `<li class="clickable" data-item="${esc(t.task_id)}"><span class="ico" aria-hidden="true">${done ? "✔️" : "📋"}</span>
+      return `<li class="clickable" data-item="${esc(t.task_id)}"><span class="ico" aria-hidden="true">${rIcon("job", 30, done ? "✔️" : "📋")}</span>
         <span>${done ? "Checked off" : "New job"}: <b>${esc(t.title)}</b>${t.pasture_id ? ` <span class="dim">(${esc(pastureName(t.pasture_id))})</span>` : ""}${done ? "" : miniPhotos("task_id", t.task_id)}</span><span></span>
         <span class="meta">${esc(when(it.at))}${it.by ? " · " + esc(it.by) : ""}</span></li>`;
     }
     if (it.type === "sos") {
       const s = it.s;
-      return `<li class="clickable sosrow" data-sos="${esc(s.sos_id)}"><span class="ico" aria-hidden="true">🆘</span>
+      return `<li class="clickable sosrow" data-sos="${esc(s.sos_id)}"><span class="ico" aria-hidden="true">${rIcon("sos", 30, "🆘")}</span>
         <span><b>SOS · ${esc(s.user_name || "")}</b> · ${esc(sosLabel(s.kind))}${s.note ? " · " + esc(s.note) : ""}
         ${s.resolved_at ? `<br><span class="dim">✅ Ended by ${esc(s.resolved_by || "?")} ${esc(when(s.resolved_at))}${s.resolve_note ? ": " + esc(s.resolve_note) : ""}</span>` : '<br><b class="sosnow">Still open</b>'}</span><span></span>
         <span class="meta">${esc(when(it.at))}</span></li>`;
@@ -737,7 +740,7 @@
     }
     if (it.type === "place") {
       const pl = it.pl, k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
-      return `<li class="clickable" data-item="${esc(pl.place_id)}"><span class="ico" aria-hidden="true">${k[1]}</span>
+      return `<li class="clickable" data-item="${esc(pl.place_id)}"><span class="ico" aria-hidden="true">${rIcon(PLACE_KINDS[pl.kind] ? pl.kind : "other", 30, k[1])}</span>
         <span>Added a place: <b>${esc(pl.name)}</b> <span class="dim">(${esc(k[0])})</span>${miniPhotos("place_id", pl.place_id)}</span><span></span>
         <span class="meta">${esc(when(it.at))}${pl.created_by_name ? " · " + esc(pl.created_by_name) : ""}</span></li>`;
     }
@@ -756,7 +759,7 @@
         <span class="meta">${esc(when(p.taken_at))}${by(p)}${p._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
     }
     const l = it.l;
-    const top = topTag(l.tags), ico = it.type === "problem" ? (top ? TAG[top].icon : "📝") : {move: "🐄", rain: "🌧"}[it.type] || "•";
+    const top = topTag(l.tags), ico = it.type === "problem" ? rIcon(top || "note", 30, top ? TAG[top].icon : "📝") : {move: rIcon("group:Livestock", 30, "🐄"), rain: rIcon("sensor_rain", 30, "🌧")}[it.type] || "•";
     const what = it.type === "move" ? `Moved cattle${l.from_pasture_id ? " from " + esc(pastureName(l.from_pasture_id)) : ""} to <b>${esc(pastureName(l.pasture_id))}</b>${l.head ? " (" + esc(l.head) + " head)" : ""}`
       : it.type === "rain" ? `Rain gauge: <b>${Number(l.inches).toFixed(2)} in</b>${l.pasture_id ? " at " + esc(pastureName(l.pasture_id)) : ""}`
       : `${(l.tags || []).map(tagSpan).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}${l.lat != null ? " 📍" : ""}${resolution(l) ? ' <span class="donechip">✓ Resolved</span>' : ""}`;
@@ -883,9 +886,9 @@
   }
   function tagChips(selected = []) {
     return `<div class="tagpick" role="group" aria-label="What did you see?">${TAG_GROUPS.map(g => `<details class="tgroup" name="tg">
-      <summary><span aria-hidden="true">${g.icon}</span> ${esc(g.group)} <span class="n"></span></summary>
+      <summary><span aria-hidden="true">${rIcon("group:" + g.group, 26, g.icon)}</span> ${esc(g.group)} <span class="n"></span></summary>
       <div class="tagchips">${g.tags.map(([t, level]) => `<button type="button" class="${level === "good" ? "goodtag" : level === "info" || level === "alert" ? "infotag" : ""}"
-        data-tag="${esc(t)}" aria-pressed="${selected.includes(t)}">${esc(t)}</button>`).join("")}</div></details>`).join("")}
+        data-tag="${esc(t)}" aria-pressed="${selected.includes(t)}">${rIcon(t, 22)}${esc(t)}</button>`).join("")}</div></details>`).join("")}
       <p class="picked dim" aria-live="polite"></p></div>`;
   }
   function wireChips(root) {
@@ -2119,9 +2122,9 @@
     store.set("places", places); rerender(); syncAll();
   }
   function kindPicker(selected) {
-    const groups = [["water", "💧 Water"], ["hunting", "🛖 Hunting"], ["ranch", "🏠 Ranch"], ["sensors", "📡 Sensors"]];
-    return groups.map(([g, label]) => `<p class="dim small" style="margin-top:4px">${label}</p><div class="tagchips">${Object.entries(PLACE_KINDS)
-      .filter(([, v]) => v[2] === g).map(([k, v]) => `<button type="button" data-kind="${k}" aria-pressed="${k === selected}">${v[1]} ${esc(v[0])}</button>`).join("")}</div>`).join("");
+    const groups = [["water", "Water"], ["hunting", "Hunting"], ["ranch", "Ranch"], ["sensors", "Sensors"]];
+    return groups.map(([g, label]) => `<p class="dim small kindgroup">${rIcon(g, 20)} ${label}</p><div class="tagchips">${Object.entries(PLACE_KINDS)
+      .filter(([, v]) => v[2] === g).map(([k, v]) => `<button type="button" data-kind="${k}" aria-pressed="${k === selected}">${rIcon(k, 26, v[1])}${esc(v[0])}</button>`).join("")}</div>`).join("");
   }
   async function placePhoto(extra = {}) {       // returns the queued photo's id, or null
     return new Promise(ok => {
@@ -2203,7 +2206,7 @@
     const k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
     const ph = (pl.photo_id && allPhotos().find(x => x.client_id === pl.photo_id)) || photosOf("place_id", pl.place_id)[0];
     const canEdit = isOwner() || (me && pl.created_by === me.user_id);
-    openSheet(`${k[1]} ${pl.name}`, `<p class="dim">${esc(k[0])}${pl.created_by_name ? " · added by " + esc(pl.created_by_name) : ""}</p>
+    openSheet(pl.name, `<p class="kindline">${rIcon(PLACE_KINDS[pl.kind] ? pl.kind : "other", 40, k[1])}<span class="dim">${esc(k[0])}${pl.created_by_name ? " · added by " + esc(pl.created_by_name) : ""}</span></p>
       ${ph ? `<img class="photoimg" src="${esc(imageOf(ph))}" alt="Photo of ${esc(pl.name)}">` : ""}
       ${pl.note ? `<p>${esc(pl.note)}</p>` : ""}
       <div id="plPhotosView"></div>

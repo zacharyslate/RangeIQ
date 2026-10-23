@@ -75,6 +75,10 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - It does **not** call 911 (by choice). It only reaches people who have RangeIQ; with notifications off, they see it next time they open the app (the app checks every 10–20 s while open).
 - Limits: phones stop sending location when the screen locks or the browser is closed. iPhones can't break through Silent / Focus for a web app. Notifications need the Home Screen app on iPhone.
 
+## Ranch icons
+
+- Map pins, the place picker, report choices, the Layers list and the Log use RangeIQ's own ranch icons (web/app/icons.js; drawn for RangeIQ, no outside artwork or licences): a pipe tube gate, a pipe cattle guard with wings, an Aermotor-style windmill, a corrugated water tank, a stock trough, a dirt tank, a box blind, a spin feeder, a trail camera, a ladder stand, a round pen, a barn, a mineral tub and salt block, the sensors, and for reports a loose cow, a longhorn skull, a feral hog, a rattlesnake, a whitetail buck, a downed fence, an open gate, a washed-out road, mesquite brush and so on. Pins needing attention get a red ring. Notifications and chat text still use emoji (plain text can't show pictures).
+
 ## Map style
 
 - The map opens the way you last chose it (3D or flat; Photo or Relief), on each phone.

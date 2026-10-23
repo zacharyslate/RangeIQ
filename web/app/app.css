@@ -453,3 +453,25 @@ body.drawing #v-map .map{height:calc(100dvh - 300px - env(safe-area-inset-bottom
 .photo-pin.sos{width:46px;height:46px;font-size:22px;border-color:#c0392b;background:#fff;animation:sospulse 1.2s infinite;z-index:1000!important}
 .sosrow .sosnow{color:#c0392b}
 @media (prefers-color-scheme: dark){ .sosfail{background:#4a1712;color:#ffd7d1} }
+/* ---- ranch icons (icons.js) */
+.ricon{display:inline-block;vertical-align:middle;flex:none}
+.photo-pin{width:40px;height:40px;border-width:3px}
+.photo-pin .ricon{width:30px;height:30px}
+.photo-pin.flag{border-width:4px}
+.photo-pin.sos{background:none;border:0;width:48px;height:48px}
+.photo-pin.sos .ricon{width:46px;height:46px}
+.tagchips button{display:inline-flex;align-items:center;gap:6px}
+.tagchips button .ricon{margin-left:-4px}
+.tgroup summary .ricon{margin-right:2px}
+.tag .ricon{margin:-3px 1px 0 -2px}
+.kindgroup{display:flex;align-items:center;gap:6px;margin-top:8px}
+.kindline{display:flex;align-items:center;gap:10px}
+.timeline .ico .ricon{width:34px;height:34px}
+.layer .ricon{margin-right:2px}
+/* dark mode: the icons are drawn in dark ink, so give them a light tile where they sit on a dark background */
+@media (prefers-color-scheme: dark){
+  .ricon{background:#f1e8d8;border-radius:7px;padding:2px;box-sizing:border-box}
+  .photo-pin .ricon{background:none;padding:0}
+}
+:root[data-theme="dark"] .ricon{background:#f1e8d8;border-radius:7px;padding:2px;box-sizing:border-box}
+:root[data-theme="dark"] .photo-pin .ricon{background:none;padding:0}
