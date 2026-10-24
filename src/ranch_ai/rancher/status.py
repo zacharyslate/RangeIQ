@@ -104,10 +104,12 @@ def range_trend_signal(perennial_trend: str | None, bare_ground_trend: str | Non
     return Signal("trend", "Long-term range", "ok", "Perennial grass and bare ground are holding steady over recent years.", source, as_of)
 
 
-def occupancy_signal(days_in_pasture: int | None, days_rested: int | None) -> Signal | None:
+def occupancy_signal(days_in_pasture: int | None, days_rested: int | None, head: int | None = None) -> Signal | None:
     if days_in_pasture is not None:
         level = "watch" if days_in_pasture >= REST_WATCH_DAYS_GRAZED else "ok"
-        return Signal("herd", "Herd", level, f"Cattle have been in this pasture {days_in_pasture} days.", "Your log", None)
+        text = (f"{head} head have been in this pasture {days_in_pasture} days." if head
+                else f"Cattle have been in this pasture {days_in_pasture} days.")
+        return Signal("herd", "Herd", level, text, "Your log", None)
     if days_rested is not None:
         return Signal("herd", "Herd", "ok", f"Rested {days_rested} days since cattle were last moved out.", "Your log", None)
     return None

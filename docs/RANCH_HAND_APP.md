@@ -255,3 +255,16 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - **Words used:** potrero (pasture), papalote (windmill), represo / tanque de tierra (dirt tank), bebedero (trough), guardaganado (cattle guard), brecha (two-track), becerro (calf), vaquilla (heifer), novillo (steer), equipo (crew), tarea (job).
 - **How it works:** `web/app/es.js` holds the Spanish for each English string, plus patterns for server text with numbers or names inside ("62% of normal", "Fence down reported by Juan"). `web/app/i18n.js` looks them up. A test fails if any app string, report tag, server sentence or error message has no Spanish, and a browser test walks every screen in Spanish and checks nothing is left in English.
 - **Not translated:** official NWS alert headlines (their full text comes from the Weather Service in English; the alert's name and what it means for the ranch are translated), and data-source names that are proper names (PRISM, Sentinel-2, USGS).
+
+## Cattle: head in each pasture (herd ledger)
+
+- **One button:** Home → **Cattle** (move, count, calves) opens three tabs: **Move**, **Count**, and **Born, sold…** (born, bought, sold, died, weaned). Each pasture's page has a **Cattle** card with its head by class and the same buttons.
+- **Classes:** cows, bulls, calves, heifers, steers. **Pairs** is a shortcut that adds one cow and one calf each.
+- **Moves from several pastures:** one move can have several "from" lines ("＋ From another pasture"): 2 cows from North Flat and 3 heifers from the Mesa into the Trap is one entry. Each line can be **All of them** (everything the app has in that pasture moves and it's left empty), or come from **Not sure / found loose**.
+- **Counts are the truth:** a count replaces what the app had for that pasture, and the Log says how far off it was ("−1 cow from what the app had"). Do one count per stocked pasture to start; until then a pasture says "Not counted yet".
+- **Never refused:** if someone moves more cattle out of a pasture than the app has, it's saved anyway and the pasture is flagged **⚠️ needs a count**. A pasture is also flagged when cattle came in from "not sure where", or when it hasn't been counted for 30 days.
+- **Weaning** turns calves into heifers and steers, so calves don't pile up.
+- **Home** shows the ranch total ("312 head in 9 pastures · ⚠️ 2 pastures need a count"); tap it for every pasture's head. The map's **Head counts** layer (off by default) puts the head on each pasture flag, in 2D and 3D.
+- **Days in / rested now follow the head count:** a pasture rests only once it's empty. Moving 2 cows out of 40 no longer starts its rest. The herd line in pasture status says how many head ("38 head have been in this pasture 18 days").
+- **Offline:** entries wait on the phone like everything else and show in the counts straight away.
+- **How it works:** every move, count and change is a log entry; the server (`src/ranch_ai/rancher/herd.py`, `GET /api/herd`) recomputes the counts from the whole ledger in the order things happened in the field, so phones that were offline and editing or deleting an entry all come out right. Older moves (Into / Out of / head, before classes) still count for days in and rested, but not for head.

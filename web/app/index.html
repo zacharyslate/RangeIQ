@@ -70,9 +70,10 @@
     <div class="actions4">
       <button type="button" class="big photo" data-act="photo"><span class="ic" aria-hidden="true">📷</span>Take photo</button>
       <button type="button" class="big" data-act="rain"><span class="ic" aria-hidden="true">🌧</span>Rain gauge</button>
-      <button type="button" class="big" data-act="move"><span class="ic" aria-hidden="true">🐄</span>Moved cattle</button>
+      <button type="button" class="big" data-act="move"><span class="ic" aria-hidden="true">🐄</span>Cattle<small>move, count, calves</small></button>
       <button type="button" class="big warnbtn" data-act="report"><span class="ic" aria-hidden="true">⚠️</span>Report<small>problem or sighting</small></button>
     </div>
+    <div class="card herdcard" id="h-herd" hidden></div>
     <div class="card" id="h-todo" hidden></div>
     <div class="card" id="h-attention"></div>
     <div class="card" id="h-weather"></div>
@@ -127,6 +128,7 @@
       <button type="button" class="big photo" data-act="photo" data-here="1"><span class="ic" aria-hidden="true">📷</span>Photo here</button>
       <button type="button" class="big" data-act="move" data-here="1"><span class="ic" aria-hidden="true">🐄</span>Moved cattle here</button>
     </div>
+    <div class="card" id="d-herd"></div>
     <div class="card" id="d-photos"></div>
     <div class="card" id="d-signals"></div>
     <div class="card" id="d-land"></div>

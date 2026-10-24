@@ -475,3 +475,26 @@ body.drawing #v-map .map{height:calc(100dvh - 300px - env(safe-area-inset-bottom
 }
 :root[data-theme="dark"] .ricon{background:#f1e8d8;border-radius:7px;padding:2px;box-sizing:border-box}
 :root[data-theme="dark"] .photo-pin .ricon{background:none;padding:0}
+
+/* herd ledger: head counts by class */
+.hgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.hgrid .hcls{display:flex;flex-direction:column;gap:2px;font-weight:600;font-size:.92rem}
+.hgrid input{width:100%;min-height:48px;font-size:1.15rem;text-align:center;border:1px solid var(--rule);border-radius:10px;background:var(--surface);padding:4px}
+.hgrid input:disabled{background:var(--surface-2);color:var(--ink-2)}
+.hgrid small{min-height:1.2em;font-weight:400;font-size:.78rem}
+.hline{border:1px solid var(--rule);border-radius:var(--r);padding:10px;margin:4px 0 8px;background:var(--surface-2);display:grid;gap:8px}
+.hfrom{display:grid;grid-template-columns:1fr auto auto;align-items:end;gap:8px}
+.hfrom label:first-child{grid-column:1/-1}
+.hfrom .switchrow{min-height:44px}
+.hwarn{color:var(--watch);font-weight:600;font-size:.9rem}
+.hwarn:empty{display:none}
+.hsum{font-weight:700}
+.hsum:empty{display:none}
+.hcount{font-size:1.1rem}
+.herdcard{padding:0;overflow:hidden}
+.herdline{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;width:100%;text-align:left;background:none;border:0;padding:14px 16px;cursor:pointer;color:inherit}
+.herdline .go{font-size:1.5rem;color:var(--muted)}
+.linkrow{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:0;padding:0;cursor:pointer;color:inherit}
+.form .hfrom .switchrow{display:flex;align-items:center;font-weight:600}
+.form .hfrom .switchrow input{margin:0}
+#sheetBody > .seg + .form{margin-top:14px}

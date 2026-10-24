@@ -265,7 +265,7 @@ def test_sos_chat_lines_and_server_errors_translate():
     assert translated("✅ SOS over: I’m OK · all good") == "✅ SOS terminado: estoy bien · all good"
     assert translated("✅ SOS over: Ana is OK") == "✅ SOS terminado: Ana está bien"
     src = Path(__file__).resolve().parents[1] / "src" / "ranch_ai" / "rancher"
-    text = (src / "api.py").read_text() + (src / "store.py").read_text() + (src / "setup.py").read_text()
+    text = "".join((src / f).read_text() for f in ("api.py", "store.py", "setup.py", "herd.py"))
     shown = re.findall(r'(?:detail|PermissionError\(|ValueError\()="?([A-Z][^"{]+[.?)])"', text)
     shown += re.findall(r'(?:PermissionError|ValueError)\("([A-Z][^"{]+[.?)])"\)', text)
     technical = {"Bad photo details.", "Bad receipt.", "Receipt expired.", "Bad subscription.", "Points must be [longitude, latitude] pairs."}
