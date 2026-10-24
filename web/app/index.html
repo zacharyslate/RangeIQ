@@ -36,6 +36,7 @@
     <div class="hero center">
       <img class="login-logo" src="icon-192.png" alt="" width="88" height="88">
       <h1 id="l-h">RangeIQ</h1>
+      <button type="button" class="linkbtn langtoggle" id="langToggle" lang="es">Español</button>
     </div>
     <div class="seg" role="tablist">
       <button type="button" role="tab" data-auth="signin" aria-selected="true">Sign in</button>
@@ -47,10 +48,10 @@
       <button type="submit" class="primary">Sign in</button>
       <p class="error" id="loginError" role="alert" hidden></p>
       <p class="dim small">You only sign in once: RangeIQ keeps you signed in on this phone.</p>
-      <p class="dim small" id="loginTip" hidden><b>iPhone:</b> add RangeIQ to your Home Screen first (Share → Add to Home Screen), then sign in there. The Home Screen app keeps its own sign-in.</p>
+      <p class="dim small" id="loginTip" hidden data-i18n><b>iPhone:</b> add RangeIQ to your Home Screen first (Share → Add to Home Screen), then sign in there. The Home Screen app keeps its own sign-in.</p>
     </form>
     <form class="card form" id="joinForm" autocomplete="on" hidden>
-      <p class="dim">Ask the ranch owner for the crew code. It looks like <b>K7M-4QX</b>. Already have a RangeIQ login? Use the same email and password to add this ranch to it.</p>
+      <p class="dim" data-i18n>Ask the ranch owner for the crew code. It looks like <b>K7M-4QX</b>. Already have a RangeIQ login? Use the same email and password to add this ranch to it.</p>
       <label>Crew code<input type="text" id="joinCode" autocapitalize="characters" autocomplete="off" required placeholder="ABC-123"></label>
       <label>Your name (new logins only)<input type="text" id="joinName" autocomplete="name"></label>
       <label>Email<input type="email" id="joinEmail" autocomplete="username" inputmode="email" required></label>
@@ -170,6 +171,8 @@
   <section class="view" id="v-more" hidden aria-labelledby="o-h">
     <div class="hero chathero"><div><h1 id="o-h">More</h1><p class="dim" id="o-who"></p></div>
       <button type="button" class="mepic" id="o-mepic" aria-label="Your profile picture"></button></div>
+    <div class="card"><h2>Language · Idioma</h2><div class="row" role="group" aria-label="Language">
+      <button type="button" class="pill" data-lang="en" lang="en">English</button><button type="button" class="pill" data-lang="es" lang="es">Español</button></div></div>
     <div class="card" id="o-ranch" hidden></div>
     <div class="card" id="o-setup" hidden></div>
     <div class="card" id="o-crew" hidden></div>
@@ -181,8 +184,8 @@
     <div class="card"><h2>Put RangeIQ on your home screen</h2><p class="dim" id="o-install"></p></div>
     <details class="card"><summary><h2>How pasture status works</h2></summary>
       <p class="dim">Each pasture is rated from what was actually measured or reported: rain compared with past years, satellite greenness compared with normal, the U.S. Drought Monitor, long-term grass trends, how long cattle have been in it, and problems your crew reported in the last 2 weeks.</p>
-      <p class="dim"><b>Good</b>: nothing wrong. <b>Watch</b>: one thing is off. <b>Act</b>: a serious problem your crew reported (like water low, fence down or a dead animal), or two things off at once. Your own eyes on the ground come first.</p>
-      <p class="dim"><b>Photos:</b> the app measures how much of the ground in the picture is green, using the Canopeo color method, and compares it with the last photo taken from the same spot. Take photos from the same spots over time to see real change.</p></details>
+      <p class="dim" data-i18n><b>Good</b>: nothing wrong. <b>Watch</b>: one thing is off. <b>Act</b>: a serious problem your crew reported (like water low, fence down or a dead animal), or two things off at once. Your own eyes on the ground come first.</p>
+      <p class="dim" data-i18n><b>Photos:</b> the app measures how much of the ground in the picture is green, using the Canopeo color method, and compares it with the last photo taken from the same spot. Take photos from the same spots over time to see real change.</p></details>
     <details class="card"><summary><h2>Where the data comes from</h2></summary><ul class="srclist" id="o-sources"></ul></details>
     <div class="card"><h2>Account</h2>
       <div class="row"><button type="button" class="pill" id="logoutBtn">Sign out</button></div></div>
@@ -210,6 +213,8 @@
 </div>
 
 <script src="config.js"></script>
+<script src="es.js"></script>
+<script src="i18n.js"></script>
 <script src="sky.js"></script>
 <script src="icons.js"></script>
 <script src="app.js"></script>

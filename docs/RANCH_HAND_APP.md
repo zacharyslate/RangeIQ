@@ -246,3 +246,12 @@ A problem tag (Water low, Fence down, Dead animal…) on a photo or a report fee
 - **Plausibility check:** any source is refused if one day is beyond the US 24-hour record or the long-run average is above 5,000 mm a year. In that case the app shows no rain figure rather than a wrong one.
 - **What it means:** "Rain last 90 days" is summed over the 90 days up to the last day PRISM has (usually yesterday). "Normal" is the same 90-day window in each of the past 10 years. PRISM days run noon to noon UTC (early morning to early morning in Texas), so a storm can land on the day before or after the rain-gauge entry.
 - **Diagnose** prints a fresh PRISM pull next to NASA's (numbers only).
+
+## Español (Spanish)
+
+- **Two languages:** English and Spanish (Mexican / Texas ranch Spanish, "tú"). The app follows the phone's language; anyone can switch under **More → Language · Idioma**, or with the **Español / English** link on the sign-in page.
+- **Everything the app says** is translated: buttons, forms, the Log, pasture status and its reasons, weather words, alerts, fire danger, SOS screens, error messages. **What people type** (notes, messages, names) stays as typed.
+- **Notifications** reach each person in the language their phone uses (chat titles, SOS alerts, "on the way", "SOS over"). The phone tells the server its language when it opens.
+- **Words used:** potrero (pasture), papalote (windmill), represo / tanque de tierra (dirt tank), bebedero (trough), guardaganado (cattle guard), brecha (two-track), becerro (calf), vaquilla (heifer), novillo (steer), equipo (crew), tarea (job).
+- **How it works:** `web/app/es.js` holds the Spanish for each English string, plus patterns for server text with numbers or names inside ("62% of normal", "Fence down reported by Juan"). `web/app/i18n.js` looks them up. A test fails if any app string, report tag, server sentence or error message has no Spanish, and a browser test walks every screen in Spanish and checks nothing is left in English.
+- **Not translated:** official NWS alert headlines (their full text comes from the Weather Service in English; the alert's name and what it means for the ranch are translated), and data-source names that are proper names (PRISM, Sentinel-2, USGS).

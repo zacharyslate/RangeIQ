@@ -316,7 +316,13 @@ def create_app(
             raise HTTPException(status_code=401, detail="Please sign in.")
         return {"name": user.full_name, "email": user.email, "ranch": ranch_name(sess["workspace_id"], user.ranch_name),
                 "role": sess["role"], "user_id": sess["user_id"], "workspace_id": sess["workspace_id"], "ranches": ranches_of(user),
-                "avatar_url": avatar_url(sess["user_id"], app.state.store.avatar_versions([sess["user_id"]]).get(sess["user_id"]))}
+                "avatar_url": avatar_url(sess["user_id"], app.state.store.avatar_versions([sess["user_id"]]).get(sess["user_id"])),
+                "lang": app.state.store.langs_of([sess["user_id"]])[sess["user_id"]]}
+
+    @app.post("/api/me/lang")
+    def set_lang(payload: dict[str, Any] = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, str]:
+        """The app's language on this person's phone (en | es): their notifications are written in it."""
+        return {"lang": app.state.store.set_lang(sess["user_id"], str(payload.get("lang") or ""))}
 
     # -- crew -------------------------------------------------------------------------
     @app.get("/api/crew")
@@ -643,8 +649,11 @@ def create_app(
             pair = app.state.store.thread_members(row["thread_id"])
             to = [p for p in (pair or members) if p != uid]
             ranch = ranch_name(ws)
-            title = f"{row['from_name'] or 'Someone'}" + ("" if pair else f" → everyone{' · ' + ranch if ranch else ''}")
+            langs = app.state.store.langs_of(to)
             for person in to:                      # one push each: each carries that person's signed delivery receipt
+                es = langs.get(person) == "es"
+                title = f"{row['from_name'] or ('Alguien' if es else 'Someone')}" + (
+                    "" if pair else f" → {'todos' if es else 'everyone'}{' · ' + ranch if ranch else ''}")
                 webpush_mod.send_in_background(app.state.store, [person], {
                     "title": title, "body": row["text"][:180], "thread": row["thread_id"], "ws": ws, "tag": row["thread_id"],
                     "url": "/app/#chat", "receipt": receipt_token(ws, person, row["thread_id"], row["created_at"])})
@@ -673,6 +682,16 @@ def create_app(
     # with where they are; the location keeps updating while it's open; others tap "On my way"; anyone can close it.
     SOS_LABEL = {"injury": "Injury", "vehicle": "Vehicle accident / stuck", "fire": "Fire", "animal": "Animal",
                  "lost": "Lost", "other": "Needs help"}
+    SOS_LABEL_ES = {"injury": "Herida", "vehicle": "Accidente o vehículo atascado", "fire": "Incendio", "animal": "Animal",
+                    "lost": "Perdido", "other": "Necesita ayuda"}
+
+    def push_by_lang(store: Any, user_ids: list[str], make: Any) -> None:
+        """One notification per language: make(lang) builds the payload in "en" or "es" (each person's app language)."""
+        groups: dict[str, list[str]] = {}
+        for person, lang in store.langs_of(user_ids).items():
+            groups.setdefault(lang, []).append(person)
+        for lang, ids in groups.items():
+            webpush_mod.send_in_background(store, ids, make(lang))
 
     def sos_post(ws: str, sess: dict[str, str], text: str) -> None:
         """Put an SOS line in the Everyone chat so the history is in one place (no separate chat push)."""
@@ -709,9 +728,11 @@ def create_app(
                     if fresh:
                         what = SOS_LABEL.get(s["kind"], "Needs help")
                         sos_post(ws, sess, f"🆘 SOS: {what}{' · ' + s['note'] if s['note'] else ''}. Where: {where_text(s)}")
-                        webpush_mod.send_in_background(store, everyone, {
-                            "type": "sos", "sos": True, "title": f"🆘 SOS · {name}", "tag": "sos-" + sid,
-                            "body": f"{what}{' · ' + s['note'] if s['note'] else ''}. Tap to see where.", "url": f"/app/#sos-{sid}"})
+                        note = " · " + s["note"] if s["note"] else ""
+                        push_by_lang(store, everyone, lambda lang: {
+                            "type": "sos", "sos": True, "title": f"🆘 SOS · {name}", "tag": "sos-" + sid, "url": f"/app/#sos-{sid}",
+                            "body": f"{SOS_LABEL_ES.get(s['kind'], 'Necesita ayuda')}{note}. Toca para ver dónde." if lang == "es"
+                            else f"{what}{note}. Tap to see where."})
                 elif op == "loc":
                     if not store.update_sos_location(ws, sid, o, user_id=uid):
                         raise ValueError("That SOS is closed or isn't yours.")
@@ -720,18 +741,21 @@ def create_app(
                         s = next((x for x in store.list_sos(ws) if x["sos_id"] == sid), None)
                         if s:
                             sos_post(ws, sess, f"🚙 On my way to {s['user_name'] or 'them'}.")
-                            webpush_mod.send_in_background(store, [s["user_id"]], {
-                                "type": "sos-ack", "title": f"🚙 {name} is on the way", "body": "Stay where you are if you can.",
-                                "tag": "sos-" + sid + "-ack", "url": f"/app/#sos-{sid}"})
+                            push_by_lang(store, [s["user_id"]], lambda lang: {
+                                "type": "sos-ack", "tag": "sos-" + sid + "-ack", "url": f"/app/#sos-{sid}",
+                                **({"title": f"🚙 {name} va en camino", "body": "Quédate donde estás si puedes."} if lang == "es"
+                                   else {"title": f"🚙 {name} is on the way", "body": "Stay where you are if you can."})})
                 elif op == "resolve":
                     s = store.resolve_sos(ws, sid, user_name=name, note=o.get("note"))
                     if s:
                         own = s["user_id"] == uid
                         sos_post(ws, sess, f"✅ SOS over: {'I’m OK' if own else (s['user_name'] or 'They') + ' is OK'}"
                                            f"{' · ' + s['resolve_note'] if s['resolve_note'] else ''}")
-                        webpush_mod.send_in_background(store, everyone, {
-                            "type": "sos-over", "title": f"✅ SOS over · {s['user_name']}", "tag": "sos-" + sid,
-                            "body": (s["resolve_note"] or ("They're OK." if not own else "I'm OK.")), "url": "/app/#chat-all"})
+                        push_by_lang(store, everyone, lambda lang: {
+                            "type": "sos-over", "tag": "sos-" + sid, "url": "/app/#chat-all",
+                            "title": f"✅ {'SOS terminado' if lang == 'es' else 'SOS over'} · {s['user_name']}",
+                            "body": s["resolve_note"] or (("Está bien." if not own else "Estoy bien.") if lang == "es"
+                                                          else ("They're OK." if not own else "I'm OK."))})
                 else:
                     raise ValueError("Unknown change.")
                 done.append(o.get("op_id") or sid)
@@ -758,8 +782,9 @@ def create_app(
     @app.post("/api/push/test")
     def push_test(sess: dict[str, str] = Depends(session)) -> dict[str, int]:
         """Send a test notification to this person's phones (to check notifications work)."""
-        return webpush_mod.send(app.state.store, [sess["user_id"]], {"title": "RangeIQ", "body": "Notifications are working.",
-                                                                     "url": "/app/#messages", "tag": "test"})
+        es = app.state.store.langs_of([sess["user_id"]])[sess["user_id"]] == "es"
+        return webpush_mod.send(app.state.store, [sess["user_id"]], {
+            "title": "RangeIQ", "body": "Las notificaciones funcionan." if es else "Notifications are working.", "url": "/app/#messages", "tag": "test"})
 
     @app.get("/api/tasks")
     def list_tasks(sess: dict[str, str] = Depends(session)) -> dict[str, Any]:

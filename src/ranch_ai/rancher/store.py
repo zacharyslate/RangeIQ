@@ -248,6 +248,12 @@ class AppStore:
                     updated_at TEXT NOT NULL
                 );
                 -- Phones that asked for notifications (Web Push). One row per phone/browser.
+                -- Each person's app language (en | es), so notifications reach them in it.
+                CREATE TABLE IF NOT EXISTS user_prefs (
+                    user_id TEXT PRIMARY KEY,
+                    lang TEXT NOT NULL DEFAULT 'en',
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS push_subs (
                     endpoint TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -690,6 +696,26 @@ class AppStore:
         with self._connect() as conn:
             rows = conn.execute(f"SELECT * FROM push_subs WHERE user_id IN ({','.join('?' * len(ids))})", ids).fetchall()
         return [dict(r) for r in rows]
+
+    LANGS = ("en", "es")
+
+    def set_lang(self, user_id: str, lang: str) -> str:
+        lang = lang if lang in self.LANGS else "en"
+        with self._connect() as conn:
+            conn.execute("INSERT INTO user_prefs(user_id, lang, updated_at) VALUES (?,?,?) "
+                         "ON CONFLICT(user_id) DO UPDATE SET lang = excluded.lang, updated_at = excluded.updated_at",
+                         (user_id, lang, _iso(utc_now())))
+        return lang
+
+    def langs_of(self, user_ids: Iterable[str]) -> dict[str, str]:
+        """Each person's language; English for anyone who never picked one."""
+        ids = list(set(user_ids))
+        out = {u: "en" for u in ids}
+        if ids:
+            with self._connect() as conn:
+                for r in conn.execute(f"SELECT user_id, lang FROM user_prefs WHERE user_id IN ({','.join('?' * len(ids))})", ids):
+                    out[r["user_id"]] = r["lang"] if r["lang"] in self.LANGS else "en"
+        return out
 
     def app_value(self, key: str) -> str | None:
         with self._connect() as conn:

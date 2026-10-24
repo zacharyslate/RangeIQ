@@ -106,7 +106,8 @@ export function mount(container, {meta, height, texture, statusById = {}, namesB
   let renderer;
   try { renderer = new THREE.WebGLRenderer({antialias: true, alpha: true}); }
   catch (e) {
-    container.innerHTML = "<div class='busy'>3D needs WebGL, which this browser has turned off. The Map view has the same pastures.</div>";
+    const T = (window.RangeI18n && window.RangeI18n.t) || (s => s);
+    container.innerHTML = `<div class='busy'>${T("3D needs WebGL, which this browser has turned off. The Map view has the same pastures.")}</div>`;
     return {dispose() {}, setExaggeration() {}, reset() {}, setLook() {}, setPhotos() {}};
   }
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));

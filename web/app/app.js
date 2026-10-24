@@ -4,6 +4,11 @@
 (function () {
   "use strict";
   const $ = id => document.getElementById(id);
+  // Words on screen: T("English") for the app's own text, TX(text) for text from the server or outside services
+  // (i18n.js + es.js). LOC is the date and time format for the chosen language.
+  const I18N = window.RangeI18n || {lang: "en", t: (k, v) => v ? k.replace(/\{(\w+)\}/g, (m, x) => (x in v ? v[x] : m)) : k, tx: s => s, apply() {}, setLang() {}};
+  const T = I18N.t, TX = I18N.tx, LOC = I18N.locale, ES_ON = I18N.lang === "es";
+  I18N.apply(document.body);
   const API = new URL(window.RANGEIQ_API || "../api/", location.href).href;
   const store = {
     get(k, d) { try { const v = localStorage.getItem("riq." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -11,8 +16,9 @@
     del(k) { try { localStorage.removeItem("riq." + k); } catch (e) {} }
   };
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-  const STATUS = {good: {word: "Good", icon: "✓"}, watch: {word: "Watch", icon: "!"}, act: {word: "Act", icon: "!!"}, unknown: {word: "No data", icon: "?"}};
+  const STATUS = {good: {word: T("Good"), icon: "✓"}, watch: {word: T("Watch"), icon: "!"}, act: {word: T("Act"), icon: "!!"}, unknown: {word: T("No data"), icon: "?"}};
   const LEVEL = {ok: "✓", watch: "!", concern: "!!", unavailable: "–"};
+  const LEVEL_WORD = {ok: "OK", watch: "Watch", concern: "Concern", unavailable: "Not available"};
   // What a hand can tap: [tag, level, map icon]. Keep in step with TAG_LEVELS in src/ranch_ai/rancher/status.py (a test checks).
   // concern = serious (pasture Act); watch = something off; alert = heads-up for people; info = sighting; good = fine.
   const TAG_GROUPS = /*TAGS*/[
@@ -38,7 +44,8 @@
   const tagClass = t => !TAG[t] ? "" : TAG[t].level === "good" ? " ok" : ["info", "alert"].includes(TAG[t].level) ? " info" : "";
   // Ranch icons (icons.js); the emoji stay as a fallback and in plain-text places (notifications, chat).
   const rIcon = (key, size = 22, fallback = "") => window.RangeIcons && key && RangeIcons.has(key) ? RangeIcons.svg(key, size) : fallback;
-  const tagSpan = t => `<span class="tag${tagClass(t)}">${TAG[t] ? rIcon(t, 18, TAG[t].icon) + " " : ""}${esc(t)}</span>`;
+  const tagSpan = t => `<span class="tag${tagClass(t)}">${TAG[t] ? rIcon(t, 18, TAG[t].icon) + " " : ""}${esc(T(t))}</span>`;
+  const tagWords = tags => (tags || []).map(x => TAG[x] ? T(x) : x).join(", ");
   const COLOR = {good: "#2e9d55", watch: "#e0a21b", act: "#d63c2f", unknown: "#8a8f96"};
 
   // Drought and rain are the same for every pasture and are "pretty normal out there", so the crew can switch them off.
@@ -77,16 +84,17 @@
     if (/^\d{4}$/.test(String(iso))) return String(iso);
     const d = new Date(String(iso).length === 10 ? iso + "T12:00:00" : iso); if (isNaN(d)) return iso;
     const mins = (Date.now() - d) / 6e4;
-    if (withTime && mins >= 0 && mins < 1) return "just now";
-    if (withTime && mins >= 0 && mins < 60) return Math.round(mins) + " min ago";
+    if (withTime && mins >= 0 && mins < 1) return T("just now");
+    if (withTime && mins >= 0 && mins < 60) return T("{n} min ago", {n: Math.round(mins)});
     const today = new Date(), yday = new Date(Date.now() - 864e5), same = (a, b) => a.toDateString() === b.toDateString();
-    const t = d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
-    if (same(d, today)) return withTime ? "today " + t : "today";
-    if (same(d, yday)) return withTime ? "yesterday " + t : "yesterday";
-    return d.toLocaleDateString([], {month: "short", day: "numeric", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric"}) + (withTime ? " " + t : "");
+    const t = d.toLocaleTimeString(LOC, {hour: "numeric", minute: "2-digit"});
+    if (same(d, today)) return withTime ? T("today {time}", {time: t}) : T("today");
+    if (same(d, yday)) return withTime ? T("yesterday {time}", {time: t}) : T("yesterday");
+    return d.toLocaleDateString(LOC, {month: "short", day: "numeric", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric"}) + (withTime ? " " + t : "");
   }
   function toast(msg) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2800); }
-  const compass = h => h == null ? "" : ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(((h % 360) + 360) % 360 / 45) % 8];
+  const DIRS = ES_ON ? ["N", "NE", "E", "SE", "S", "SO", "O", "NO"] : ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  const compass = h => h == null ? "" : DIRS[Math.round(((h % 360) + 360) % 360 / 45) % 8];
   function metres(a, b) {
     const R = 6371000, r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
     const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
@@ -112,7 +120,7 @@
     const headers = opts.body instanceof FormData ? authHeaders(opts.headers || {}) : authHeaders({"Content-Type": "application/json", ...(opts.headers || {})});
     const res = await fetch(API + path, {credentials: "same-origin", ...opts, headers});
     if (res.status === 401 && !["login", "join"].includes(path)) { store.del("token"); const e = new Error("signin"); e.signin = true; throw e; }
-    if (!res.ok) { const e = new Error((await res.json().catch(() => ({}))).detail || ("HTTP " + res.status)); e.status = res.status; throw e; }
+    if (!res.ok) { const d = (await res.json().catch(() => ({}))).detail; const e = new Error(d ? TX(String(d)) : "HTTP " + res.status); e.status = res.status; throw e; }
     return res.json();
   }
   async function getBytes(path) {
@@ -163,17 +171,17 @@
   }
   // ---------------------------------------------------------------- map layers: everything on the ranch, switchable
   const PLACE_KINDS = {
-    water_tank: ["Water tank", "🛢️", "water"], trough: ["Trough", "💧", "water"], pond: ["Pond / dirt tank", "💧", "water"],
-    windmill: ["Windmill / well", "🌀", "water"], water_other: ["Other water", "💧", "water"],
-    deer_blind: ["Deer blind", "🛖", "hunting"], feeder: ["Feeder", "🌽", "hunting"], game_camera: ["Game camera", "📸", "hunting"],
-    stand: ["Stand", "🪜", "hunting"],
-    gate: ["Gate", "🚪", "ranch"], cattle_guard: ["Cattle guard", "🚧", "ranch"], pens: ["Pens / corral", "🐂", "ranch"],
-    building: ["Building / barn", "🏠", "ranch"], mineral: ["Mineral / salt", "🧂", "ranch"], other: ["Other", "📍", "ranch"],
-    sensor_rain: ["Rain gauge sensor", "📡", "sensors"], sensor_water: ["Water-level sensor", "📡", "sensors"],
-    sensor_soil: ["Soil moisture sensor", "📡", "sensors"], sensor_weather: ["Weather station", "📡", "sensors"], sensor_other: ["Other sensor", "📡", "sensors"]};
-  const LAYERS = [["pastures", "Pastures", "🟫"], ["flags", "Pasture flags", "🚩"], ["glow", "Glowing walls (3D)", "✨"], ["colors", "Warning colors", "🚦"], ["water", "Water", "💧"], ["hunting", "Hunting", "🛖"],
-    ["ranch", "Ranch places", "🏠"], ["usgs", "USGS water map", "🗺️"], ["sensors", "Sensors", "📡"], ["wildlife", "Wildlife & sightings", "🦌"], ["problems", "Problems", "⚠️"], ["photos", "Other photos", "📷"],
-    ["jobs", "Jobs", "✅"]];
+    water_tank: [T("Water tank"), "🛢️", "water"], trough: [T("Trough"), "💧", "water"], pond: [T("Pond / dirt tank"), "💧", "water"],
+    windmill: [T("Windmill / well"), "🌀", "water"], water_other: [T("Other water"), "💧", "water"],
+    deer_blind: [T("Deer blind"), "🛖", "hunting"], feeder: [T("Feeder"), "🌽", "hunting"], game_camera: [T("Game camera"), "📸", "hunting"],
+    stand: [T("Stand"), "🪜", "hunting"],
+    gate: [T("Gate"), "🚪", "ranch"], cattle_guard: [T("Cattle guard"), "🚧", "ranch"], pens: [T("Pens / corral"), "🐂", "ranch"],
+    building: [T("Building / barn"), "🏠", "ranch"], mineral: [T("Mineral / salt"), "🧂", "ranch"], other: [T("Other"), "📍", "ranch"],
+    sensor_rain: [T("Rain gauge sensor"), "📡", "sensors"], sensor_water: [T("Water-level sensor"), "📡", "sensors"],
+    sensor_soil: [T("Soil moisture sensor"), "📡", "sensors"], sensor_weather: [T("Weather station"), "📡", "sensors"], sensor_other: [T("Other sensor"), "📡", "sensors"]};
+  const LAYERS = [["pastures", T("Pastures"), "🟫"], ["flags", T("Pasture flags"), "🚩"], ["glow", T("Glowing walls (3D)"), "✨"], ["colors", T("Warning colors"), "🚦"], ["water", T("Water"), "💧"], ["hunting", T("Hunting"), "🛖"],
+    ["ranch", T("Ranch places"), "🏠"], ["usgs", T("USGS water map"), "🗺️"], ["sensors", T("Sensors"), "📡"], ["wildlife", T("Wildlife & sightings"), "🦌"], ["problems", T("Problems"), "⚠️"], ["photos", T("Other photos"), "📷"],
+    ["jobs", T("Jobs"), "✅"]];
   let layers = {...Object.fromEntries(LAYERS.map(([k]) => [k, true])), ...store.get("layers", {})};
   let places = store.get("places", []);
   function layerOfTags(tags) {
@@ -188,18 +196,18 @@
       const newest = loose.find(p => p.client_id === sp.client_id) || {};
       const done = !!resolution(newest), lay = (!done && layerOfTags(newest.tags)) || "photos", top = topTag(newest.tags);
       out.push({...sp, layer: lay, icon: lay === "photos" ? "📷" : (top ? TAG[top].icon : "📷"), ikey: lay === "photos" ? "photo" : (top || "photo"),
-        title: (newest.tags || []).join(", ") || "Photo"});
+        title: tagWords(newest.tags) || T("Photo")});
     }
     logItems().filter(i => i.type === "problem" && i.l.lat != null && !resolution(i.l)).forEach(i => {     // resolved: off the map
       const top = topTag(i.l.tags);
       out.push({client_id: i.l.client_id, lat: i.l.lat, lon: i.l.lon, icon: top ? TAG[top].icon : "📝", ikey: top || "note", taken_at: i.at, report: true,
-        layer: layerOfTags(i.l.tags) || "problems", flagged: tagsAt(i.l.tags, HEADS_UP).length > 0, title: (i.l.tags || []).join(", ") || i.l.text || "Report"});
+        layer: layerOfTags(i.l.tags) || "problems", flagged: tagsAt(i.l.tags, HEADS_UP).length > 0, title: tagWords(i.l.tags) || i.l.text || T("Report")});
     });
     places.forEach(pl => { const k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
       out.push({client_id: pl.place_id, lat: pl.lat, lon: pl.lon, icon: k[1], ikey: PLACE_KINDS[pl.kind] ? pl.kind : "other", layer: k[2], place: true, title: pl.name}); });
     const USGS_ICON = {tank: "💧", pond: "💧", playa: "🏜️", marsh: "🌾", spring: "💦", well: "🚰", dam: "🧱"};
     (((snap && snap.water_map) || {}).features || []).forEach(w =>
-      out.push({client_id: w.id, lat: w.lat, lon: w.lon, icon: USGS_ICON[w.kind] || "💧", ikey: "usgs_" + w.kind, layer: "usgs", usgs: true, title: w.name || w.label}));
+      out.push({client_id: w.id, lat: w.lat, lon: w.lon, icon: USGS_ICON[w.kind] || "💧", ikey: "usgs_" + w.kind, layer: "usgs", usgs: true, title: w.name || TX(w.label)}));
     activeSos().filter(s => s.lat != null).forEach(s =>
       out.push({client_id: "sos:" + s.sos_id, lat: s.lat, lon: s.lon, icon: "🆘", ikey: "sos", layer: "sos", sos: true, flagged: true,
         title: `SOS · ${s.user_name || ""} · ${sosLabel(s.kind)}`}));
@@ -210,9 +218,9 @@
   function openWater(id) {
     const w = (((snap && snap.water_map) || {}).features || []).find(x => x.id === id); if (!w) return;
     const kind = {tank: "water_tank", pond: "pond", playa: "pond", marsh: "water_other", spring: "water_other", well: "windmill", dam: "pond"}[w.kind] || "water_other";
-    openSheet(w.name || w.label, `<p><b>${esc(w.label)}</b>${w.acres ? ` · ${w.acres < 1 ? w.acres.toFixed(2) : w.acres.toFixed(1)} acres` : ""}${w.intermittent ? " · holds water only part of the year" : ""}</p>
-      <p class="dim small">From the USGS National Hydrography Dataset (${esc(((snap.water_map || {}).as_of) || "")}). It was mapped from older aerial photos, so some tanks are missing, moved or dry. Save the real ones as your own places.</p>
-      <div class="row"><button type="button" class="primary" id="wSave">Save as our place</button><button type="button" class="secondary" id="wMap">Show on map</button></div>`);
+    openSheet(w.name || TX(w.label), `<p><b>${esc(TX(w.label))}</b>${w.acres ? " · " + esc(T("{n} acres", {n: w.acres < 1 ? w.acres.toFixed(2) : w.acres.toFixed(1)})) : ""}${w.intermittent ? " · " + esc(T("holds water only part of the year")) : ""}</p>
+      <p class="dim small">${esc(T("From the USGS National Hydrography Dataset ({date}). It was mapped from older aerial photos, so some tanks are missing, moved or dry. Save the real ones as your own places.", {date: ((snap.water_map || {}).as_of) || ""}))}</p>
+      <div class="row"><button type="button" class="primary" id="wSave">${esc(T("Save as our place"))}</button><button type="button" class="secondary" id="wMap">${esc(T("Show on map"))}</button></div>`);
     $("wSave").onclick = () => addPlace({kind, name: w.name || PLACE_KINDS[kind][0], lat: w.lat, lon: w.lon});
     $("wMap").onclick = () => showOnMap(w.lat, w.lon);
   }
@@ -220,11 +228,12 @@
   function belongsTo(p) {
     let label = null, id = null;
     if (p.log_id) { const it = logItems().find(i => i.l && i.l.client_id === p.log_id);
-      if (it) { id = p.log_id; label = it.type === "rain" ? "Rain gauge" : it.type === "move" ? "Moved cattle" : "Report: " + (((it.l.tags || [])[0]) || it.l.text || "").slice(0, 40); } }
-    else if (p.task_id) { const t = tasks.find(x => x.task_id === p.task_id); if (t) { id = t.task_id; label = "Job: " + t.title; } }
-    else if (p.place_id) { const pl = places.find(x => x.place_id === p.place_id); if (pl) { id = pl.place_id; label = "Place: " + pl.name; } }
+      if (it) { id = p.log_id; label = it.type === "rain" ? T("Rain gauge") : it.type === "move" ? T("Moved cattle")
+        : T("Report: {what}", {what: (((it.l.tags || [])[0] ? T(it.l.tags[0]) : "") || it.l.text || "").slice(0, 40)}); } }
+    else if (p.task_id) { const t = tasks.find(x => x.task_id === p.task_id); if (t) { id = t.task_id; label = T("Job: {what}", {what: t.title}); } }
+    else if (p.place_id) { const pl = places.find(x => x.place_id === p.place_id); if (pl) { id = pl.place_id; label = T("Place: {what}", {what: pl.name}); } }
     else if (p.shape_id) { const sh = shapes.find(x => x.shape_id === p.shape_id); if (sh) { id = sh.shape_id; label = sh.name; } }
-    return id ? `<p><button type="button" class="secondary" data-item="${esc(id)}">↩ Part of: ${esc(label)}</button></p>` : "";
+    return id ? `<p><button type="button" class="secondary" data-item="${esc(id)}">${esc(T("↩ Part of: {what}", {what: label}))}</button></p>` : "";
   }
   function openItem(id) {
     if (String(id).startsWith("sos:")) return openSos(String(id).slice(4));
@@ -286,8 +295,8 @@
 
   function setBanner() {
     const b = $("banner"), parts = [];
-    if (snap && snap.demo) parts.push("Demo data: these numbers are examples, not your ranch.");
-    if (!navigator.onLine) parts.push("No signal. Showing what was saved " + (snapAt ? when(snapAt) : "earlier") + ". Photos and logs will send later.");
+    if (snap && snap.demo) parts.push(T("Demo data: these numbers are examples, not your ranch."));
+    if (!navigator.onLine) parts.push(T("No signal. Showing what was saved {when}. Photos and logs will send later.", {when: snapAt ? when(snapAt) : T("earlier")}));
     b.hidden = !parts.length; b.textContent = parts.join(" "); b.classList.toggle("demo", !!(snap && snap.demo) && navigator.onLine);
   }
   window.addEventListener("online", () => { setBanner(); refresh(); syncAll(); pollChat(); });
@@ -301,6 +310,8 @@
       else { rawSnap = data; snap = viewOf(data); snapAt = new Date().toISOString(); store.set("snapshot", data); store.set("snapshotAt", snapAt); store.del("setupMsg"); }
       const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs), loadTasks(), loadPlaces(), loadShapes()]);
       me = m; photos = ph; serverLogs = lg; if (m.workspace_id) store.set("lastRanch", m.workspace_id);
+      // Notifications are written in the language this phone uses.
+      if (m.lang && m.lang !== I18N.lang) api("me/lang", {method: "POST", body: JSON.stringify({lang: I18N.lang})}).catch(() => {});
       store.set("me", me); store.set("photos", photos); store.set("serverLogs", serverLogs);
     } catch (e) {
       if (e.signin) { show("login"); return; }
@@ -318,18 +329,19 @@
   function renderHome() {
     $("brandName").textContent = (snap && snap.ranch.name) || (me && me.ranch) || "RangeIQ";
     $("brandCaret").hidden = !(me && (me.ranches || []).length > 1);
-    $("h-h").textContent = (snap && snap.ranch.name) || "Today";
-    $("h-updated").textContent = snap ? "Updated " + when(snap.generated_at) : "";
+    $("h-h").textContent = (snap && snap.ranch.name) || T("Today");
+    $("h-updated").textContent = snap ? T("Updated {when}", {when: when(snap.generated_at)}) : "";
     homeTodo();
     const box = $("h-attention");
     if (!snap) {
-      box.innerHTML = `<h2>Getting started</h2><p class="dim">${esc(store.get("setupMsg", "") || "Waiting for the first ranch update…")}</p>
-        ${isOwner() ? `<button type="button" class="primary" data-go="more">Go to Ranch setup</button>` : ""}`;
+      box.innerHTML = `<h2>${esc(T("Getting started"))}</h2><p class="dim">${esc(TX(store.get("setupMsg", "")) || T("Waiting for the first ranch update…"))}</p>
+        ${isOwner() ? `<button type="button" class="primary" data-go="more">${esc(T("Go to Ranch setup"))}</button>` : ""}`;
       $("h-weather").hidden = true; return;
     }
     const items = [];
-    (snap.alerts || []).forEach(a => items.push({cls: "alert", lead: "⚡", title: a.event, why: a.what_it_means || a.headline}));
-    if (snap.fire && !/low/i.test(snap.fire.level)) items.push({cls: "watch", lead: "🔥", title: "Fire danger: " + snap.fire.level, why: (snap.fire.drivers || []).join(" · ")});
+    (snap.alerts || []).forEach(a => items.push({cls: "alert", lead: "⚡", title: TX(a.event), why: TX(a.what_it_means) || a.headline}));
+    if (snap.fire && !/low/i.test(snap.fire.level)) items.push({cls: "watch", lead: "🔥", title: T("Fire danger: {level}", {level: TX(snap.fire.level)}),
+      why: (snap.fire.drivers || []).map(d => TX(d)).join(" · ")});
     const cutoff = Date.now() - 3 * 864e5;
     // What the crew saw in the last 3 days (photos and reports), before the server's next update folds it into pasture status.
     // Sightings (deer, new calf) stay in the Log and on the map; only problems and heads-ups (rattlesnake) come here.
@@ -339,7 +351,7 @@
       .sort((a, b) => (RANK[TAG[topTag(b.hot)]?.level] || 0) - (RANK[TAG[topTag(a.hot)]?.level] || 0)).slice(0, 4)
       .forEach(({i, x, hot}) => { const top = topTag(hot); items.push({
         cls: top && TAG[top].level === "concern" ? "act" : "watch", lead: top ? TAG[top].icon : "📷",
-        title: hot.join(", ") || "Much less green than before",
+        title: tagWords(hot) || T("Much less green than before"),
         why: `${x.pasture_id ? pastureName(x.pasture_id) + " · " : ""}${x.by ? x.by + " · " : ""}${when(i.at)}${x.text ? " · " + x.text : ""}${i.p ? " · 📷" : ""}`,
         photo: x.client_id}); });
     // Pastures: worst first; pastures with the same reason are grouped so the list stays short.
@@ -349,40 +361,48 @@
       .forEach(p => { const why = p.headline.replace(/^(Act|Watch):\s*/, ""), k = p.status + "|" + why;
         if (!groups.has(k)) groups.set(k, {status: p.status, why, list: []}); groups.get(k).list.push(p); });
     for (const g of groups.values()) {
-      if (g.list.length === 1) items.push({cls: g.status, lead: STATUS[g.status].icon, title: g.list[0].name, why: g.why, pasture: g.list[0].id});
-      else items.push({cls: g.status, lead: STATUS[g.status].icon, title: `${g.list.length === snap.pastures.length ? "All" : g.list.length} pastures: ${STATUS[g.status].word}`,
-        why: `${g.why} (${g.list.map(p => p.name).join(", ")})`, go: "map"});
+      if (g.list.length === 1) items.push({cls: g.status, lead: STATUS[g.status].icon, title: g.list[0].name, why: TX(g.why), pasture: g.list[0].id});
+      else items.push({cls: g.status, lead: STATUS[g.status].icon, title: g.list.length === snap.pastures.length ? T("All pastures: {status}", {status: STATUS[g.status].word})
+          : T("{n} pastures: {status}", {n: g.list.length, status: STATUS[g.status].word}),
+        why: `${TX(g.why)} (${g.list.map(p => p.name).join(", ")})`, go: "map"});
     }
     if (!items.length) {
-      box.innerHTML = `<div class="allclear"><span class="big-ok" aria-hidden="true">✓</span><span>All clear. Nothing needs attention.</span></div>`;
+      box.innerHTML = `<div class="allclear"><span class="big-ok" aria-hidden="true">✓</span><span>${esc(T("All clear. Nothing needs attention."))}</span></div>`;
     } else {
-      box.innerHTML = `<h2>Needs attention</h2><ul class="attn">${items.slice(0, 7).map(i => `<li><button type="button" class="${i.cls}"
+      box.innerHTML = `<h2>${esc(T("Needs attention"))}</h2><ul class="attn">${items.slice(0, 7).map(i => `<li><button type="button" class="${i.cls}"
         ${i.pasture ? `data-pasture="${esc(i.pasture)}"` : i.photo ? `data-photo="${esc(i.photo)}"` : `data-go="${i.go || "map"}"`}>
         <span class="lead" aria-hidden="true">${i.lead}</span><b>${esc(i.title)}</b><span class="go" aria-hidden="true">›</span>
         <span class="why">${esc(i.why || "")}</span></button></li>`).join("")}</ul>`;
     }
     if (store.get("hideEveryday", false)) {
       const sig = ((rawSnap && rawSnap.pastures && rawSnap.pastures[0] && rawSnap.pastures[0].signals) || []).filter(g => EVERYDAY.includes(g.key) && g.level !== "ok" && g.level !== "unavailable");
-      if (sig.length) box.insertAdjacentHTML("beforeend", `<p class="dim small">Not counted in pasture status (same for the whole ranch): ${sig.map(g => esc(g.text)).join(" ")}
-        <button type="button" class="linkbtn" id="showEveryday">Count them again</button></p>`);
+      if (sig.length) box.insertAdjacentHTML("beforeend", `<p class="dim small">${esc(T("Not counted in pasture status (same for the whole ranch):"))} ${sig.map(g => esc(TX(g.text))).join(" ")}
+        <button type="button" class="linkbtn" id="showEveryday">${esc(T("Count them again"))}</button></p>`);
       if ($("showEveryday")) $("showEveryday").onclick = () => setHideEveryday(false);
     }
     renderSky();
     const w = snap.weather, r = snap.rain, wx = $("h-weather"); wx.hidden = false;
-    if (!w) { wx.innerHTML = "<h2>Weather</h2><p class='dim'>Forecast not available right now.</p>"; return; }
+    if (!w) { wx.innerHTML = `<h2>${esc(T("Weather"))}</h2><p class='dim'>${esc(T("Forecast not available right now."))}</p>`; return; }
     const today = (w.forecast || [])[0] || {};
     const pct = r && r.normal_90d_in ? Math.round(100 * r.rain_90d_in / r.normal_90d_in) : null;
-    const day = d => new Date(d + "T12:00:00").toLocaleDateString([], {weekday: "short"});
+    const day = d => new Date(d + "T12:00:00").toLocaleDateString(LOC, {weekday: "short"});
     let tzw = snap.ranch && snap.ranch.timezone; try { new Intl.DateTimeFormat([], {timeZone: tzw}); } catch (e) { tzw = undefined; }
     const sunT = window.RangeSky && snap.ranch && snap.ranch.center ? window.RangeSky.sunTimes(new Date(), snap.ranch.center[1], snap.ranch.center[0]) : null;
     const isNight = sunT && sunT.sunrise && sunT.sunset ? (Date.now() < sunT.sunrise || Date.now() > sunT.sunset)
       : (h => h < 7 || h >= 20)(Number(new Intl.DateTimeFormat("en-US", {hour: "numeric", hour12: false, timeZone: tzw}).format(new Date())));
-    wx.innerHTML = `<h2>Weather</h2><div class="wx"><span class="wxic" aria-hidden="true">${wxIcon(w.label, isNight)}</span><span class="now">${w.temp_f ?? "–"}°</span><span><b>${esc(w.label || "")}</b><br>
-        <span class="dim">Wind ${w.wind_mph ?? "–"} mph${w.gust_mph ? ", gusts " + w.gust_mph : ""} · Rain ${today.rain_chance_pct ?? "–"}%</span></span></div>
-      <div class="wx7" role="list" aria-label="Next 7 days">${(w.forecast || []).map((d, i) => `<div role="listitem" title="${esc(d.label || "")}"><span>${i === 0 ? "Today" : esc(day(d.date))}</span>
-        <span class="wxic sm" aria-label="${esc(d.label || "")}">${wxIcon(d.label, false)}</span><b>${d.high_f ?? "–"}°</b><span class="dim">${d.low_f ?? "–"}°</span><span class="rain${(d.rain_chance_pct || 0) >= 50 ? " wet" : ""}">💧${d.rain_chance_pct ?? "–"}%</span>
+    wx.innerHTML = `<h2>${esc(T("Weather"))}</h2><div class="wx"><span class="wxic" aria-hidden="true">${wxIcon(w.label, isNight)}</span><span class="now">${w.temp_f ?? "–"}°</span><span><b>${esc(wxWords(w.label))}</b><br>
+        <span class="dim">${esc(T("Wind {mph} mph", {mph: w.wind_mph ?? "–"}))}${w.gust_mph ? esc(T(", gusts {mph}", {mph: w.gust_mph})) : ""} · ${esc(T("Rain {pct}%", {pct: today.rain_chance_pct ?? "–"}))}</span></span></div>
+      <div class="wx7" role="list" aria-label="${esc(T("Next 7 days"))}">${(w.forecast || []).map((d, i) => `<div role="listitem" title="${esc(wxWords(d.label))}"><span>${i === 0 ? esc(T("Today")) : esc(day(d.date))}</span>
+        <span class="wxic sm" aria-label="${esc(wxWords(d.label))}">${wxIcon(d.label, false)}</span><b>${d.high_f ?? "–"}°</b><span class="dim">${d.low_f ?? "–"}°</span><span class="rain${(d.rain_chance_pct || 0) >= 50 ? " wet" : ""}">💧${d.rain_chance_pct ?? "–"}%</span>
         <span class="dim small">${d.gust_mph ? "💨" + d.gust_mph : d.wind_mph ? "💨" + d.wind_mph : ""}</span></div>`).join("")}</div>
-      ${pct != null ? `<p class="dim">Rain last 90 days: <b>${r.rain_90d_in.toFixed(1)} in</b>, ${pct}% of normal.</p>` : ""}`;
+      ${pct != null ? `<p class="dim">${T("Rain last 90 days: <b>{inches} in</b>, {pct}% of normal.", {inches: r.rain_90d_in.toFixed(1), pct})}</p>` : ""}`;
+  }
+  // Forecast words (NWS / Open-Meteo, in English) in the app's language.
+  function wxWords(label) {
+    if (!label) return "";
+    if (!ES_ON) return label;
+    const s = TX(label, "wx");
+    return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
   // Weather picture from the forecast words (NWS / Open-Meteo labels)
@@ -407,24 +427,24 @@
     const [lon, lat] = c, S = window.RangeSky, now = new Date();
     let tz = snap.ranch.timezone || undefined;
     try { new Intl.DateTimeFormat([], {timeZone: tz}); } catch (e) { tz = undefined; }
-    const t = d => d ? d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit", timeZone: tz}) : "—";
+    const t = d => d ? d.toLocaleTimeString(LOC, {hour: "numeric", minute: "2-digit", timeZone: tz}) : "—";
     const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {timeZone: tz, hour12: false, hour: "numeric", minute: "numeric", second: "numeric"})
       .formatToParts(now).map(p => [p.type, Number(p.value)]));
     const midnight = new Date(now - (((parts.hour % 24) * 60 + parts.minute) * 60 + parts.second) * 1000);
     const sun = S.sunTimes(new Date(midnight.valueOf() + 12 * 36e5), lat, lon), moon = S.moonTimes(midnight, lat, lon);
     const ill = S.moonIllumination(now), ph = S.phaseName(ill.phase);
     const full = S.nextPhase(now, 0.5), nw = S.nextPhase(now, 0);
-    const dateOf = d => d ? d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric", timeZone: tz}) : "—";
+    const dateOf = d => d ? d.toLocaleDateString(LOC, {weekday: "short", month: "short", day: "numeric", timeZone: tz}) : "—";
     const daylight = sun.sunrise && sun.sunset ? Math.round((sun.sunset - sun.sunrise) / 6e4) : null;
     box.hidden = false;
-    box.innerHTML = `<h2>Sun &amp; moon</h2>
-      <div class="sky"><div><span class="ic" aria-hidden="true">🌅</span><span class="dim">Sunrise</span><b>${t(sun.sunrise)}</b><span class="dim small">first light ${t(sun.dawn)}</span></div>
-        <div><span class="ic" aria-hidden="true">🌇</span><span class="dim">Sunset</span><b>${t(sun.sunset)}</b><span class="dim small">last light ${t(sun.dusk)}</span></div>
-        <div><span class="ic" aria-hidden="true">${ph.icon}</span><span class="dim">${esc(ph.name)}</span><b>${Math.round(ill.fraction * 100)}% lit</b>
-          <span class="dim small">full ${dateOf(full)}</span></div>
-        <div><span class="ic" aria-hidden="true">🌙</span><span class="dim">Moonrise</span><b>${moon.alwaysUp ? "up all day" : moon.alwaysDown ? "doesn't rise" : t(moon.rise)}</b>
-          <span class="dim small">moonset ${moon.set ? t(moon.set) : "—"}</span></div></div>
-      <p class="dim small">${daylight ? `${Math.floor(daylight / 60)} h ${daylight % 60} min of daylight. ` : ""}New moon ${dateOf(nw)}. Times for the middle of the ranch${tz ? ", ranch time" : ""}.</p>`;
+    box.innerHTML = `<h2>${esc(T("Sun & moon"))}</h2>
+      <div class="sky"><div><span class="ic" aria-hidden="true">🌅</span><span class="dim">${esc(T("Sunrise"))}</span><b>${t(sun.sunrise)}</b><span class="dim small">${esc(T("first light {time}", {time: t(sun.dawn)}))}</span></div>
+        <div><span class="ic" aria-hidden="true">🌇</span><span class="dim">${esc(T("Sunset"))}</span><b>${t(sun.sunset)}</b><span class="dim small">${esc(T("last light {time}", {time: t(sun.dusk)}))}</span></div>
+        <div><span class="ic" aria-hidden="true">${ph.icon}</span><span class="dim">${esc(T(ph.name))}</span><b>${esc(T("{pct}% lit", {pct: Math.round(ill.fraction * 100)}))}</b>
+          <span class="dim small">${esc(T("full {date}", {date: dateOf(full)}))}</span></div>
+        <div><span class="ic" aria-hidden="true">🌙</span><span class="dim">${esc(T("Moonrise"))}</span><b>${moon.alwaysUp ? esc(T("up all day")) : moon.alwaysDown ? esc(T("doesn't rise")) : t(moon.rise)}</b>
+          <span class="dim small">${esc(T("moonset {time}", {time: moon.set ? t(moon.set) : "—"}))}</span></div></div>
+      <p class="dim small">${daylight ? esc(T("{h} h {m} min of daylight.", {h: Math.floor(daylight / 60), m: daylight % 60})) + " " : ""}${esc(T("New moon {date}.", {date: dateOf(nw)}))} ${esc(tz ? T("Times for the middle of the ranch, ranch time.") : T("Times for the middle of the ranch."))}</p>`;
   }
 
   // ---------------------------------------------------------------- MAP (2D Leaflet / 3D three.js)
@@ -439,7 +459,7 @@
     const s = STATUS[p.status] || STATUS.unknown;
     return `<li><button type="button" class="prow ${esc(p.status)}" data-pasture="${esc(p.id)}">
       <span class="badge" aria-hidden="true">${s.icon}</span><b>${esc(p.name)} <span class="chip ${esc(p.status)}">${s.word}</span></b>
-      <span class="go" aria-hidden="true">›</span><span class="why">${esc(p.headline)}</span></button></li>`;
+      <span class="go" aria-hidden="true">›</span><span class="why">${esc(TX(p.headline))}</span></button></li>`;
   }
   function setPressed(sel, attr, val) { document.querySelectorAll(sel).forEach(b => b.setAttribute("aria-pressed", String(b.dataset[attr] === String(val)))); }
   // A point well inside a pasture ([lon, lat] ring): the centroid if it's inside, else the middle of the widest
@@ -475,11 +495,11 @@
     $("map").hidden = mapMode !== "2d"; $("map3d").hidden = mapMode !== "3d";
     $("m-list").innerHTML = snap ? snap.pastures.map(prow).join("") : "";
     renderLayerCard();
-    if (!snap) { $("map-src").textContent = "No ranch data yet."; return; }
+    if (!snap) { $("map-src").textContent = T("No ranch data yet."); return; }
     if (mapMode === "3d") return render3d();
     if (view3d) { view3d.dispose(); view3d = null; }
-    $("map-src").textContent = "Imagery: USGS The National Map. Tap a pasture or a pin.";
-    try { await loadLeaflet(); } catch (e) { $("map").innerHTML = "<p class='dim' style='padding:16px'>Map couldn't load. The list below still works.</p>"; return; }
+    $("map-src").textContent = T("Imagery: USGS The National Map. Tap a pasture or a pin.");
+    try { await loadLeaflet(); } catch (e) { $("map").innerHTML = `<p class='dim' style='padding:16px'>${esc(T("Map couldn't load. The list below still works."))}</p>`; return; }
     if (!map) {
       map = L.map("map", {zoomControl: true});
       L.tileLayer("https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
@@ -549,7 +569,7 @@
         heading: cam.heading != null && Date.now() - cam.headingAt < 30000 ? cam.heading : (p.coords.heading ?? null)};
       drawHere();
       if (hereFollowNext) { hereFollowNext = false; centerOnMe(); }
-    }, err => { if (hereFollowNext) { hereFollowNext = false; toast(err.code === 1 ? "Location is off for RangeIQ. Turn it on in the phone's settings." : "No GPS fix yet."); } },
+    }, err => { if (hereFollowNext) { hereFollowNext = false; toast(err.code === 1 ? T("Location is off for RangeIQ. Turn it on in the phone's settings.") : T("No GPS fix yet.")); } },
     {enableHighAccuracy: true, maximumAge: 5000, timeout: 30000});
   }
   function stopHere() { if (hereWatch != null) { navigator.geolocation.clearWatch(hereWatch); hereWatch = null; } }
@@ -564,21 +584,22 @@
     if (view3d && view3d.setHere) view3d.setHere(here);   // (an older 3D file has no marker; skip it)
   }
   function centerOnMe() {
-    if (!here) { hereFollowNext = true; startSensors(); startHere(); toast("Finding you…"); return; }
-    if (mapMode === "3d" && view3d) { if (!view3d.focus(here.lat, here.lon)) toast(`You're outside the ranch map (±${here.acc} m).`); return; }
+    if (!here) { hereFollowNext = true; startSensors(); startHere(); toast(T("Finding you…")); return; }
+    if (mapMode === "3d" && view3d) { if (!view3d.focus(here.lat, here.lon)) toast(T("You're outside the ranch map (±{m} m).", {m: here.acc})); return; }
     if (map) map.setView([here.lat, here.lon], Math.max(map.getZoom(), 16));
   }
   $("meBtn").onclick = () => { startSensors(); centerOnMe(); };
 
   function src3d() {
     const meta = view3d && view3d.meta; if (!meta) return;
-    const ground = meta.dem_source === "usgs_3dep" ? `USGS lidar (${meta.dem_resolution_m} m)` : "EXAMPLE terrain, not your land";
-    const skin = look === "relief" ? "Relief: land colored by height and slope, lit by the sun."
-      : meta.texture_source === "naip" ? "Aerial photo: USDA NAIP." : "Aerial photo unavailable; showing relief.";
+    const ground = meta.dem_source === "usgs_3dep" ? T("USGS lidar ({m} m)", {m: meta.dem_resolution_m}) : T("EXAMPLE terrain, not your land");
+    const skin = look === "relief" ? T("Relief: land colored by height and slope, lit by the sun.")
+      : meta.texture_source === "naip" ? T("Aerial photo: USDA NAIP.") : T("Aerial photo unavailable; showing relief.");
     const off = (view3d.offMap && view3d.offMap()) || [];
     if (off.length) watchTerrain();
-    $("map-src").textContent = (off.length ? `⏳ ${off.slice(0, 3).join(", ")} reach${off.length === 1 ? "es" : ""} past the edge of the 3D map. `
-      + "The server is extending the map; it reloads here by itself in a few minutes. " : "") + `Ground: ${ground}. ${skin} ${layers.glow ? (layers.colors ? "Glowing walls are pasture lines, colored by status." : "Pasture lines without warning colors.") : "Pasture lines on the ground (glow off in Layers)."} Drag to turn, pinch to zoom.`;
+    $("map-src").textContent = (off.length ? T(off.length === 1 ? "⏳ {names} reaches past the edge of the 3D map." : "⏳ {names} reach past the edge of the 3D map.", {names: off.slice(0, 3).join(", ")}) + " "
+      + T("The server is extending the map; it reloads here by itself in a few minutes.") + " " : "") + T("Ground: {ground}.", {ground}) + " " + skin + " "
+      + (layers.glow ? (layers.colors ? T("Glowing walls are pasture lines, colored by status.") : T("Pasture lines without warning colors.")) : T("Pasture lines on the ground (glow off in Layers).")) + " " + T("Drag to turn, pinch to zoom.");
   }
   // After a boundary is drawn past the edge of the 3D map the server rebuilds the map; check every minute (for up to
   // 20 minutes) and reload the 3D view when the new one is ready.
@@ -593,7 +614,7 @@
         const m = await api("terrain/meta");
         if (m.updated_at && m.updated_at !== view3d.meta.updated_at) {
           clearInterval(terrainWatch); terrainWatch = null;
-          view3d.dispose(); view3d = null; toast("The 3D map has been updated."); render3d();
+          view3d.dispose(); view3d = null; toast(T("The 3D map has been updated.")); render3d();
         }
       } catch (e) { /* no signal: try again next minute */ }
     }, 60000);
@@ -601,7 +622,7 @@
   async function render3d() {
     const box = $("map3d");
     if (view3d) { view3d.setLook(look); view3d.setPhotos(mapItems()); view3d.setStatuses?.(statusMap()); view3d.setPastures?.(pastures3d()); view3d.setPasturesVisible?.(layers.pastures); view3d.setFlags?.(layers.flags); view3d.setLines?.(lines3d()); view3d.setGlow?.(layers.glow); src3d(); return; }
-    box.innerHTML = "<div class='busy'><div class='spinner'></div>Loading the lidar terrain…</div>";
+    box.innerHTML = `<div class='busy'><div class='spinner'></div>${esc(T("Loading the lidar terrain…"))}</div>`;
     try {
       // The height and photo files are cached by the phone, so ask for them by build date: a rebuilt terrain gets new files.
       const meta = await api("terrain/meta"), v = encodeURIComponent(meta.updated_at || meta.asset_version || "1");
@@ -617,8 +638,8 @@
     } catch (e) {
       if (e.signin) { show("login"); return; }
       // No 3D yet (or no WebGL / no signal): fall back to the flat map so the console still works.
-      const why = e.message === "notready" ? "The 3D terrain isn't ready yet, so here's the flat map." :
-        navigator.onLine ? "The 3D view couldn't load, so here's the flat map." : "The 3D view needs signal the first time, so here's the flat map.";
+      const why = e.message === "notready" ? T("The 3D terrain isn't ready yet, so here's the flat map.") :
+        navigator.onLine ? T("The 3D view couldn't load, so here's the flat map.") : T("The 3D view needs signal the first time, so here's the flat map.");
       mapMode = "2d"; await renderMap(); $("map-src").textContent = why + (e.message && e.message !== "notready" ? ` (${e.message.slice(0, 120)})` : "");
       try { navigator.sendBeacon && navigator.sendBeacon(API + "client-error", JSON.stringify({where: "3d", error: String(e && (e.stack || e.message)).slice(0, 500)})); } catch (x) {}
     }
@@ -644,12 +665,12 @@
   function renderLayerCard() {
     const all = (() => { const keep = layers; layers = Object.fromEntries(LAYERS.map(([k]) => [k, true])); const x = mapItems(); layers = keep; return x; })();
     const count = k => all.filter(x => x.layer === k).length;
-    $("layerCard").innerHTML = `<h2>Show on the map</h2><div class="layers">${LAYERS.map(([k, label, ic]) => `<button type="button" class="layer" data-layer="${k}"
+    $("layerCard").innerHTML = `<h2>${esc(T("Show on the map"))}</h2><div class="layers">${LAYERS.map(([k, label, ic]) => `<button type="button" class="layer" data-layer="${k}"
       aria-pressed="${!!layers[k]}"><span aria-hidden="true">${rIcon(k, 24, ic)}</span>${esc(label)}${["pastures", "flags", "colors", "glow"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
-      <h3>Roads &amp; trails</h3><div class="layers">${Object.entries(LINE_TYPES).map(([k, v]) => { const n = shapes.filter(x => x.kind === k).length;
+      <h3>${esc(T("Roads & trails"))}</h3><div class="layers">${Object.entries(LINE_TYPES).map(([k, v]) => { const n = shapes.filter(x => x.kind === k).length;
         return `<button type="button" class="layer" data-layer="${lineLayerKey(k)}" aria-pressed="${layers[lineLayerKey(k)] !== false}"><i class="swatch" style="background:${v.color}"></i>${esc(v.label)} <span class="dim">${n}</span></button>`; }).join("")}</div>
       <label class="switchrow"><input type="checkbox" id="hideEverydayMap" ${store.get("hideEveryday", false) ? "checked" : ""}>
-        <span>Ignore drought &amp; rain in pasture status <span class="dim small">(they're the same everywhere)</span></span></label>`;
+        <span>${esc(T("Ignore drought & rain in pasture status"))} <span class="dim small">${esc(T("(they're the same everywhere)"))}</span></span></label>`;
     $("layerCard").querySelectorAll("[data-layer]").forEach(b => b.onclick = () => {
       layers[b.dataset.layer] = !layers[b.dataset.layer]; store.set("layers", layers); renderMap(); });
     $("hideEverydayMap").onchange = e => setHideEveryday(e.target.checked);
@@ -668,10 +689,10 @@
     const p = snap && snap.pastures.find(x => x.id === id); if (!p) return;
     const s = STATUS[p.status] || STATUS.unknown;
     const n = allPhotos().filter(x => x.pasture_id === id).length;
-    openSheet(p.name, `<p><span class="chip ${esc(p.status)}">${s.icon} ${s.word}</span> ${esc(p.headline.replace(/^(Act|Watch):\s*/, ""))}</p>
-      <p class="dim">${p.acres != null ? p.acres + " acres · " : ""}${n} photo${n === 1 ? "" : "s"}</p>
-      <div class="row"><button type="button" class="primary" data-pasture="${esc(id)}">Open pasture</button>
-      <button type="button" class="secondary" data-act="photo" data-here="1">📷 Photo here</button></div>`);
+    openSheet(p.name, `<p><span class="chip ${esc(p.status)}">${s.icon} ${s.word}</span> ${esc(TX(p.headline.replace(/^(Act|Watch):\s*/, "")))}</p>
+      <p class="dim">${p.acres != null ? esc(T("{n} acres", {n: p.acres})) + " · " : ""}${esc(T(n === 1 ? "{n} photo" : "{n} photos", {n}))}</p>
+      <div class="row"><button type="button" class="primary" data-pasture="${esc(id)}">${esc(T("Open pasture"))}</button>
+      <button type="button" class="secondary" data-act="photo" data-here="1">${esc(T("📷 Photo here"))}</button></div>`);
     currentPasture = id;
   }
 
@@ -681,19 +702,19 @@
     if (!p) { show("map"); return; }
     closeSheet();
     const s = STATUS[p.status] || STATUS.unknown;
-    $("d-h").textContent = p.name; $("d-acres").textContent = p.acres != null ? p.acres + " acres" : "";
-    $("d-status").innerHTML = `<span class="chip ${esc(p.status)}">${s.icon} ${s.word}</span> <span class="dim">${esc(p.headline.replace(/^(Act|Watch):\s*/, ""))}</span>`;
+    $("d-h").textContent = p.name; $("d-acres").textContent = p.acres != null ? T("{n} acres", {n: p.acres}) : "";
+    $("d-status").innerHTML = `<span class="chip ${esc(p.status)}">${s.icon} ${s.word}</span> <span class="dim">${esc(TX(p.headline.replace(/^(Act|Watch):\s*/, "")))}</span>`;
     const ph = allPhotos().filter(x => x.pasture_id === p.id).slice(0, 9);
-    $("d-photos").innerHTML = "<h2>Photos</h2>" + (ph.length ? `<div class="photogrid">${ph.map(x => `<button type="button" data-photo="${esc(x.client_id)}"
-      aria-label="Photo ${esc(when(x.taken_at))}"><img src="${esc(thumbOf(x))}" alt="" loading="lazy"></button>`).join("")}</div>` : "<p class='dim'>No photos here yet.</p>");
-    $("d-signals").innerHTML = "<h2>Why</h2>" + p.signals.map(g => `<div class="sig"><span class="lv ${esc(g.level)}" aria-label="${esc(g.level)}">${LEVEL[g.level] || "?"}</span>
-      <b>${esc(g.label)}</b><span>${esc(g.text)}</span><span class="src">${g.source ? esc(g.source) : ""}${g.as_of ? " · " + esc(when(g.as_of, false)) : ""}</span></div>`).join("");
+    $("d-photos").innerHTML = `<h2>${esc(T("Photos"))}</h2>` + (ph.length ? `<div class="photogrid">${ph.map(x => `<button type="button" data-photo="${esc(x.client_id)}"
+      aria-label="${esc(T("Photo {when}", {when: when(x.taken_at)}))}"><img src="${esc(thumbOf(x))}" alt="" loading="lazy"></button>`).join("")}</div>` : `<p class='dim'>${esc(T("No photos here yet."))}</p>`);
+    $("d-signals").innerHTML = `<h2>${esc(T("Why"))}</h2>` + p.signals.map(g => `<div class="sig"><span class="lv ${esc(g.level)}" aria-label="${esc(T(LEVEL_WORD[g.level] || g.level))}">${LEVEL[g.level] || "?"}</span>
+      <b>${esc(TX(g.label))}</b><span>${esc(TX(g.text))}</span><span class="src">${g.source ? esc(TX(g.source)) : ""}${g.as_of ? " · " + esc(when(g.as_of, false)) : ""}</span></div>`).join("");
     const t = p.terrain;
-    $("d-land").innerHTML = "<h2>Lay of the land</h2>" + (t ? `<div class="stat">
-      <div><span class="dim">Elevation</span><b>${t.elev_min_ft}–${t.elev_max_ft} ft</b></div>
-      <div><span class="dim">Average slope</span><b>${t.mean_slope_pct}%</b></div>
-      <div><span class="dim">Faces</span><b>${esc(t.faces || "–")}</b></div></div>
-      <button type="button" class="secondary" id="see3d">⛰ See it in 3D</button>` : "<p class='dim'>Terrain not available yet.</p>");
+    $("d-land").innerHTML = `<h2>${esc(T("Lay of the land"))}</h2>` + (t ? `<div class="stat">
+      <div><span class="dim">${esc(T("Elevation"))}</span><b>${esc(T("{low}–{high} ft", {low: t.elev_min_ft, high: t.elev_max_ft}))}</b></div>
+      <div><span class="dim">${esc(T("Average slope"))}</span><b>${t.mean_slope_pct}%</b></div>
+      <div><span class="dim">${esc(T("Faces"))}</span><b>${esc(TX(t.faces || "–"))}</b></div></div>
+      <button type="button" class="secondary" id="see3d">${esc(T("⛰ See it in 3D"))}</button>` : `<p class='dim'>${esc(T("Terrain not available yet."))}</p>`);
     if ($("see3d")) $("see3d").onclick = () => { mapMode = "3d"; show("map"); };
   }
 
@@ -722,102 +743,103 @@
     if (it.type === "job") {
       const t = it.t, done = it.what === "done";
       return `<li class="clickable" data-item="${esc(t.task_id)}"><span class="ico" aria-hidden="true">${rIcon("job", 30, done ? "✔️" : "📋")}</span>
-        <span>${done ? "Checked off" : "New job"}: <b>${esc(t.title)}</b>${t.pasture_id ? ` <span class="dim">(${esc(pastureName(t.pasture_id))})</span>` : ""}${done ? "" : miniPhotos("task_id", t.task_id)}</span><span></span>
+        <span>${esc(done ? T("Checked off") : T("New job"))}: <b>${esc(t.title)}</b>${t.pasture_id ? ` <span class="dim">(${esc(pastureName(t.pasture_id))})</span>` : ""}${done ? "" : miniPhotos("task_id", t.task_id)}</span><span></span>
         <span class="meta">${esc(when(it.at))}${it.by ? " · " + esc(it.by) : ""}</span></li>`;
     }
     if (it.type === "sos") {
       const s = it.s;
       return `<li class="clickable sosrow" data-sos="${esc(s.sos_id)}"><span class="ico" aria-hidden="true">${rIcon("sos", 30, "🆘")}</span>
         <span><b>SOS · ${esc(s.user_name || "")}</b> · ${esc(sosLabel(s.kind))}${s.note ? " · " + esc(s.note) : ""}
-        ${s.resolved_at ? `<br><span class="dim">✅ Ended by ${esc(s.resolved_by || "?")} ${esc(when(s.resolved_at))}${s.resolve_note ? ": " + esc(s.resolve_note) : ""}</span>` : '<br><b class="sosnow">Still open</b>'}</span><span></span>
+        ${s.resolved_at ? `<br><span class="dim">✅ ${esc(T("Ended by {name} {when}", {name: s.resolved_by || "?", when: when(s.resolved_at)}))}${s.resolve_note ? ": " + esc(s.resolve_note) : ""}</span>` : `<br><b class="sosnow">${esc(T("Still open"))}</b>`}</span><span></span>
         <span class="meta">${esc(when(it.at))}</span></li>`;
     }
     if (it.type === "resolved") {
-      const x = it.x, r = it.r, what = [(x.tags || []).join(", "), x.text || x.note].filter(Boolean).join(" · ") || "Problem";
+      const x = it.x, r = it.r, what = [tagWords(x.tags), x.text || x.note].filter(Boolean).join(" · ") || T("Problem");
       return `<li class="clickable" data-photo="${esc(x.client_id)}"><span class="ico" aria-hidden="true">✅</span>
-        <span>Resolved: <b>${esc(what)}</b>${x.pasture_id ? ` <span class="dim">(${esc(pastureName(x.pasture_id))})</span>` : ""}${r.note ? `<br><span class="dim">${esc(r.note)}</span>` : ""}</span><span></span>
+        <span>${esc(T("Resolved:"))} <b>${esc(what)}</b>${x.pasture_id ? ` <span class="dim">(${esc(pastureName(x.pasture_id))})</span>` : ""}${r.note ? `<br><span class="dim">${esc(r.note)}</span>` : ""}</span><span></span>
         <span class="meta">${esc(when(it.at))}${r.by ? " · " + esc(r.by) : ""}</span></li>`;
     }
     if (it.type === "place") {
       const pl = it.pl, k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
       return `<li class="clickable" data-item="${esc(pl.place_id)}"><span class="ico" aria-hidden="true">${rIcon(PLACE_KINDS[pl.kind] ? pl.kind : "other", 30, k[1])}</span>
-        <span>Added a place: <b>${esc(pl.name)}</b> <span class="dim">(${esc(k[0])})</span>${miniPhotos("place_id", pl.place_id)}</span><span></span>
+        <span>${esc(T("Added a place:"))} <b>${esc(pl.name)}</b> <span class="dim">(${esc(k[0])})</span>${miniPhotos("place_id", pl.place_id)}</span><span></span>
         <span class="meta">${esc(when(it.at))}${pl.created_by_name ? " · " + esc(pl.created_by_name) : ""}</span></li>`;
     }
     if (it.type === "shape") {
       const sh = it.sh, isP = sh.kind === "pasture", lt = LINE_TYPES[sh.kind] || LINE_TYPES.other_line;
       return `<li class="clickable" data-item="${esc(sh.shape_id)}"><span class="ico" aria-hidden="true">${isP ? "🟫" : `<i class="swatch" style="background:${lt.color}"></i>`}</span>
-        <span>Drew ${isP ? "a pasture" : "a " + esc(lt.label.toLowerCase())}: <b>${esc(sh.name || "")}</b>${miniPhotos("shape_id", sh.shape_id)}</span><span></span>
+        <span>${esc(isP ? T("Drew a pasture:") : T("Drew a line ({kind}):", {kind: lt.label.toLowerCase()}))} <b>${esc(sh.name || "")}</b>${miniPhotos("shape_id", sh.shape_id)}</span><span></span>
         <span class="meta">${esc(when(it.at))}${sh.created_by_name ? " · " + esc(sh.created_by_name) : ""}</span></li>`;
     }
     if (it.type === "photo") {
       const p = it.p, a = p.analysis || {};
       const tags = (p.tags || []).map(tagSpan).join("");
       return `<li class="clickable" data-photo="${esc(p.client_id)}"><img src="${esc(thumbOf(p))}" alt="" loading="lazy">
-        <b>Photo${p.pasture_id ? " · " + esc(pastureName(p.pasture_id)) : ""}${p.heading_deg != null ? " · facing " + compass(p.heading_deg) : ""}</b>
-        <span>${tags}${a.green_pct != null ? ` <span class="dim">${a.green_pct}% green</span>` : ""}${resolution(p) ? ' <span class="donechip">✓ Resolved</span>' : ""}</span>
-        <span class="meta">${esc(when(p.taken_at))}${by(p)}${p._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
+        <b>${esc(T("Photo"))}${p.pasture_id ? " · " + esc(pastureName(p.pasture_id)) : ""}${p.heading_deg != null ? " · " + esc(T("facing {dir}", {dir: compass(p.heading_deg)})) : ""}</b>
+        <span>${tags}${a.green_pct != null ? ` <span class="dim">${esc(T("{pct}% green", {pct: a.green_pct}))}</span>` : ""}${resolution(p) ? ` <span class="donechip">${esc(T("✓ Resolved"))}</span>` : ""}</span>
+        <span class="meta">${esc(when(p.taken_at))}${by(p)}${p._pending ? ` · <span class="pending">${esc(T("waiting to send"))}</span>` : ""}</span></li>`;
     }
     const l = it.l;
     const top = topTag(l.tags), ico = it.type === "problem" ? rIcon(top || "note", 30, top ? TAG[top].icon : "📝") : {move: rIcon("group:Livestock", 30, "🐄"), rain: rIcon("sensor_rain", 30, "🌧")}[it.type] || "•";
-    const what = it.type === "move" ? `Moved cattle${l.from_pasture_id ? " from " + esc(pastureName(l.from_pasture_id)) : ""} to <b>${esc(pastureName(l.pasture_id))}</b>${l.head ? " (" + esc(l.head) + " head)" : ""}`
-      : it.type === "rain" ? `Rain gauge: <b>${Number(l.inches).toFixed(2)} in</b>${l.pasture_id ? " at " + esc(pastureName(l.pasture_id)) : ""}`
-      : `${(l.tags || []).map(tagSpan).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}${l.lat != null ? " 📍" : ""}${resolution(l) ? ' <span class="donechip">✓ Resolved</span>' : ""}`;
+    const what = it.type === "move" ? (l.from_pasture_id ? T("Moved cattle from {from} to <b>{to}</b>", {from: esc(pastureName(l.from_pasture_id)), to: esc(pastureName(l.pasture_id))})
+          : T("Moved cattle to <b>{to}</b>", {to: esc(pastureName(l.pasture_id))})) + (l.head ? " " + esc(T("({n} head)", {n: l.head})) : "")
+      : it.type === "rain" ? T("Rain gauge: <b>{inches} in</b>", {inches: Number(l.inches).toFixed(2)}) + (l.pasture_id ? " " + esc(T("at {place}", {place: pastureName(l.pasture_id)})) : "")
+      : `${(l.tags || []).map(tagSpan).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}${l.lat != null ? " 📍" : ""}${resolution(l) ? ` <span class="donechip">${esc(T("✓ Resolved"))}</span>` : ""}`;
     return `<li class="clickable" data-photo="${esc(l.client_id)}"><span class="ico" aria-hidden="true">${ico}</span><span>${what}${miniPhotos("log_id", l.client_id)}</span><span></span>
-      <span class="meta">${esc(when(l.logged_at))}${by(l)}${l._pending ? ' · <span class="pending">waiting to send</span>' : ""}</span></li>`;
+      <span class="meta">${esc(when(l.logged_at))}${by(l)}${l._pending ? ` · <span class="pending">${esc(T("waiting to send"))}</span>` : ""}</span></li>`;
   }
   function renderLog() {
     setPressed("[data-filter]", "filter", logFilter);
     const n = store.get("queue", []).length + pending.length;
     $("g-queue").hidden = !n;
-    $("g-queue").innerHTML = `<p><b>${n} waiting to send.</b> Safe on this phone; they'll send by themselves when there's signal.</p>
-      <button type="button" class="secondary" id="syncNow">Send now</button>`;
+    $("g-queue").innerHTML = `<p><b>${esc(T("{n} waiting to send.", {n}))}</b> ${esc(T("Safe on this phone; they'll send by themselves when there's signal."))}</p>
+      <button type="button" class="secondary" id="syncNow">${esc(T("Send now"))}</button>`;
     if ($("syncNow")) $("syncNow").onclick = () => syncAll(true);
     const tagsOf = i => (i.p || i.l || {}).tags || [];
     const items = logItems().filter(i => logFilter === "all" || i.type === logFilter || (logFilter === "map" && (i.type === "place" || i.type === "shape"))
       || (logFilter === "problem" && (i.type === "photo" || i.type === "problem") && (tagsAt(tagsOf(i), HEADS_UP).length || (i.p && i.p.flagged)))
       || (logFilter === "problem" && i.type === "resolved")
       || (logFilter === "wildlife" && tagsOf(i).some(t => TAG[t] && TAG[t].group === "Wildlife"))).slice(0, 80);
-    $("g-list").innerHTML = items.length ? items.map(itemHtml).join("") : "<li class='dim'>Nothing yet. Use the buttons on Home.</li>";
+    $("g-list").innerHTML = items.length ? items.map(itemHtml).join("") : `<li class='dim'>${esc(T("Nothing yet. Use the buttons on Home."))}</li>`;
   }
   document.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => { logFilter = b.dataset.filter; renderLog(); });
 
   // ---------------------------------------------------------------- MORE (crew, settings)
   async function renderMore() {
     renderMePic();
-    $("o-who").textContent = me ? `${me.name}${me.role === "crew" ? " · crew" : ""} · ${me.ranch}` : "";
+    $("o-who").textContent = me ? `${me.name}${me.role === "crew" ? " · " + T("crew") : ""} · ${me.ranch}` : "";
     $("o-everyday").checked = store.get("hideEveryday", false);
     $("o-everyday").onchange = e => setHideEveryday(e.target.checked);
     const rs = (me && me.ranches) || [];
     $("o-ranch").hidden = rs.length < 2;
-    $("o-ranch").innerHTML = `<h2>Your ranches</h2><div class="row">${rs.map(r => `<button type="button" class="${r.workspace_id === me.workspace_id ? "primary" : "secondary"}"
-      data-ranch="${esc(r.workspace_id)}">${esc(r.name)}</button>`).join("")}</div><p class="dim small">You can also tap the ranch name at the top.</p>`;
-    $("o-sources").innerHTML = ((snap && snap.sources) || []).map(s => `<li><span><b>${esc(s.name)}</b><br><span class="${s.live ? "ok-txt" : "no-txt"}">${s.live ? "Working" : s.demo ? "Demo values" : "Not available"}</span></span>
-      <span class="when">${s.as_of ? esc(when(s.as_of, false)) : ""}</span></li>`).join("") || "<li class='dim'>No data yet.</li>";
+    $("o-ranch").innerHTML = `<h2>${esc(T("Your ranches"))}</h2><div class="row">${rs.map(r => `<button type="button" class="${r.workspace_id === me.workspace_id ? "primary" : "secondary"}"
+      data-ranch="${esc(r.workspace_id)}">${esc(r.name)}</button>`).join("")}</div><p class="dim small">${esc(T("You can also tap the ranch name at the top."))}</p>`;
+    $("o-sources").innerHTML = ((snap && snap.sources) || []).map(s => `<li><span><b>${esc(TX(s.name))}</b><br><span class="${s.live ? "ok-txt" : "no-txt"}">${esc(s.live ? T("Working") : s.demo ? T("Demo values") : T("Not available"))}</span></span>
+      <span class="when">${s.as_of ? esc(when(s.as_of, false)) : ""}</span></li>`).join("") || `<li class='dim'>${esc(T("No data yet."))}</li>`;
     renderSetup();
     const crew = $("o-crew");
     crew.hidden = !(me && me.role === "owner");
     if (crew.hidden) return;
-    crew.innerHTML = "<h2>Your crew</h2><p class='dim'>Loading…</p>";
+    crew.innerHTML = `<h2>${esc(T("Your crew"))}</h2><p class='dim'>${esc(T("Loading…"))}</p>`;
     try {
       const c = await api("crew");
-      crew.innerHTML = `<h2>Your crew</h2>
-        <p class="dim">Give a ranch hand a <b>crew code</b>. They tap <b>Join a ranch crew</b> when they open RangeIQ. Hands can see the ranch, take photos, log work and check off jobs, but can't change settings.</p>
-        <p class="dim">A <b>partner code</b> is for a co-owner or manager: same rights as you, including the crew. It works once and lasts 2 days. Someone who already has a RangeIQ login uses it with their own email and password, and gets both ranches in one app.</p>
+      crew.innerHTML = `<h2>${esc(T("Your crew"))}</h2>
+        <p class="dim">${T("Give a ranch hand a <b>crew code</b>. They tap <b>Join a ranch crew</b> when they open RangeIQ. Hands can see the ranch, take photos, log work and check off jobs, but can't change settings.")}</p>
+        <p class="dim">${T("A <b>partner code</b> is for a co-owner or manager: same rights as you, including the crew. It works once and lasts 2 days. Someone who already has a RangeIQ login uses it with their own email and password, and gets both ranches in one app.")}</p>
         ${c.invites.map(i => `<div class="row" style="align-items:center"><b style="font-size:1.5rem;letter-spacing:.08em">${esc(i.code)}</b>
-          <span class="dim small">${i.role === "owner" ? "<b>partner</b> · " : "crew · "}until ${esc(when(i.expires_at, false))} · used ${i.uses}/${i.max_uses}</span>
-          <button type="button" class="pill" data-revoke="${esc(i.code)}">Stop code</button></div>`).join("")}
-        <div class="row"><button type="button" class="primary" id="newCode">Make a crew code</button>
-          <button type="button" class="secondary" id="newPartner">Make a partner code</button></div>
-        ${c.members.length ? `<h3>People on this ranch</h3><ul class="srclist">${c.members.map(m => `<li><span><b>${esc(m.name)}</b><br><span class="dim small">${m.role === "owner" ? "partner" : "crew"} · joined ${esc(when(m.joined_at, false))}</span></span>
-          <button type="button" class="pill" data-remove="${esc(m.user_id)}">Remove</button></li>`).join("")}</ul>` : ""}`;
+          <span class="dim small">${i.role === "owner" ? `<b>${esc(T("partner"))}</b> · ` : esc(T("crew")) + " · "}${esc(T("until {date} · used {uses}/{max}", {date: when(i.expires_at, false), uses: i.uses, max: i.max_uses}))}</span>
+          <button type="button" class="pill" data-revoke="${esc(i.code)}">${esc(T("Stop code"))}</button></div>`).join("")}
+        <div class="row"><button type="button" class="primary" id="newCode">${esc(T("Make a crew code"))}</button>
+          <button type="button" class="secondary" id="newPartner">${esc(T("Make a partner code"))}</button></div>
+        ${c.members.length ? `<h3>${esc(T("People on this ranch"))}</h3><ul class="srclist">${c.members.map(m => `<li><span><b>${esc(m.name)}</b><br><span class="dim small">${esc(m.role === "owner" ? T("partner") : T("crew"))} · ${esc(T("joined {date}", {date: when(m.joined_at, false)}))}</span></span>
+          <button type="button" class="pill" data-remove="${esc(m.user_id)}">${esc(T("Remove"))}</button></li>`).join("")}</ul>` : ""}`;
       $("newCode").onclick = async () => { try { await api("crew/invites", {method: "POST", body: "{}"}); renderMore(); } catch (e) { toast(e.message); } };
       $("newPartner").onclick = async () => { try { await api("crew/invites", {method: "POST", body: JSON.stringify({role: "partner"})}); renderMore(); } catch (e) { toast(e.message); } };
       crew.querySelectorAll("[data-revoke]").forEach(b => b.onclick = async () => { await api("crew/invites/" + encodeURIComponent(b.dataset.revoke), {method: "DELETE"}); renderMore(); });
       crew.querySelectorAll("[data-remove]").forEach(b => b.onclick = async () => {
-        if (!confirm("Remove this person from your crew? They'll be signed out.")) return;
+        if (!confirm(T("Remove this person from your crew? They'll be signed out."))) return;
         await api("crew/members/" + encodeURIComponent(b.dataset.remove), {method: "DELETE"}); renderMore(); });
-    } catch (e) { crew.innerHTML = "<h2>Your crew</h2><p class='dim'>Crew settings need signal.</p>"; }
+    } catch (e) { crew.innerHTML = `<h2>${esc(T("Your crew"))}</h2><p class='dim'>${esc(T("Crew settings need signal."))}</p>`; }
   }
 
   // ---------------------------------------------------------------- RANCH SETUP (owner): pastures file, names, ranch name, time zone
@@ -825,51 +847,56 @@
     const box = $("o-setup");
     box.hidden = !isOwner();
     if (box.hidden) return;
-    box.innerHTML = "<h2>Ranch setup</h2><p class='dim'>Loading…</p>";
+    box.innerHTML = `<h2>${esc(T("Ranch setup"))}</h2><p class='dim'>${esc(T("Loading…"))}</p>`;
     let s;
-    try { s = await api("setup"); } catch (e) { box.innerHTML = "<h2>Ranch setup</h2><p class='dim'>Ranch setup needs signal.</p>"; return; }
-    const tzName = {"America/Chicago": "Central", "America/Denver": "Mountain", "America/Phoenix": "Arizona", "America/Los_Angeles": "Pacific",
-      "America/New_York": "Eastern", "America/Anchorage": "Alaska", "Pacific/Honolulu": "Hawaii"};
-    box.innerHTML = `<h2>Ranch setup</h2>
-      <form class="form" id="ranchForm"><label>Ranch name<input name="name" maxlength="80" required value="${esc(s.ranch.name || "")}"></label>
-        <label>Time zone<select name="timezone">${s.timezones.map(z => `<option value="${z}" ${z === s.ranch.timezone ? "selected" : ""}>${tzName[z] || z}</option>`).join("")}</select></label>
-        <button type="submit" class="secondary">Save name &amp; time zone</button></form>
-      <h3>Pastures</h3>
-      <p class="dim">${s.boundary_file ? `From <b>${esc(s.boundary_file)}</b> · ${s.pastures.length} pastures.` : "No pastures yet."}
-        Draw them in Google Earth (one shape per pasture, named), then save the folder as KML or KMZ and upload it here.</p>
-      <label class="secondary filebtn">${s.boundary_file ? "Replace pastures file" : "Upload pastures file"}<input type="file" id="boundaryFile" accept=".kml,.kmz,.geojson,.json,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden></label>
-      <p class="dim small" id="boundaryMsg">${s.refresh_pending ? "⏳ Updating the ranch with your changes; it takes a few minutes." : ""}</p>
-      ${s.pastures.length ? `<details><summary><b>Rename pastures</b></summary><form class="form" id="namesForm">${s.pastures.map(p => `<label>${esc(p.acres != null ? p.acres + " acres" : "")}
+    try { s = await api("setup"); } catch (e) { box.innerHTML = `<h2>${esc(T("Ranch setup"))}</h2><p class='dim'>${esc(T("Ranch setup needs signal."))}</p>`; return; }
+    const tzName = {"America/Chicago": T("Central"), "America/Denver": T("Mountain"), "America/Phoenix": "Arizona", "America/Los_Angeles": T("Pacific"),
+      "America/New_York": T("Eastern"), "America/Anchorage": "Alaska", "Pacific/Honolulu": "Hawái"};
+    box.innerHTML = `<h2>${esc(T("Ranch setup"))}</h2>
+      <form class="form" id="ranchForm"><label>${esc(T("Ranch name"))}<input name="name" maxlength="80" required value="${esc(s.ranch.name || "")}"></label>
+        <label>${esc(T("Time zone"))}<select name="timezone">${s.timezones.map(z => `<option value="${z}" ${z === s.ranch.timezone ? "selected" : ""}>${tzName[z] || z}</option>`).join("")}</select></label>
+        <button type="submit" class="secondary">${esc(T("Save name & time zone"))}</button></form>
+      <h3>${esc(T("Pastures"))}</h3>
+      <p class="dim">${s.boundary_file ? T("From <b>{file}</b> · {n} pastures.", {file: esc(s.boundary_file), n: s.pastures.length}) : esc(T("No pastures yet."))}
+        ${esc(T("Draw them in Google Earth (one shape per pasture, named), then save the folder as KML or KMZ and upload it here."))}</p>
+      <label class="secondary filebtn">${esc(s.boundary_file ? T("Replace pastures file") : T("Upload pastures file"))}<input type="file" id="boundaryFile" accept=".kml,.kmz,.geojson,.json,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden></label>
+      <p class="dim small" id="boundaryMsg">${s.refresh_pending ? esc(T("⏳ Updating the ranch with your changes; it takes a few minutes.")) : ""}</p>
+      ${s.pastures.length ? `<details><summary><b>${esc(T("Rename pastures"))}</b></summary><form class="form" id="namesForm">${s.pastures.map(p => `<label>${esc(p.acres != null ? T("{n} acres", {n: p.acres}) : "")}
         <input name="${esc(p.id)}" maxlength="60" value="${esc(s.pasture_names[p.id] || p.name)}"></label>`).join("")}
-        <button type="submit" class="secondary">Save names</button></form></details>` : ""}`;
+        <button type="submit" class="secondary">${esc(T("Save names"))}</button></form></details>` : ""}`;
     $("ranchForm").onsubmit = async e => {
       e.preventDefault();
       try { await api("setup/ranch", {method: "POST", body: JSON.stringify({name: e.target.name.value, timezone: e.target.timezone.value})});
-        toast("Saved. The app updates in a few minutes."); } catch (err) { toast(err.message); }
+        toast(T("Saved. The app updates in a few minutes.")); } catch (err) { toast(err.message); }
     };
     $("boundaryFile").onchange = async e => {
       const file = e.target.files && e.target.files[0]; if (!file) return;
-      if (s.boundary_file && !confirm("Replace the pastures with this file? Pasture names and status rebuild from the new outlines.")) return;
-      $("boundaryMsg").textContent = "Checking the file…";
+      if (s.boundary_file && !confirm(T("Replace the pastures with this file? Pasture names and status rebuild from the new outlines."))) return;
+      $("boundaryMsg").textContent = T("Checking the file…");
       const fd = new FormData(); fd.append("file", file, file.name);
       try {
         const r = await api("setup/boundary", {method: "POST", body: fd});
-        $("boundaryMsg").innerHTML = `✓ Found <b>${r.pastures} pastures</b>${r.names.length ? ": " + esc(r.names.slice(0, 8).join(", ")) + (r.names.length > 8 ? "…" : "") : ""}.
-          ⏳ Building the ranch now (weather, satellite greenness, lidar 3D). Check back in a few minutes.`;
+        $("boundaryMsg").innerHTML = `${T("✓ Found <b>{n} pastures</b>", {n: r.pastures})}${r.names.length ? ": " + esc(r.names.slice(0, 8).join(", ")) + (r.names.length > 8 ? "…" : "") : ""}.
+          ${esc(T("⏳ Building the ranch now (weather, satellite greenness, lidar 3D). Check back in a few minutes."))}`;
       } catch (err) { $("boundaryMsg").textContent = err.message; }
     };
     if ($("namesForm")) $("namesForm").onsubmit = async e => {
       e.preventDefault();
       const names = Object.fromEntries(new FormData(e.target).entries());
-      try { await api("setup/names", {method: "POST", body: JSON.stringify(names)}); toast("Names saved. The app updates in a few minutes."); }
+      try { await api("setup/names", {method: "POST", body: JSON.stringify(names)}); toast(T("Names saved. The app updates in a few minutes.")); }
       catch (err) { toast(err.message); }
     };
   }
   function setSize(v) { document.documentElement.style.setProperty("--scale", v); store.set("scale", v); setPressed("[data-size]", "size", v); }
   document.querySelectorAll("[data-size]").forEach(b => b.onclick = () => setSize(b.dataset.size));
   setSize(store.get("scale", "1"));
+  // Language: English or Spanish (i18n.js); the page reloads in the new language.
+  setPressed("[data-lang]", "lang", I18N.lang);
+  document.querySelectorAll("[data-lang]").forEach(b => b.onclick = () => { if (b.dataset.lang !== I18N.lang) I18N.setLang(b.dataset.lang); });
+  $("langToggle").textContent = ES_ON ? "English" : "Español"; $("langToggle").lang = ES_ON ? "en" : "es";
+  $("langToggle").onclick = () => I18N.setLang(ES_ON ? "en" : "es");
   $("logoutBtn").onclick = async () => {
-    if ((store.get("queue", []).length || pending.length) && !confirm("Some photos or entries haven't been sent yet. Sign out anyway? They stay on this phone.")) return;
+    if ((store.get("queue", []).length || pending.length) && !confirm(T("Some photos or entries haven't been sent yet. Sign out anyway? They stay on this phone."))) return;
     if (store.get("pushOn", false)) await disablePush();          // this phone stops getting this person's messages
     try { await api("logout", {method: "POST"}); } catch (e) {}
     ["token", "snapshot", "snapshotAt", "serverLogs", "photos", "me", "tasks", "people", "places", "shapes", "draft", "chat", "msgq"].forEach(k => store.del(k));
@@ -885,17 +912,17 @@
       .map(p => `<option value="${esc(p.id)}" ${p.id === selected ? "selected" : ""}>${esc(p.name)}</option>`).join("");
   }
   function tagChips(selected = []) {
-    return `<div class="tagpick" role="group" aria-label="What did you see?">${TAG_GROUPS.map(g => `<details class="tgroup" name="tg">
-      <summary><span aria-hidden="true">${rIcon("group:" + g.group, 26, g.icon)}</span> ${esc(g.group)} <span class="n"></span></summary>
+    return `<div class="tagpick" role="group" aria-label="${esc(T("What did you see?"))}">${TAG_GROUPS.map(g => `<details class="tgroup" name="tg">
+      <summary><span aria-hidden="true">${rIcon("group:" + g.group, 26, g.icon)}</span> ${esc(T(g.group))} <span class="n"></span></summary>
       <div class="tagchips">${g.tags.map(([t, level]) => `<button type="button" class="${level === "good" ? "goodtag" : level === "info" || level === "alert" ? "infotag" : ""}"
-        data-tag="${esc(t)}" aria-pressed="${selected.includes(t)}">${rIcon(t, 22)}${esc(t)}</button>`).join("")}</div></details>`).join("")}
+        data-tag="${esc(t)}" aria-pressed="${selected.includes(t)}">${rIcon(t, 22)}${esc(T(t))}</button>`).join("")}</div></details>`).join("")}
       <p class="picked dim" aria-live="polite"></p></div>`;
   }
   function wireChips(root) {
     const update = () => {
       root.querySelectorAll(".tgroup").forEach(d => { const n = d.querySelectorAll("[aria-pressed='true']").length; d.querySelector(".n").textContent = n ? `(${n})` : ""; });
       const picked = chosenTags(root), out = root.querySelector(".picked");
-      if (out) out.innerHTML = picked.length ? "Picked: " + picked.map(tagSpan).join(" ") : "";
+      if (out) out.innerHTML = picked.length ? esc(T("Picked:")) + " " + picked.map(tagSpan).join(" ") : "";
     };
     root.querySelectorAll("[data-tag]").forEach(b => b.onclick = () => { b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true")); update(); });
     update();
@@ -908,27 +935,27 @@
     const now = new Date(), local = new Date(now - now.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
     let html, title;
     if (kind === "rain") {
-      title = "Rain gauge";
-      html = `<label>Inches<input type="number" name="inches" inputmode="decimal" min="0" max="20" step="0.01" required></label>
+      title = T("Rain gauge");
+      html = `<label>${esc(T("Inches"))}<input type="number" name="inches" inputmode="decimal" min="0" max="20" step="0.01" required></label>
         <div class="quick">${[0.1, 0.25, 0.5, 1].map(v => `<button type="button" data-in="${v}">${v.toFixed(2)}</button>`).join("")}</div>
-        <label>Which gauge? (optional)<select name="pasture_id">${pastureOptions(here, "Ranch gauge")}</select></label>`;
+        <label>${esc(T("Which gauge? (optional)"))}<select name="pasture_id">${pastureOptions(here, T("Ranch gauge"))}</select></label>`;
     } else if (kind === "move") {
-      title = "Moved cattle";
-      html = `<label>Into<select name="pasture_id" required>${pastureOptions(here, "Choose pasture")}</select></label>
-        <label>Out of (optional)<select name="from_pasture_id">${pastureOptions(null, "—")}</select></label>
-        <label>Head (optional)<input type="number" name="head" inputmode="numeric" min="0" step="1"></label>`;
+      title = T("Moved cattle");
+      html = `<label>${esc(T("Into"))}<select name="pasture_id" required>${pastureOptions(here, T("Choose pasture"))}</select></label>
+        <label>${esc(T("Out of (optional)"))}<select name="from_pasture_id">${pastureOptions(null, "—")}</select></label>
+        <label>${esc(T("Head (optional)"))}<input type="number" name="head" inputmode="numeric" min="0" step="1"></label>`;
     } else {
-      kind = "report"; title = "Report what you saw";
+      kind = "report"; title = T("Report what you saw");
       startSensors();                         // inside the tap, so the phone allows GPS
-      html = `<p class="dim">Problems and sightings: a broken fence, a washed-out road, hogs, a snake, deer. Open a group and tap what you saw.</p>${tagChips()}
-        <p class="dim" id="repWhere">📍 Getting your location…</p>
-        <label>Where?<select name="pasture_id">${pastureOptions(here, "Whole ranch / not sure")}</select></label>
-        <label>Anything else? (optional)<textarea name="text" maxlength="2000" placeholder="Which trough, how many head, which gate…"></textarea></label>`;
+      html = `<p class="dim">${esc(T("Problems and sightings: a broken fence, a washed-out road, hogs, a snake, deer. Open a group and tap what you saw."))}</p>${tagChips()}
+        <p class="dim" id="repWhere">${esc(T("📍 Getting your location…"))}</p>
+        <label>${esc(T("Where?"))}<select name="pasture_id">${pastureOptions(here, T("Whole ranch / not sure"))}</select></label>
+        <label>${esc(T("Anything else? (optional)"))}<textarea name="text" maxlength="2000" placeholder="${esc(T("Which trough, how many head, which gate…"))}"></textarea></label>`;
     }
     const entryId = uid();
-    openSheet(title, `<form class="form" id="actForm">${html}<div><p class="dim small">Photos (optional)</p><div id="actPhotos"></div></div>
-      <label>When<input type="datetime-local" name="logged_at" value="${local}"></label>
-      <div class="row"><button type="submit" class="primary">Save</button><button type="button" class="secondary" id="actCancel">Cancel</button></div></form>`);
+    openSheet(title, `<form class="form" id="actForm">${html}<div><p class="dim small">${esc(T("Photos (optional)"))}</p><div id="actPhotos"></div></div>
+      <label>${esc(T("When"))}<input type="datetime-local" name="logged_at" value="${local}"></label>
+      <div class="row"><button type="submit" class="primary">${esc(T("Save"))}</button><button type="button" class="secondary" id="actCancel">${esc(T("Cancel"))}</button></div></form>`);
     const f = $("actForm"); wireChips(f);
     mountPhotoStrip($("actPhotos"), "log_id", entryId, {form: true, extra: () => ({pasture_id: (f.pasture_id && f.pasture_id.value) || null})});
     f.querySelectorAll("[data-in]").forEach(b => b.onclick = () => { f.inches.value = b.dataset.in; });
@@ -936,7 +963,7 @@
     if (kind === "report") whereTimer = setInterval(() => {
       const w = $("repWhere"); if (!w) { clearInterval(whereTimer); return; }
       const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
-      w.textContent = fx ? `📍 Your location will be saved with this report (±${fx.acc} m), so it shows on the map.` : "📍 Getting your location… (the report saves without it if there's no GPS)";
+      w.textContent = fx ? T("📍 Your location will be saved with this report (±{m} m), so it shows on the map.", {m: fx.acc}) : T("📍 Getting your location… (the report saves without it if there's no GPS)");
       if (fx && !here && f.pasture_id && !f.pasture_id.dataset.touched) { const pid = pastureAt(fx.lon, fx.lat); if (pid) f.pasture_id.value = pid; }
     }, 1000);
     if (f.pasture_id) f.pasture_id.addEventListener("change", () => { f.pasture_id.dataset.touched = "1"; });
@@ -952,7 +979,7 @@
       if (kind === "report") {
         entry.tags = chosenTags(f); entry.text = (d.text || "").trim();
         const pics = photosOf("log_id", entryId);
-        if (!entry.tags.length && !entry.text && !pics.length) { toast("Tap what you saw, add a photo, or write a note."); return; }
+        if (!entry.tags.length && !entry.text && !pics.length) { toast(T("Tap what you saw, add a photo, or write a note.")); return; }
         const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
         const located = pics.find(p => p.lat != null);         // no GPS now, but a photo has it: use the photo's spot
         if (fx) { entry.lat = fx.lat; entry.lon = fx.lon; entry.accuracy_m = fx.acc; }
@@ -960,7 +987,7 @@
       }
       done();
       const q = store.get("queue", []); q.push(entry); store.set("queue", q);
-      closeSheet(); toast(navigator.onLine ? "Saved." : "Saved on this phone. It'll send when there's signal.");
+      closeSheet(); toast(navigator.onLine ? T("Saved.") : T("Saved on this phone. It'll send when there's signal."));
       rerender(); syncAll();
     };
   }
@@ -1002,7 +1029,7 @@
 
   function loadImage(file) {
     return new Promise((ok, fail) => { const url = URL.createObjectURL(file), img = new Image();
-      img.onload = () => ok(img); img.onerror = () => { URL.revokeObjectURL(url); fail(new Error("That file isn't a photo the phone can read.")); }; img.src = url; });
+      img.onload = () => ok(img); img.onerror = () => { URL.revokeObjectURL(url); fail(new Error(T("That file isn't a photo the phone can read."))); }; img.src = url; });
   }
   function toJpeg(img, maxSide, quality) {
     const s = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
@@ -1033,7 +1060,7 @@
       (heading == null || p.heading_deg == null || Math.abs(((heading - p.heading_deg + 540) % 360) - 180) <= 45))[0] || null;
   }
   async function processPhoto(file) {
-    openSheet("New photo", "<div class='busy'><div class='spinner'></div>Getting the photo, location and direction…</div>");
+    openSheet(T("New photo"), `<div class='busy'><div class='spinner'></div>${esc(T("Getting the photo, location and direction…"))}</div>`);
     let img;
     try { img = await loadImage(file); } catch (e) { closeSheet(); toast(e.message); return; }
     const [photo, thumb] = await Promise.all([toJpeg(img, 1600, 0.82), toJpeg(img, 360, 0.7)]);
@@ -1045,18 +1072,18 @@
     const prev = fix ? previousAtSpot(fix, heading) : null;
     const delta = prev ? analysis.green_pct - prev.analysis.green_pct : null;
     const previewUrl = URL.createObjectURL(photo);
-    const where = fix ? `${guess ? "📍 " + esc(pastureName(guess)) : "📍 Outside your pastures"} · ±${fix.acc} m` : "📍 No GPS fix. Pick the pasture below.";
-    openSheet("New photo", `<img class="photoimg" src="${previewUrl}" alt="The photo you just took">
-      <p>${where}${heading != null ? ` · 🧭 facing <b>${compass(heading)}</b>` : ""}</p>
-      <div class="stat"><div><span class="dim">Green</span><b>${analysis.green_pct ?? "–"}%</b></div>
-        <div><span class="dim">Brown or bare</span><b>${analysis.brown_bare_pct ?? "–"}%</b></div>
-        ${prev ? `<div><span class="dim">Same spot, ${esc(when(prev.taken_at, false))}</span><b>${delta > 0 ? "+" : ""}${delta} pts</b></div>` : ""}</div>
-      ${prev && delta <= -15 ? `<p class="error">Much less green than the last photo from this spot.</p>` : ""}
-      <form class="form" id="photoForm"><p><b>What does it show?</b> (optional)</p>${tagChips()}
-        <label>Pasture<select name="pasture_id">${pastureOptions(guess, "Not in a pasture")}</select></label>
-        <label>Note (optional)<textarea name="note" maxlength="2000" placeholder="Tank about a quarter full, fence down by the north gate…"></textarea></label>
-        <div class="row"><button type="submit" class="primary">Save photo</button><button type="button" class="secondary" id="photoCancel">Discard</button></div></form>
-      <p class="src">Green is measured from the colors in the photo (Canopeo method). It's most useful comparing photos from the same spot over time.</p>`);
+    const where = fix ? `${guess ? "📍 " + esc(pastureName(guess)) : esc(T("📍 Outside your pastures"))} · ±${fix.acc} m` : esc(T("📍 No GPS fix. Pick the pasture below."));
+    openSheet(T("New photo"), `<img class="photoimg" src="${previewUrl}" alt="${esc(T("The photo you just took"))}">
+      <p>${where}${heading != null ? " · " + T("🧭 facing <b>{dir}</b>", {dir: compass(heading)}) : ""}</p>
+      <div class="stat"><div><span class="dim">${esc(T("Green"))}</span><b>${analysis.green_pct ?? "–"}%</b></div>
+        <div><span class="dim">${esc(T("Brown or bare"))}</span><b>${analysis.brown_bare_pct ?? "–"}%</b></div>
+        ${prev ? `<div><span class="dim">${esc(T("Same spot, {date}", {date: when(prev.taken_at, false)}))}</span><b>${esc(T("{n} pts", {n: (delta > 0 ? "+" : "") + delta}))}</b></div>` : ""}</div>
+      ${prev && delta <= -15 ? `<p class="error">${esc(T("Much less green than the last photo from this spot."))}</p>` : ""}
+      <form class="form" id="photoForm"><p>${T("<b>What does it show?</b> (optional)")}</p>${tagChips()}
+        <label>${esc(T("Pasture"))}<select name="pasture_id">${pastureOptions(guess, T("Not in a pasture"))}</select></label>
+        <label>${esc(T("Note (optional)"))}<textarea name="note" maxlength="2000" placeholder="${esc(T("Tank about a quarter full, fence down by the north gate…"))}"></textarea></label>
+        <div class="row"><button type="submit" class="primary">${esc(T("Save photo"))}</button><button type="button" class="secondary" id="photoCancel">${esc(T("Discard"))}</button></div></form>
+      <p class="src">${esc(T("Green is measured from the colors in the photo (Canopeo method). It's most useful comparing photos from the same spot over time."))}</p>`);
     const f = $("photoForm"); wireChips(f);
     $("photoCancel").onclick = () => { URL.revokeObjectURL(previewUrl); closeSheet(); };
     f.onsubmit = async e => {
@@ -1068,9 +1095,9 @@
         analysis: {...analysis, compared_to: prev ? prev.client_id : null, green_change_pts: delta},
         flagged: tagsAt(tags, HEADS_UP).length > 0 || (delta != null && delta <= -15)};
       try { await idb.put({client_id, meta, photo, thumb}); }
-      catch (err) { toast("Couldn't save the photo on this phone: " + err.message); return; }
+      catch (err) { toast(T("Couldn't save the photo on this phone: {error}", {error: err.message})); return; }
       URL.revokeObjectURL(previewUrl); closeSheet();
-      toast(navigator.onLine ? "Photo saved. Sending…" : "Photo saved on this phone. It'll send when there's signal.");
+      toast(navigator.onLine ? T("Photo saved. Sending…") : T("Photo saved on this phone. It'll send when there's signal."));
       await loadPending(); rerender(); syncAll();
     };
   }
@@ -1078,23 +1105,23 @@
   function openReport(id) {
     const it = logItems().find(i => i.l && i.l.client_id === id); if (!it) return;
     const l = it.l, mine = me && me.user_id && l.user_id === me.user_id, isReport = it.type === "problem";
-    const title = isReport ? (l.pasture_id ? pastureName(l.pasture_id) : "Report") : it.type === "rain" ? "Rain gauge" : "Moved cattle";
-    const what = it.type === "rain" ? `<p><b>${Number(l.inches).toFixed(2)} in</b>${l.pasture_id ? " at " + esc(pastureName(l.pasture_id)) : ""}</p>`
-      : it.type === "move" ? `<p>Into <b>${esc(pastureName(l.pasture_id))}</b>${l.from_pasture_id ? " from " + esc(pastureName(l.from_pasture_id)) : ""}${l.head ? " · " + esc(l.head) + " head" : ""}</p>` : "";
+    const title = isReport ? (l.pasture_id ? pastureName(l.pasture_id) : T("Report")) : it.type === "rain" ? T("Rain gauge") : T("Moved cattle");
+    const what = it.type === "rain" ? `<p><b>${esc(T("{inches} in", {inches: Number(l.inches).toFixed(2)}))}</b>${l.pasture_id ? " " + esc(T("at {place}", {place: pastureName(l.pasture_id)})) : ""}</p>`
+      : it.type === "move" ? `<p>${T("Into <b>{to}</b>", {to: esc(pastureName(l.pasture_id))})}${l.from_pasture_id ? " " + esc(T("from {place}", {place: pastureName(l.from_pasture_id)})) : ""}${l.head ? " · " + esc(T("{n} head", {n: l.head})) : ""}</p>` : "";
     openSheet(title, `${what}<p>${(l.tags || []).map(tagSpan).join(" ")}</p>
       ${l.text ? `<p>${esc(l.text)}</p>` : ""}
       <div id="rpPhotos"></div>
       <div id="rpResolve"></div>
-      <p class="dim">${esc(when(l.logged_at))}${l.by ? " · " + esc(l.by) : ""}${l.accuracy_m ? " · 📍 ±" + l.accuracy_m + " m" : l.lat == null ? " · no location" : ""}</p>
-      ${l._pending ? "<p class='pending'>Waiting to send.</p>" : ""}
-      <div class="row">${isReport && !resolution(l) ? `<button type="button" class="primary" id="rpJob">＋ Make it a job</button>` : ""}${l.lat != null ? `<button type="button" class="secondary" id="rpMap">Show on map</button>` : ""}
-      ${l._pending || isOwner() || mine ? `<button type="button" class="secondary" id="rpDel">Delete</button>` : ""}</div>`);
+      <p class="dim">${esc(when(l.logged_at))}${l.by ? " · " + esc(l.by) : ""}${l.accuracy_m ? " · 📍 ±" + l.accuracy_m + " m" : l.lat == null ? " · " + esc(T("no location")) : ""}</p>
+      ${l._pending ? `<p class='pending'>${esc(T("Waiting to send."))}</p>` : ""}
+      <div class="row">${isReport && !resolution(l) ? `<button type="button" class="primary" id="rpJob">${esc(T("＋ Make it a job"))}</button>` : ""}${l.lat != null ? `<button type="button" class="secondary" id="rpMap">${esc(T("Show on map"))}</button>` : ""}
+      ${l._pending || isOwner() || mine ? `<button type="button" class="secondary" id="rpDel">${esc(T("Delete"))}</button>` : ""}</div>`);
     mountPhotoStrip($("rpPhotos"), "log_id", id, {extra: () => ({pasture_id: l.pasture_id || null})});
     if (canResolve(l, true)) mountResolve($("rpResolve"), l, () => openReport(id));
     if ($("rpJob")) $("rpJob").onclick = () => window.__rangeiqMakeJob(l, false);
     if ($("rpMap")) $("rpMap").onclick = () => showOnMap(l.lat, l.lon);
     if ($("rpDel")) $("rpDel").onclick = async () => {
-      if (!confirm(isReport ? "Delete this report?" : "Delete this entry?")) return;
+      if (!confirm(isReport ? T("Delete this report?") : T("Delete this entry?"))) return;
       try {
         if (l._pending) store.set("queue", store.get("queue", []).filter(x => x.client_id !== id));
         else await api("logs/" + encodeURIComponent(id), {method: "DELETE"});
@@ -1106,26 +1133,26 @@
     const p = allPhotos().find(x => x.client_id === id); if (!p) return openReport(id);
     const a = p.analysis || {}, spot = sameSpot(p);
     const canDelete = p._pending || isOwner() || (me && me.user_id && p.user_id === me.user_id);
-    openSheet(p.pasture_id ? pastureName(p.pasture_id) : "Photo", `<img class="photoimg" src="${esc(imageOf(p))}" alt="Photo taken ${esc(when(p.taken_at))}">
-      <p>${esc(when(p.taken_at))}${p.by ? " · " + esc(p.by) : ""}${p.heading_deg != null ? " · facing " + compass(p.heading_deg) : ""}${p.accuracy_m ? " · ±" + p.accuracy_m + " m" : ""}</p>
+    openSheet(p.pasture_id ? pastureName(p.pasture_id) : T("Photo"), `<img class="photoimg" src="${esc(imageOf(p))}" alt="${esc(T("Photo taken {when}", {when: when(p.taken_at)}))}">
+      <p>${esc(when(p.taken_at))}${p.by ? " · " + esc(p.by) : ""}${p.heading_deg != null ? " · " + esc(T("facing {dir}", {dir: compass(p.heading_deg)})) : ""}${p.accuracy_m ? " · ±" + p.accuracy_m + " m" : ""}</p>
       <p>${(p.tags || []).map(tagSpan).join(" ")}</p>
       ${p.note ? `<p>${esc(p.note)}</p>` : ""}
       ${belongsTo(p)}
       <div id="phMore"></div><div id="phResolve"></div>
-      ${a.green_pct != null ? `<div class="stat"><div><span class="dim">Green</span><b>${a.green_pct}%</b></div><div><span class="dim">Brown or bare</span><b>${a.brown_bare_pct ?? "–"}%</b></div>
-      ${a.green_change_pts != null ? `<div><span class="dim">vs. last photo here</span><b>${a.green_change_pts > 0 ? "+" : ""}${a.green_change_pts} pts</b></div>` : ""}</div>` : ""}
-      ${p._pending ? "<p class='pending'>Waiting to send.</p>" : ""}
-      ${spot.length > 1 ? `<h3>This spot over time</h3><div class="spotrow">${spot.map(x => `<button type="button" data-photo="${esc(x.client_id)}"
+      ${a.green_pct != null ? `<div class="stat"><div><span class="dim">${esc(T("Green"))}</span><b>${a.green_pct}%</b></div><div><span class="dim">${esc(T("Brown or bare"))}</span><b>${a.brown_bare_pct ?? "–"}%</b></div>
+      ${a.green_change_pts != null ? `<div><span class="dim">${esc(T("vs. last photo here"))}</span><b>${esc(T("{n} pts", {n: (a.green_change_pts > 0 ? "+" : "") + a.green_change_pts}))}</b></div>` : ""}</div>` : ""}
+      ${p._pending ? `<p class='pending'>${esc(T("Waiting to send."))}</p>` : ""}
+      ${spot.length > 1 ? `<h3>${esc(T("This spot over time"))}</h3><div class="spotrow">${spot.map(x => `<button type="button" data-photo="${esc(x.client_id)}"
         ${x.client_id === p.client_id ? 'aria-current="true"' : ""}><img src="${esc(thumbOf(x))}" alt="" loading="lazy"><span>${esc(when(x.taken_at, false))}<br>
-        <b>${(x.analysis || {}).green_pct ?? "–"}% green</b></span></button>`).join("")}</div>` : ""}
-      <div class="row"><button type="button" class="primary" id="phJob">＋ Make it a job</button>${p.lat != null ? `<button type="button" class="secondary" id="phMap">Show on map</button>` : ""}
-      ${canDelete ? `<button type="button" class="secondary" id="phDel">Delete</button>` : ""}</div>`);
+        <b>${esc(T("{pct}% green", {pct: (x.analysis || {}).green_pct ?? "–"}))}</b></span></button>`).join("")}</div>` : ""}
+      <div class="row"><button type="button" class="primary" id="phJob">${esc(T("＋ Make it a job"))}</button>${p.lat != null ? `<button type="button" class="secondary" id="phMap">${esc(T("Show on map"))}</button>` : ""}
+      ${canDelete ? `<button type="button" class="secondary" id="phDel">${esc(T("Delete"))}</button>` : ""}</div>`);
     if (photosOf("log_id", p.client_id).length) mountPhotoStrip($("phMore"), "log_id", p.client_id, {add: false, onChange: () => openPhoto(id)});
     if (canResolve(p, false)) mountResolve($("phResolve"), p, () => openPhoto(id));
     $("phJob").onclick = () => window.__rangeiqMakeJob(p, true);
     if ($("phMap")) $("phMap").onclick = () => showOnMap(p.lat, p.lon);
     if ($("phDel")) $("phDel").onclick = async () => {
-      if (!confirm("Delete this photo?")) return;
+      if (!confirm(T("Delete this photo?"))) return;
       try {
         if (p._pending) await idb.del(p.client_id); else await api("photos/" + encodeURIComponent(p.client_id), {method: "DELETE"});
         photos = photos.filter(x => x.client_id !== p.client_id); store.set("photos", photos); await loadPending(); closeSheet(); rerender();
@@ -1137,8 +1164,10 @@
   // ---------------------------------------------------------------- TO DO: jobs around the ranch
   // Anyone on the ranch can add a job; anyone can check it off. Changes are saved on the phone and sent when there's signal.
   let tasks = store.get("tasks", []), people = store.get("people", []);
-  const REPEATS = [[0, "Just once"], [1, "Every day"], [2, "Every 2 days"], [3, "Every 3 days"], [7, "Every week"], [14, "Every 2 weeks"], [30, "Every month"]];
-  const JOB_IDEAS = ["Check waters", "Fix fence", "Check cattle", "Put out mineral / salt", "Check windmill", "Grade road", "Spray weeds"];
+  const REPEATS = [[0, T("Just once")], [1, T("Every day")], [2, T("Every 2 days")], [3, T("Every 3 days")], [7, T("Every week")], [14, T("Every 2 weeks")], [30, T("Every month")]];
+  // Quick job titles; the English word list marks the ones that usually repeat every 2 days (water, cattle).
+  const JOB_IDEAS = [["Check waters", 2], ["Fix fence", 0], ["Check cattle", 2], ["Put out mineral / salt", 0], ["Check windmill", 0], ["Grade road", 0], ["Spray weeds", 0]]
+    .map(([key, rep]) => ({key, title: T(key), rep}));
   const localDay = (d = new Date()) => new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
   const addDays = (iso, n) => localDay(new Date(new Date(iso + "T12:00:00").getTime() + n * 864e5));
   const personName = id => (people.find(p => p.user_id === id) || {}).name || "";
@@ -1179,21 +1208,21 @@
     return t.due_date < today ? "late" : t.due_date === today ? "today" : "soon";
   }
   function dueText(t) {
-    if (t.done_at) return `Done ${when(t.done_at)}${t.done_by_name ? " by " + t.done_by_name : ""}`;
-    if (!t.due_date) return "Any time";
+    if (t.done_at) return t.done_by_name ? T("Done {when} by {name}", {when: when(t.done_at), name: t.done_by_name}) : T("Done {when}", {when: when(t.done_at)});
+    if (!t.due_date) return T("Any time");
     const today = localDay(), d = t.due_date;
-    if (d < today) { const n = Math.round((new Date(today) - new Date(d)) / 864e5); return n === 1 ? "Was due yesterday" : `Was due ${n} days ago`; }
-    if (d === today) return "Due today";
-    if (d === addDays(today, 1)) return "Due tomorrow";
-    return "Due " + new Date(d + "T12:00:00").toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"});
+    if (d < today) { const n = Math.round((new Date(today) - new Date(d)) / 864e5); return n === 1 ? T("Was due yesterday") : T("Was due {n} days ago", {n}); }
+    if (d === today) return T("Due today");
+    if (d === addDays(today, 1)) return T("Due tomorrow");
+    return T("Due {date}", {date: new Date(d + "T12:00:00").toLocaleDateString(LOC, {weekday: "short", month: "short", day: "numeric"})});
   }
   function taskRow(t) {
     const done = !!t.done_at, last = (t.history || [])[0];
     const bits = [dueText(t), t.repeat_days ? "🔁 " + REPEATS.find(r => r[0] === t.repeat_days)[1].toLowerCase() : "",
-      t.pasture_id ? pastureName(t.pasture_id) : "", t.assignee_id ? "for " + personName(t.assignee_id) : "",
-      t.repeat_days && last && last.op === "done" ? `last done ${when(last.at)} by ${last.by}` : ""].filter(Boolean);
+      t.pasture_id ? pastureName(t.pasture_id) : "", t.assignee_id ? T("for {name}", {name: personName(t.assignee_id)}) : "",
+      t.repeat_days && last && last.op === "done" ? T("last done {when} by {name}", {when: when(last.at), name: last.by}) : ""].filter(Boolean);
     return `<li class="task ${taskBucket(t)}"><button type="button" class="check" data-check="${esc(t.task_id)}" aria-pressed="${done}"
-        aria-label="${done ? "Mark not done" : "Check off"}: ${esc(t.title)}">${done ? "✓" : ""}</button>
+        aria-label="${esc(done ? T("Mark not done") : T("Check off"))}: ${esc(t.title)}">${done ? "✓" : ""}</button>
       <button type="button" class="tbody" data-task="${esc(t.task_id)}"><b>${esc(t.title)}</b><span class="meta">${esc(bits.join(" · "))}</span></button></li>`;
   }
   function sortedOpen() {
@@ -1203,21 +1232,21 @@
   }
   function renderTodo() {
     const open = sortedOpen(), done = tasks.filter(t => t.done_at).sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)));
-    const mine = me && me.user_id, groups = [["late", "Overdue"], ["today", "Today"], ["soon", "Coming up"], ["any", "Any time"]];
+    const mine = me && me.user_id, groups = [["late", T("Overdue")], ["today", T("Today")], ["soon", T("Coming up")], ["any", T("Any time")]];
     const filt = store.get("todoMine", false) ? (t => !t.assignee_id || t.assignee_id === mine) : (() => true);
     $("t-mine").setAttribute("aria-pressed", String(store.get("todoMine", false)));
     $("t-list").innerHTML = groups.map(([k, label]) => { const list = open.filter(t => taskBucket(t) === k && filt(t));
-        return list.length ? `<h2>${label}</h2><ul class="tasks">${list.map(taskRow).join("")}</ul>` : ""; }).join("")
-      || `<div class="allclear"><span class="big-ok" aria-hidden="true">✓</span><span>Nothing to do. Add a job with the button above.</span></div>`;
-    $("t-done").innerHTML = done.length ? `<details class="card"><summary><h2>Done in the last 2 weeks (${done.length})</h2></summary>
+        return list.length ? `<h2>${esc(label)}</h2><ul class="tasks">${list.map(taskRow).join("")}</ul>` : ""; }).join("")
+      || `<div class="allclear"><span class="big-ok" aria-hidden="true">✓</span><span>${esc(T("Nothing to do. Add a job with the button above."))}</span></div>`;
+    $("t-done").innerHTML = done.length ? `<details class="card"><summary><h2>${esc(T("Done in the last 2 weeks ({n})", {n: done.length}))}</h2></summary>
       <ul class="tasks">${done.map(taskRow).join("")}</ul></details>` : "";
   }
   function homeTodo() {
     const open = sortedOpen().filter(t => ["late", "today"].includes(taskBucket(t)));
     const box = $("h-todo");
     box.hidden = !open.length;
-    if (open.length) box.innerHTML = `<h2>To do today <span class="dim">(${open.length})</span></h2><ul class="tasks">${open.slice(0, 4).map(taskRow).join("")}</ul>
-      <button type="button" class="linkbtn" data-go="todo">All jobs ›</button>`;
+    if (open.length) box.innerHTML = `<h2>${esc(T("To do today"))} <span class="dim">(${open.length})</span></h2><ul class="tasks">${open.slice(0, 4).map(taskRow).join("")}</ul>
+      <button type="button" class="linkbtn" data-go="todo">${esc(T("All jobs ›"))}</button>`;
   }
   $("t-mine").onclick = () => { store.set("todoMine", !store.get("todoMine", false)); renderTodo(); };
   $("t-add").onclick = () => addTask();
@@ -1225,7 +1254,7 @@
     const c = e.target.closest("[data-check]");
     if (c) { const t = tasks.find(x => x.task_id === c.dataset.check); if (!t) return;
       if (t.done_at) taskOp({op: "undo", task_id: t.task_id});
-      else { taskOp({op: "done", task_id: t.task_id}); toast(t.repeat_days ? `Done. Next: ${dueText(tasks.find(x => x.task_id === t.task_id))}.` : "Done. Nice work."); }
+      else { taskOp({op: "done", task_id: t.task_id}); toast(t.repeat_days ? T("Done. Next: {due}.", {due: dueText(tasks.find(x => x.task_id === t.task_id))}) : T("Done. Nice work.")); }
       return; }
     const b = e.target.closest("[data-task]"); if (b) openTask(b.dataset.task);
   });
@@ -1236,38 +1265,38 @@
     const canDelete = isOwner() || (me && t.created_by === me.user_id);
     openSheet(t.title, `${t.note ? `<p>${esc(t.note)}</p>` : ""}
       <p class="dim">${esc(dueText(t))}${t.repeat_days ? " · 🔁 " + esc(REPEATS.find(r => r[0] === t.repeat_days)[1].toLowerCase()) : ""}
-        ${t.pasture_id ? " · " + esc(pastureName(t.pasture_id)) : ""}${t.assignee_id ? " · for " + esc(personName(t.assignee_id)) : ""}</p>
-      <p class="dim small">Added by ${esc(t.created_by_name || "?")} ${esc(when(t.created_at))}</p>
-      ${fromSource.length ? `<p class="dim small">From the report</p><div class="pstrip">${fromSource.map(p => `<span class="pthumb"><button type="button" data-photo="${esc(p.client_id)}" aria-label="Open photo"><img src="${esc(thumbOf(p))}" alt=""></button></span>`).join("")}</div>` : ""}
-      <div><p class="dim small">Photos${t.done_at ? "" : " (before, after…)"}</p><div id="tkPhotos"></div></div>
-      ${(t.history || []).length ? `<h3>History</h3><ul class="srclist">${t.history.map(h => `<li><span>${h.op === "done" ? "✓ Checked off" : "↩ Undone"} by ${esc(h.by || "?")}</span>
+        ${t.pasture_id ? " · " + esc(pastureName(t.pasture_id)) : ""}${t.assignee_id ? " · " + esc(T("for {name}", {name: personName(t.assignee_id)})) : ""}</p>
+      <p class="dim small">${esc(T("Added by {name} {when}", {name: t.created_by_name || "?", when: when(t.created_at)}))}</p>
+      ${fromSource.length ? `<p class="dim small">${esc(T("From the report"))}</p><div class="pstrip">${fromSource.map(p => `<span class="pthumb"><button type="button" data-photo="${esc(p.client_id)}" aria-label="${esc(T("Open photo"))}"><img src="${esc(thumbOf(p))}" alt=""></button></span>`).join("")}</div>` : ""}
+      <div><p class="dim small">${esc(t.done_at ? T("Photos") : T("Photos (before, after…)"))}</p><div id="tkPhotos"></div></div>
+      ${(t.history || []).length ? `<h3>${esc(T("History"))}</h3><ul class="srclist">${t.history.map(h => `<li><span>${esc(h.op === "done" ? T("✓ Checked off by {name}", {name: h.by || "?"}) : T("↩ Undone by {name}", {name: h.by || "?"}))}</span>
         <span class="when">${esc(when(h.at))}</span></li>`).join("")}</ul>` : ""}
-      <div class="row"><button type="button" class="primary" data-check="${esc(t.task_id)}">${t.done_at ? "Mark not done" : "✓ Check off"}</button>
-      ${t.lat != null ? `<button type="button" class="secondary" id="tkMap">Show on map</button>` : ""}
-      ${t.source_id ? `<button type="button" class="secondary" data-photo="${esc(t.source_id)}">See the report</button>` : ""}
-      ${canDelete ? `<button type="button" class="secondary" id="tkDel">Delete</button>` : ""}</div>`);
+      <div class="row"><button type="button" class="primary" data-check="${esc(t.task_id)}">${esc(t.done_at ? T("Mark not done") : T("✓ Check off"))}</button>
+      ${t.lat != null ? `<button type="button" class="secondary" id="tkMap">${esc(T("Show on map"))}</button>` : ""}
+      ${t.source_id ? `<button type="button" class="secondary" data-photo="${esc(t.source_id)}">${esc(T("See the report"))}</button>` : ""}
+      ${canDelete ? `<button type="button" class="secondary" id="tkDel">${esc(T("Delete"))}</button>` : ""}</div>`);
     mountPhotoStrip($("tkPhotos"), "task_id", t.task_id, {extra: () => ({pasture_id: t.pasture_id || null})});
     $("sheetBody").querySelector("[data-check]").addEventListener("click", () => setTimeout(closeSheet, 50));
     if ($("tkMap")) $("tkMap").onclick = () => showOnMap(t.lat, t.lon);
-    if ($("tkDel")) $("tkDel").onclick = () => { if (confirm("Delete this job?")) { taskOp({op: "delete", task_id: t.task_id}); closeSheet(); } };
+    if ($("tkDel")) $("tkDel").onclick = () => { if (confirm(T("Delete this job?"))) { taskOp({op: "delete", task_id: t.task_id}); closeSheet(); } };
   }
   function addTask(pre = {}) {
     const today = localDay();
-    openSheet("Add a job", `<form class="form" id="taskForm">
-      <label>What needs doing?<input name="title" maxlength="120" required value="${esc(pre.title || "")}" placeholder="Fix the fence by the north gate"></label>
-      <div class="quick">${JOB_IDEAS.map(j => `<button type="button" data-idea="${esc(j)}">${esc(j)}</button>`).join("")}</div>
-      <label>When<select name="due"><option value="${today}">Today</option><option value="${addDays(today, 1)}">Tomorrow</option>
-        <option value="${addDays(today, 7)}">Within a week</option><option value="">Any time</option><option value="pick">Pick a date…</option></select></label>
+    openSheet(T("Add a job"), `<form class="form" id="taskForm">
+      <label>${esc(T("What needs doing?"))}<input name="title" maxlength="120" required value="${esc(pre.title || "")}" placeholder="${esc(T("Fix the fence by the north gate"))}"></label>
+      <div class="quick">${JOB_IDEAS.map(j => `<button type="button" data-idea="${esc(j.key)}">${esc(j.title)}</button>`).join("")}</div>
+      <label>${esc(T("When"))}<select name="due"><option value="${today}">${esc(T("Today"))}</option><option value="${addDays(today, 1)}">${esc(T("Tomorrow"))}</option>
+        <option value="${addDays(today, 7)}">${esc(T("Within a week"))}</option><option value="">${esc(T("Any time"))}</option><option value="pick">${esc(T("Pick a date…"))}</option></select></label>
       <input type="date" name="due_pick" hidden min="${today}">
-      <label>Repeat<select name="repeat_days">${REPEATS.map(([d, l]) => `<option value="${d}">${l}</option>`).join("")}</select></label>
-      <label>Where (optional)<select name="pasture_id">${pastureOptions(pre.pasture_id, "Anywhere / whole ranch")}</select></label>
-      <label>Who (optional)<select name="assignee_id"><option value="">Anyone</option>${people.map(p => `<option value="${esc(p.user_id)}">${esc(p.name)}</option>`).join("")}</select></label>
-      <label>Notes (optional)<textarea name="note" maxlength="1000">${esc(pre.note || "")}</textarea></label>
-      <div><p class="dim small">Photos (optional)</p><div id="taskPhotos"></div></div>
-      <div class="row"><button type="submit" class="primary">Add job</button><button type="button" class="secondary" id="taskCancel">Cancel</button></div></form>`);
+      <label>${esc(T("Repeat"))}<select name="repeat_days">${REPEATS.map(([d, l]) => `<option value="${d}">${esc(l)}</option>`).join("")}</select></label>
+      <label>${esc(T("Where (optional)"))}<select name="pasture_id">${pastureOptions(pre.pasture_id, T("Anywhere / whole ranch"))}</select></label>
+      <label>${esc(T("Who (optional)"))}<select name="assignee_id"><option value="">${esc(T("Anyone"))}</option>${people.map(p => `<option value="${esc(p.user_id)}">${esc(p.name)}</option>`).join("")}</select></label>
+      <label>${esc(T("Notes (optional)"))}<textarea name="note" maxlength="1000">${esc(pre.note || "")}</textarea></label>
+      <div><p class="dim small">${esc(T("Photos (optional)"))}</p><div id="taskPhotos"></div></div>
+      <div class="row"><button type="submit" class="primary">${esc(T("Add job"))}</button><button type="button" class="secondary" id="taskCancel">${esc(T("Cancel"))}</button></div></form>`);
     const f = $("taskForm"), taskId = uid();
     mountPhotoStrip($("taskPhotos"), "task_id", taskId, {form: true, extra: () => ({pasture_id: f.pasture_id.value || null})});
-    f.querySelectorAll("[data-idea]").forEach(b => b.onclick = () => { f.title.value = b.dataset.idea; if (/water|cattle/i.test(b.dataset.idea)) f.repeat_days.value = "2"; });
+    f.querySelectorAll("[data-idea]").forEach(b => b.onclick = () => { const j = JOB_IDEAS.find(x => x.key === b.dataset.idea); f.title.value = j.title; if (j.rep) f.repeat_days.value = String(j.rep); });
     f.due.onchange = () => { f.due_pick.hidden = f.due.value !== "pick"; };
     $("taskCancel").onclick = () => { closeSheet(); dropPhotosOf("task_id", taskId); };
     f.onsubmit = e => {
@@ -1276,13 +1305,13 @@
       taskOp({op: "add", task_id: taskId, title: f.title.value.trim(), due_date: due || null, repeat_days: Number(f.repeat_days.value),
         pasture_id: f.pasture_id.value || null, assignee_id: f.assignee_id.value || null, note: f.note.value.trim() || null,
         lat: pre.lat ?? null, lon: pre.lon ?? null, source_id: pre.source_id || null});
-      closeSheet(); toast("Job added."); if (!pre.source_id) show("todo");
+      closeSheet(); toast(T("Job added.")); if (!pre.source_id) show("todo");
     };
   }
   // "Make it a job" from a photo or a report
   window.__rangeiqMakeJob = (x, isPhoto) => {
     const top = topTag(x.tags);
-    addTask({title: top ? (TAG[top].level === "info" ? `Check on ${top.toLowerCase()}` : `Deal with: ${top.toLowerCase()}`) : (isPhoto ? "Follow up on photo" : "Follow up"),
+    addTask({title: top ? (TAG[top].level === "info" ? T("Check on {what}", {what: T(top).toLowerCase()}) : T("Deal with: {what}", {what: T(top).toLowerCase()})) : (isPhoto ? T("Follow up on photo") : T("Follow up")),
       pasture_id: x.pasture_id, note: x.text || x.note || "", lat: x.lat, lon: x.lon, source_id: x.client_id});
   };
 
@@ -1299,9 +1328,9 @@
   const chatPending = () => store.get("msgq", []).map(m => ({...m, from_user: chatMe(), from_name: me && me.name, created_at: "~" + m.sent_at, _pending: true}));
   const chatAll = () => { const q = chatPending(); return [...chat.msgs.filter(m => !q.some(x => x.msg_id === m.msg_id)), ...q]; };
   function threadName(t) {
-    if (t === "all") return "Everyone";
+    if (t === "all") return T("Everyone");
     const other = t.slice(3).split("|").find(u => u !== chatMe());
-    return (chat.people.find(p => p.user_id === other) || {}).name || "Someone";
+    return (chat.people.find(p => p.user_id === other) || {}).name || T("Someone");
   }
   const unreadIn = t => { const r = chat.reads[t] || ""; return chat.msgs.filter(m => m.thread_id === t && m.from_user !== chatMe() && m.created_at > r).length; };
   function unreadTotal() { return [...new Set(chat.msgs.map(m => m.thread_id))].reduce((n, t) => n + unreadIn(t), 0); }
@@ -1321,7 +1350,7 @@
         const res = await api("messages", {method: "POST", body: JSON.stringify(q)});
         const done = new Set([...res.saved, ...res.errors.map(e => e.msg_id)]);
         store.set("msgq", store.get("msgq", []).filter(m => !done.has(m.msg_id)));
-        if (res.errors.length) toast(res.errors[0].error);
+        if (res.errors.length) toast(TX(res.errors[0].error));
       }
       const r = await api("messages" + (chat.since ? "?since=" + encodeURIComponent(chat.since) : ""));
       const byId = new Map(chat.msgs.map(m => [m.msg_id, m]));
@@ -1370,22 +1399,22 @@
     if (rs.every(u => (per[u] || {}).delivered >= m.created_at)) return "delivered";
     return "sent";
   }
-  const TICK = {pending: '<span class="tick" aria-label="Waiting to send">🕓</span>', sent: '<span class="tick" aria-label="Sent">✓</span>',
-    delivered: '<span class="tick" aria-label="Delivered">✓✓</span>', read: '<span class="tick read" aria-label="Seen">✓✓</span>'};
+  const TICK = {pending: `<span class="tick" aria-label="${esc(T("Waiting to send"))}">🕓</span>`, sent: `<span class="tick" aria-label="${esc(T("Sent"))}">✓</span>`,
+    delivered: `<span class="tick" aria-label="${esc(T("Delivered"))}">✓✓</span>`, read: `<span class="tick read" aria-label="${esc(T("Seen"))}">✓✓</span>`};
   function messageInfo(msg) {
-    const per = (chat.receipts || {})[msg.thread_id] || {}, name = u => (chat.people.find(p => p.user_id === u) || {}).name || "Someone";
+    const per = (chat.receipts || {})[msg.thread_id] || {}, name = u => (chat.people.find(p => p.user_id === u) || {}).name || T("Someone");
     const rs = msg._pending ? [] : recipientsOf(msg);
     const seen = rs.filter(u => (per[u] || {}).read >= msg.created_at), got = rs.filter(u => !seen.includes(u) && (per[u] || {}).delivered >= msg.created_at);
     const not = rs.filter(u => !seen.includes(u) && !got.includes(u));
     const row = (label, list, tick) => list.length ? `<p><b>${tick} ${label}</b><br>${list.map(u => esc(name(u))).join(", ")}</p>` : "";
-    openSheet("Message info", `<p class="msginfo">${esc(msg.text)}</p>
-      <p class="dim small">${msg._pending ? "🕓 Waiting on this phone; it sends when there's signal." : "✓ Sent " + esc(when(msg.created_at))}</p>
-      ${row("Seen by", seen, '<span class="tick read">✓✓</span>')}${row("Delivered to", got, '<span class="tick">✓✓</span>')}
-      ${row("Not delivered yet", not, '<span class="tick">✓</span>')}
-      ${not.length ? `<p class="dim small">"Delivered" means it reached their phone: they opened RangeIQ, or a notification arrived.</p>` : ""}
-      <div class="row"><button type="button" class="secondary" id="msgDel">Delete for everyone</button></div>`);
+    openSheet(T("Message info"), `<p class="msginfo">${esc(chatText(msg))}</p>
+      <p class="dim small">${esc(msg._pending ? T("🕓 Waiting on this phone; it sends when there's signal.") : T("✓ Sent {when}", {when: when(msg.created_at)}))}</p>
+      ${row(esc(T("Seen by")), seen, '<span class="tick read">✓✓</span>')}${row(esc(T("Delivered to")), got, '<span class="tick">✓✓</span>')}
+      ${row(esc(T("Not delivered yet")), not, '<span class="tick">✓</span>')}
+      ${not.length ? `<p class="dim small">${esc(T("\"Delivered\" means it reached their phone: they opened RangeIQ, or a notification arrived."))}</p>` : ""}
+      <div class="row"><button type="button" class="secondary" id="msgDel">${esc(T("Delete for everyone"))}</button></div>`);
     $("msgDel").onclick = () => {
-      if (!confirm("Delete this message for everyone?")) return;
+      if (!confirm(T("Delete this message for everyone?"))) return;
       if (msg._pending) store.set("msgq", store.get("msgq", []).filter(x => x.msg_id !== msg.msg_id));
       else api("messages/" + encodeURIComponent(msg.msg_id), {method: "DELETE"}).then(() => pollChat()).catch(err => toast(err.message));
       chat.msgs = chat.msgs.filter(x => x.msg_id !== msg.msg_id); store.set("chat", chat); closeSheet(); renderChat();
@@ -1395,8 +1424,8 @@
   // Hold the red SOS button (top bar) for 2 seconds: everyone on the ranch gets an urgent notification and a full-screen
   // alert with where you are; your location keeps updating while the SOS is open (with the app open); others can tap
   // "On my way"; anyone can end it. Without signal the SOS waits on the phone and says so plainly.
-  const SOS_KINDS = [["injury", "🩸", "Injury"], ["vehicle", "🚙", "Vehicle accident / stuck"], ["fire", "🔥", "Fire"],
-    ["animal", "🐂", "Animal"], ["lost", "🧭", "Lost"], ["other", "🆘", "Other"]];
+  const SOS_KINDS = [["injury", "🩸", T("Injury")], ["vehicle", "🚙", T("Vehicle accident / stuck")], ["fire", "🔥", T("Fire")],
+    ["animal", "🐂", T("Animal")], ["lost", "🧭", T("Lost")], ["other", "🆘", T("Other")]];
   const sosLabel = k => (SOS_KINDS.find(x => x[0] === k) || SOS_KINDS[5])[2];
   let sosOpenId = null, sosWatch = null, sosLastSent = null, sosBeeped = false;
   const sosQueue = () => store.get("sosq", []);
@@ -1432,7 +1461,7 @@
     finally { sosSending = false; }
     renderSos(); updateSyncPill();
   }
-  function ago(iso) { const m = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000)); return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; }
+  function ago(iso) { const m = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000)); return m < 1 ? T("just now") : m < 60 ? T("{n} min ago", {n: m}) : T("{n} h ago", {n: Math.round(m / 60)}); }
   function bearing(a, b) {
     const r = Math.PI / 180, y = Math.sin((b.lon - a.lon) * r) * Math.cos(b.lat * r);
     const x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lon - a.lon) * r);
@@ -1442,7 +1471,7 @@
     const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : (here || null);
     if (!fx || s.lat == null) return "";
     const d = metres(fx, s), km = d / 1000;
-    return `${km >= 1 ? km.toFixed(1) + " km" : Math.round(d) + " m"} ${compass(bearing(fx, s))} of you`;
+    return T("{dist} {dir} of you", {dist: km >= 1 ? km.toFixed(1) + " km" : Math.round(d) + " m", dir: compass(bearing(fx, s))});
   }
   // Watch my position while my SOS is open; send it when it moves 10 m or every 30 s.
   function sosTrack(on) {
@@ -1477,39 +1506,39 @@
     // banner for every open SOS while the full screen is closed
     const bar = $("sosBar");
     bar.hidden = !act.length || !!sosOpenId;
-    bar.innerHTML = act.map(s => `<button type="button" data-sos="${esc(s.sos_id)}">🆘 <b>${s.user_id === chatMe() ? "Your SOS is on" : esc(s.user_name || "Someone") + " needs help"}</b>
-      · ${esc(sosLabel(s.kind))} · ${esc(ago(s.created_at))}${s._waiting ? " · ⏳ not sent yet" : ""} <span class="go">Open ›</span></button>`).join("");
+    bar.innerHTML = act.map(s => `<button type="button" data-sos="${esc(s.sos_id)}">🆘 <b>${esc(s.user_id === chatMe() ? T("Your SOS is on") : T("{name} needs help", {name: s.user_name || T("Someone")}))}</b>
+      · ${esc(sosLabel(s.kind))} · ${esc(ago(s.created_at))}${s._waiting ? " · " + esc(T("⏳ not sent yet")) : ""} <span class="go">${esc(T("Open ›"))}</span></button>`).join("");
     const scr = $("sosScreen");
     if (sosOpenId === "new") return sosSendScreen();
     const s = sosOpenId && sosList().find(x => x.sos_id === sosOpenId);
     if (!s) { scr.hidden = true; sosOpenId = null; bar.hidden = !act.length; return; }
     scr.hidden = false;
-    const coming = (s.acks || []).map(a => `${esc(a.user_name || "Someone")} <span class="dim">(${esc(ago(a.at))})</span>`).join(", ");
-    const where = s.lat != null ? `📍 ${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}${s.accuracy_m ? ` (±${Math.round(s.accuracy_m)} m)` : ""}${s.located_at ? " · updated " + esc(ago(s.located_at)) : ""}` : "📍 Location not known yet";
+    const coming = (s.acks || []).map(a => `${esc(a.user_name || T("Someone"))} <span class="dim">(${esc(ago(a.at))})</span>`).join(", ");
+    const where = s.lat != null ? `📍 ${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}${s.accuracy_m ? ` (±${Math.round(s.accuracy_m)} m)` : ""}${s.located_at ? " · " + esc(T("updated {when}", {when: ago(s.located_at)})) : ""}` : esc(T("📍 Location not known yet"));
     if (s.resolved_at) {
-      scr.innerHTML = `<div class="sosbox over"><h2 id="sosTitle">✅ SOS over</h2><p><b>${esc(s.user_name || "")}</b> · ${esc(sosLabel(s.kind))}</p>
-        <p>Ended by ${esc(s.resolved_by || "?")} ${esc(ago(s.resolved_at))}${s.resolve_note ? ": " + esc(s.resolve_note) : ""}</p>
-        <div class="row"><button type="button" class="secondary" data-sosclose>Close</button></div></div>`;
+      scr.innerHTML = `<div class="sosbox over"><h2 id="sosTitle">${esc(T("✅ SOS over"))}</h2><p><b>${esc(s.user_name || "")}</b> · ${esc(sosLabel(s.kind))}</p>
+        <p>${esc(T("Ended by {name} {when}", {name: s.resolved_by || "?", when: ago(s.resolved_at)}))}${s.resolve_note ? ": " + esc(s.resolve_note) : ""}</p>
+        <div class="row"><button type="button" class="secondary" data-sosclose>${esc(T("Close"))}</button></div></div>`;
     } else if (s.user_id === chatMe()) {
-      scr.innerHTML = `<div class="sosbox mine"><h2 id="sosTitle">🆘 Your SOS ${s._waiting ? "is waiting" : "is sent"}</h2>
-        ${s._waiting ? `<p class="sosfail">⏳ <b>No signal: not sent yet.</b> It goes the moment this phone gets signal. Keep RangeIQ open and move to higher ground if you can.</p>`
-          : `<p class="sosok">✓ Everyone on the ranch has been alerted.</p>`}
+      scr.innerHTML = `<div class="sosbox mine"><h2 id="sosTitle">${esc(s._waiting ? T("🆘 Your SOS is waiting") : T("🆘 Your SOS is sent"))}</h2>
+        ${s._waiting ? `<p class="sosfail">${T("⏳ <b>No signal: not sent yet.</b> It goes the moment this phone gets signal. Keep RangeIQ open and move to higher ground if you can.")}</p>`
+          : `<p class="sosok">${esc(T("✓ Everyone on the ranch has been alerted."))}</p>`}
         <p>${esc(sosLabel(s.kind))}${s.note ? " · " + esc(s.note) : ""}</p>
-        <p class="dim">${where}. Your location keeps updating while RangeIQ is open.</p>
-        <p>${coming ? "🚙 <b>On the way:</b> " + coming : "Nobody has answered yet."}</p>
-        <div class="row"><button type="button" class="primary okbtn" data-sosok="${esc(s.sos_id)}">✅ I'm OK — end SOS</button>
-        <button type="button" class="secondary" data-sosmin>Minimize</button></div></div>`;
+        <p class="dim">${where}. ${esc(T("Your location keeps updating while RangeIQ is open."))}</p>
+        <p>${coming ? T("🚙 <b>On the way:</b> {names}", {names: coming}) : esc(T("Nobody has answered yet."))}</p>
+        <div class="row"><button type="button" class="primary okbtn" data-sosok="${esc(s.sos_id)}">${esc(T("✅ I'm OK — end SOS"))}</button>
+        <button type="button" class="secondary" data-sosmin>${esc(T("Minimize"))}</button></div></div>`;
     } else {
       const imComing = (s.acks || []).some(a => a.user_id === chatMe());
-      scr.innerHTML = `<div class="sosbox alert"><h2 id="sosTitle">🆘 ${esc(s.user_name || "Someone")} needs help</h2>
+      scr.innerHTML = `<div class="sosbox alert"><h2 id="sosTitle">🆘 ${esc(T("{name} needs help", {name: s.user_name || T("Someone")}))}</h2>
         <p class="sosbig">${esc(sosLabel(s.kind))}${s.note ? " · " + esc(s.note) : ""}</p>
         <p>${esc(ago(s.created_at))}${fromMe(s) ? " · <b>" + esc(fromMe(s)) + "</b>" : ""}</p>
         <p class="dim">${where}</p>
-        <p>${coming ? "🚙 On the way: " + coming : "Nobody is on the way yet."}</p>
-        <div class="sosbtns">${s.lat != null ? `<button type="button" class="primary" data-sosmap="${esc(s.sos_id)}">🗺 Show on map</button>` : ""}
-          ${imComing ? `<p class="sosok">✓ You're on the way.</p>` : `<button type="button" class="primary onway" data-sosack="${esc(s.sos_id)}">🚙 I'm on my way</button>`}
-          <button type="button" class="secondary" data-sosok="${esc(s.sos_id)}">✅ They're OK — end SOS</button>
-          <button type="button" class="secondary" data-sosmin>Minimize</button></div></div>`;
+        <p>${coming ? T("🚙 On the way: {names}", {names: coming}) : esc(T("Nobody is on the way yet."))}</p>
+        <div class="sosbtns">${s.lat != null ? `<button type="button" class="primary" data-sosmap="${esc(s.sos_id)}">${esc(T("🗺 Show on map"))}</button>` : ""}
+          ${imComing ? `<p class="sosok">${esc(T("✓ You're on the way."))}</p>` : `<button type="button" class="primary onway" data-sosack="${esc(s.sos_id)}">${esc(T("🚙 I'm on my way"))}</button>`}
+          <button type="button" class="secondary" data-sosok="${esc(s.sos_id)}">${esc(T("✅ They're OK — end SOS"))}</button>
+          <button type="button" class="secondary" data-sosmin>${esc(T("Minimize"))}</button></div></div>`;
     }
   }
   function sosSendScreen() {
@@ -1517,15 +1546,15 @@
     startSensors();
     let kind = scr.dataset.kind || "injury";
     const fx = () => cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
-    scr.innerHTML = `<div class="sosbox send"><h2 id="sosTitle">Send an SOS to your crew</h2>
-      <p class="dim">Everyone on the ranch gets an alert with where you are.</p>
+    scr.innerHTML = `<div class="sosbox send"><h2 id="sosTitle">${esc(T("Send an SOS to your crew"))}</h2>
+      <p class="dim">${esc(T("Everyone on the ranch gets an alert with where you are."))}</p>
       <div class="soskinds">${SOS_KINDS.map(([k, ic, l]) => `<button type="button" data-soskind="${k}" aria-pressed="${k === kind}">${ic} ${esc(l)}</button>`).join("")}</div>
-      <label>What happened? (optional)<input id="sosNote" maxlength="200" placeholder="Fell off the horse by the north tank" value="${esc(scr.dataset.note || "")}"></label>
-      <p class="dim" id="sosGps">📍 Getting your location…</p>
-      ${navigator.onLine ? "" : `<p class="sosfail">⏳ No signal right now. The SOS will wait on this phone and go the moment there's signal.</p>`}
-      <button type="button" class="sosHold" id="sosHold"><span class="fill"></span><span class="lbl">Hold for 2 seconds to send SOS</span></button>
-      <div class="row"><button type="button" class="secondary" data-sosclose>Cancel</button></div></div>`;
-    const gps = () => { const g = $("sosGps"); if (!g) return; const f = fx(); g.textContent = f ? `📍 Location ready (±${f.acc} m)` : "📍 Getting your location… (it sends without it and adds it when the GPS finds you)"; };
+      <label>${esc(T("What happened? (optional)"))}<input id="sosNote" maxlength="200" placeholder="${esc(T("Fell off the horse by the north tank"))}" value="${esc(scr.dataset.note || "")}"></label>
+      <p class="dim" id="sosGps">${esc(T("📍 Getting your location…"))}</p>
+      ${navigator.onLine ? "" : `<p class="sosfail">${esc(T("⏳ No signal right now. The SOS will wait on this phone and go the moment there's signal."))}</p>`}
+      <button type="button" class="sosHold" id="sosHold"><span class="fill"></span><span class="lbl">${esc(T("Hold for 2 seconds to send SOS"))}</span></button>
+      <div class="row"><button type="button" class="secondary" data-sosclose>${esc(T("Cancel"))}</button></div></div>`;
+    const gps = () => { const g = $("sosGps"); if (!g) return; const f = fx(); g.textContent = f ? T("📍 Location ready (±{m} m)", {m: f.acc}) : T("📍 Getting your location… (it sends without it and adds it when the GPS finds you)"); };
     gps(); const t = setInterval(() => { if (!$("sosGps")) return clearInterval(t); gps(); }, 1000);
     scr.querySelectorAll("[data-soskind]").forEach(b => b.onclick = () => { scr.dataset.kind = b.dataset.soskind; scr.dataset.note = $("sosNote").value; sosSendScreen(); });
     const hold = $("sosHold");
@@ -1558,11 +1587,11 @@
     if (ok) {
       const s = sosList().find(x => x.sos_id === ok.dataset.sosok); if (!s) return;
       const mine = s.user_id === chatMe();
-      const note = prompt(mine ? "End your SOS? Add a note for the crew (optional):" : `End ${s.user_name || "their"}'s SOS? What happened (optional):`, "");
+      const note = prompt(mine ? T("End your SOS? Add a note for the crew (optional):") : T("End {name}'s SOS? What happened (optional):", {name: s.user_name || T("their")}), "");
       if (note === null) return;
       sosOp({op: "resolve", sos_id: s.sos_id, note: note.trim() || null});
       if (mine) sosTrack(false);
-      sosOpenId = null; renderSos(); toast("SOS ended.");
+      sosOpenId = null; renderSos(); toast(T("SOS ended."));
     }
   });
   setInterval(() => { if (activeSos().length) renderSos(); }, 30000);   // keep "x min ago" and distances fresh
@@ -1579,14 +1608,14 @@
     ["c-mepic", "o-mepic"].forEach(id => { if ($(id)) $(id).innerHTML = html; });
   }
   function pictureSheet() {
-    openSheet("Your profile picture", `<div class="picprev">${avatar(me ? {name: me.name, avatar_url: me.avatar_url} : null, "av huge")}</div>
-      <p class="dim small">Everyone on your ranch sees it next to your name in Chat.</p>
-      <div class="row"><button type="button" class="primary" id="picPick">📷 Take or choose a photo</button>
-        ${me && me.avatar_url ? `<button type="button" class="secondary" id="picDel">Remove</button>` : ""}</div>`);
+    openSheet(T("Your profile picture"), `<div class="picprev">${avatar(me ? {name: me.name, avatar_url: me.avatar_url} : null, "av huge")}</div>
+      <p class="dim small">${esc(T("Everyone on your ranch sees it next to your name in Chat."))}</p>
+      <div class="row"><button type="button" class="primary" id="picPick">${esc(T("📷 Take or choose a photo"))}</button>
+        ${me && me.avatar_url ? `<button type="button" class="secondary" id="picDel">${esc(T("Remove"))}</button>` : ""}</div>`);
     $("picPick").onclick = () => { const i = $("picInput"); i.value = ""; i.click(); };
     if ($("picDel")) $("picDel").onclick = async () => {
-      try { await api("me/avatar", {method: "DELETE"}); me.avatar_url = null; store.set("me", me); afterPic(); toast("Picture removed."); }
-      catch (e) { toast(navigator.onLine ? e.message : "Changing your picture needs signal."); }
+      try { await api("me/avatar", {method: "DELETE"}); me.avatar_url = null; store.set("me", me); afterPic(); toast(T("Picture removed.")); }
+      catch (e) { toast(navigator.onLine ? e.message : T("Changing your picture needs signal.")); }
     };
   }
   function afterPic() {
@@ -1603,13 +1632,15 @@
       const blob = await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.85));
       const fd = new FormData(); fd.append("photo", blob, "me.jpg");
       const r = await api("me/avatar", {method: "POST", body: fd});
-      me.avatar_url = r.avatar_url; store.set("me", me); afterPic(); toast("Picture updated.");
-    } catch (err) { toast(navigator.onLine ? "Couldn't use that picture: " + err.message : "Changing your picture needs signal."); }
+      me.avatar_url = r.avatar_url; store.set("me", me); afterPic(); toast(T("Picture updated."));
+    } catch (err) { toast(navigator.onLine ? T("Couldn't use that picture: {error}", {error: err.message}) : T("Changing your picture needs signal.")); }
   };
   ["c-mepic", "o-mepic"].forEach(id => { if ($(id)) $(id).onclick = pictureSheet; });
 
-  const dayOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"}); };
-  const timeOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}); };
+  const dayOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleDateString(LOC, {weekday: "short", month: "short", day: "numeric"}); };
+  const timeOf = iso => { const d = new Date(String(iso).replace(/^~/, "")); return isNaN(d) ? "" : d.toLocaleTimeString(LOC, {hour: "numeric", minute: "2-digit"}); };
+  // The server writes SOS lines into the Everyone chat in English; show them in the app's language. People's own messages stay as typed.
+  const chatText = m => String(m.msg_id || "").startsWith("sos-") ? TX(m.text) : m.text;
   function renderChat() {
     const inThread = !!chatThread;
     $("c-list").hidden = inThread; $("c-thread").hidden = !inThread;
@@ -1624,11 +1655,11 @@
       $("c-threads").innerHTML = rows.map(({t, last, n}) => {
         const name = threadName(t), person = t === "all" ? null : chat.people.find(p => p.user_id === t.slice(3).split("|").find(u => u !== mine));
         return `<li><button type="button" data-thread="${esc(t)}">${t === "all" ? '<img class="av logo" src="chat-bg.png" alt="">' : avatar(person)}
-          <span class="who">${esc(name)}${person && person.role === "crew" ? ' <span class="dim small">crew</span>' : ""}</span>
+          <span class="who">${esc(name)}${person && person.role === "crew" ? ` <span class="dim small">${esc(T("crew"))}</span>` : ""}</span>
           <span class="when">${last ? esc(timeOf(last.created_at)) : ""}</span>
-          <span class="last">${last ? (last.from_user === mine ? TICK[tickOf(last)] + " " : t === "all" ? esc(last.from_name || "") + ": " : "") + esc(last.text) : t === "all" ? "Messages to the whole crew" : "No messages yet"}</span>
+          <span class="last">${last ? (last.from_user === mine ? TICK[tickOf(last)] + " " : t === "all" ? esc(last.from_name || "") + ": " : "") + esc(chatText(last)) : esc(t === "all" ? T("Messages to the whole crew") : T("No messages yet"))}</span>
           ${n ? `<span class="n">${n}</span>` : ""}</button></li>`;
-      }).join("") || "<li class='dim'>Sign in to see your crew.</li>";
+      }).join("") || `<li class='dim'>${esc(T("Sign in to see your crew."))}</li>`;
       return;
     }
     $("c-title").textContent = threadName(chatThread);
@@ -1641,8 +1672,8 @@
       const d = dayOf(m.created_at), head = d !== day ? `<li class="day">${esc(d)}</li>` : ""; day = d;
       const isMine = m.from_user === mine;
       return `${head}<li class="msg${isMine ? " mine" : ""}${m._pending ? " pending" : ""}" ${isMine ? `data-msg="${esc(m.msg_id)}"` : ""}>
-        ${!isMine && chatThread === "all" ? `<span class="from">${avatar(personOf(m.from_user) || {name: m.from_name}, "av mini")}${esc(m.from_name || "")}</span>` : ""}<span class="body">${esc(m.text)}</span><span class="t">${esc(timeOf(m.created_at))}${isMine ? " " + TICK[tickOf(m)] : ""}</span></li>`;
-    }).join("") || `<li class="day">${chatThread === "all" ? "Say something to the whole crew." : "Start the conversation."}</li>`;
+        ${!isMine && chatThread === "all" ? `<span class="from">${avatar(personOf(m.from_user) || {name: m.from_name}, "av mini")}${esc(m.from_name || "")}</span>` : ""}<span class="body">${esc(chatText(m))}</span><span class="t">${esc(timeOf(m.created_at))}${isMine ? " " + TICK[tickOf(m)] : ""}</span></li>`;
+    }).join("") || `<li class="day">${esc(chatThread === "all" ? T("Say something to the whole crew.") : T("Start the conversation."))}</li>`;
     if (nearBottom || !box.dataset.shown) { box.dataset.shown = "1"; window.scrollTo(0, document.body.scrollHeight); }
     markRead(chatThread);
   }
@@ -1657,7 +1688,7 @@
     if (!text || !chatThread) return;
     const q = store.get("msgq", []); q.push({msg_id: uid(), thread_id: chatThread, text, sent_at: new Date().toISOString()}); store.set("msgq", q);
     box.value = ""; box.style.height = ""; $("c-msgs").dataset.shown = ""; renderChat(); updateSyncPill();
-    if (navigator.onLine) pollChat(); else toast("Saved on this phone. It sends when there's signal.");
+    if (navigator.onLine) pollChat(); else toast(T("Saved on this phone. It sends when there's signal."));
   }
   $("c-form").onsubmit = e => { e.preventDefault(); sendChatText(); $("c-text").focus(); };
   $("c-text").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChatText(); } });
@@ -1679,14 +1710,14 @@
     if (!sub) sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: want});
     await api("push/subscribe", {method: "POST", body: JSON.stringify(sub.toJSON())});
     store.set("pushOn", true);
-    if (!quiet) toast("Notifications on. New messages will buzz this phone.");
+    if (!quiet) toast(T("Notifications on. New messages will buzz this phone."));
   }
   async function enablePush() {
     try {
       const perm = await Notification.requestPermission();
-      if (perm !== "granted") { toast("Notifications weren't allowed. You can change that in the phone's settings for this app."); renderChat(); return; }
+      if (perm !== "granted") { toast(T("Notifications weren't allowed. You can change that in the phone's settings for this app.")); renderChat(); return; }
       await pushSubscribe(false);
-    } catch (e) { toast("Couldn't turn on notifications: " + e.message); }
+    } catch (e) { toast(T("Couldn't turn on notifications: {error}", {error: e.message})); }
     renderChat();
   }
   async function disablePush() {
@@ -1694,22 +1725,22 @@
       const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
       if (sub) { await api("push/unsubscribe", {method: "POST", body: JSON.stringify({endpoint: sub.endpoint})}).catch(() => {}); await sub.unsubscribe(); }
     } catch (e) {}
-    store.set("pushOn", false); toast("Notifications off."); renderChat();
+    store.set("pushOn", false); toast(T("Notifications off.")); renderChat();
   }
   function renderNotify() {
     const el = $("c-notify");
     if (!pushSupported()) {
-      el.innerHTML = isIOS && !standalone() ? `<div class="card"><p>🔔 <b>To get a buzz when a message comes in</b> on iPhone: tap <b>Share</b> → <b>Add to Home Screen</b>, then open RangeIQ from the Home Screen and turn notifications on here.</p></div>` : "";
+      el.innerHTML = isIOS && !standalone() ? `<div class="card"><p>${T("🔔 <b>To get a buzz when a message comes in</b> on iPhone: tap <b>Share</b> → <b>Add to Home Screen</b>, then open RangeIQ from the Home Screen and turn notifications on here.")}</p></div>` : "";
       return;
     }
     const perm = Notification.permission, on = store.get("pushOn", false) && perm === "granted";
-    el.innerHTML = perm === "denied" ? `<div class="card"><p class="dim">🔕 Notifications are blocked for RangeIQ. Turn them on in the phone's settings for this app (or the browser's site settings).</p></div>`
-      : on ? `<p class="dim small">🔔 Notifications are on for this phone. <button type="button" class="linkbtn" id="pushTest">Send a test</button> · <button type="button" class="linkbtn" id="pushOff">Turn off</button></p>`
-      : `<div class="card"><p>🔔 <b>Get a buzz when a message comes in</b>, even with RangeIQ closed.</p><button type="button" class="primary" id="pushOn">Turn on notifications</button></div>`;
+    el.innerHTML = perm === "denied" ? `<div class="card"><p class="dim">${esc(T("🔕 Notifications are blocked for RangeIQ. Turn them on in the phone's settings for this app (or the browser's site settings)."))}</p></div>`
+      : on ? `<p class="dim small">${esc(T("🔔 Notifications are on for this phone."))} <button type="button" class="linkbtn" id="pushTest">${esc(T("Send a test"))}</button> · <button type="button" class="linkbtn" id="pushOff">${esc(T("Turn off"))}</button></p>`
+      : `<div class="card"><p>${T("🔔 <b>Get a buzz when a message comes in</b>, even with RangeIQ closed.")}</p><button type="button" class="primary" id="pushOn">${esc(T("Turn on notifications"))}</button></div>`;
     if ($("pushOn")) $("pushOn").onclick = enablePush;
     if ($("pushOff")) $("pushOff").onclick = disablePush;
     if ($("pushTest")) $("pushTest").onclick = async () => {
-      try { const r = await api("push/test", {method: "POST"}); toast(r.sent ? "Test sent. It should buzz in a few seconds." : "No phone to send to. Turn notifications off and on again."); }
+      try { const r = await api("push/test", {method: "POST"}); toast(r.sent ? T("Test sent. It should buzz in a few seconds.") : T("No phone to send to. Turn notifications off and on again.")); }
       catch (e) { toast(e.message); }
     };
   }
@@ -1718,16 +1749,16 @@
 
   // ================================================================ DRAWN SHAPES: pasture boundaries (lockable) and roads / trails
   const LINE_TYPES = {
-    main_road: {label: "Main road", color: "#2d2d2d", weight: 6},
-    ranch_road: {label: "Ranch road", color: "#8b5a2b", weight: 5},
-    two_track: {label: "Two-track", color: "#c08a52", weight: 4, dash: "10 6"},
-    game_trail: {label: "Game trail", color: "#e67e22", weight: 3, dash: "6 6"},
-    hunting_trail: {label: "Hunting trail", color: "#d63c2f", weight: 3, dash: "8 5"},
-    path: {label: "Path / footpath", color: "#f1c40f", weight: 3, dash: "2 6"},
-    fence: {label: "Fence line", color: "#f5f5f5", weight: 3},
-    water_line: {label: "Water line / pipe", color: "#2b6cb0", weight: 3, dash: "10 4"},
-    creek: {label: "Creek / draw", color: "#3fa9f5", weight: 3},
-    other_line: {label: "Other line", color: "#8e44ad", weight: 3}};
+    main_road: {label: T("Main road"), color: "#2d2d2d", weight: 6},
+    ranch_road: {label: T("Ranch road"), color: "#8b5a2b", weight: 5},
+    two_track: {label: T("Two-track"), color: "#c08a52", weight: 4, dash: "10 6"},
+    game_trail: {label: T("Game trail"), color: "#e67e22", weight: 3, dash: "6 6"},
+    hunting_trail: {label: T("Hunting trail"), color: "#d63c2f", weight: 3, dash: "8 5"},
+    path: {label: T("Path / footpath"), color: "#f1c40f", weight: 3, dash: "2 6"},
+    fence: {label: T("Fence line"), color: "#f5f5f5", weight: 3},
+    water_line: {label: T("Water line / pipe"), color: "#2b6cb0", weight: 3, dash: "10 4"},
+    creek: {label: T("Creek / draw"), color: "#3fa9f5", weight: 3},
+    other_line: {label: T("Other line"), color: "#8e44ad", weight: 3}};
   let shapes = store.get("shapes", []), boundariesLocked = store.get("boundariesLocked", true);
   const lineLayerKey = k => "line_" + k;
   Object.keys(LINE_TYPES).forEach(k => { if (layers[lineLayerKey(k)] === undefined) layers[lineLayerKey(k)] = true; });
@@ -1747,7 +1778,7 @@
     for (let i = 0; i < xy.length; i++) { const [x0, y0] = xy[i], [x1, y1] = xy[(i + 1) % xy.length]; a += x0 * y1 - x1 * y0; }
     return Math.abs(a) / 2 / 4046.856;
   }
-  const fmtLen = m => m < 300 ? `${Math.round(m * 3.281)} ft` : `${(m / 1609.34).toFixed(m < 16093 ? 2 : 1)} mi`;
+  const fmtLen = m => m < 300 ? T("{n} ft", {n: Math.round(m * 3.281)}) : T("{n} mi", {n: (m / 1609.34).toFixed(m < 16093 ? 2 : 1)});
   function simplify(pts, tolM = 2) {                 // Douglas-Peucker on a GPS track
     if (pts.length < 3) return pts;
     const xy = metresXY(pts), keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
@@ -1782,8 +1813,8 @@
     try {
       const r = await api("boundaries/lock", {method: "POST", body: JSON.stringify({locked})});
       boundariesLocked = r.boundaries_locked; store.set("boundariesLocked", boundariesLocked); setShapesFromServer(r.shapes);
-      toast(locked ? "🔒 Pasture boundaries locked." : "🔓 Boundaries unlocked. Owner and partners can edit them now."); rerender();
-    } catch (e) { toast(navigator.onLine ? e.message : "Locking needs signal."); }
+      toast(locked ? T("🔒 Pasture boundaries locked.") : T("🔓 Boundaries unlocked. Owner and partners can edit them now.")); rerender();
+    } catch (e) { toast(navigator.onLine ? e.message : T("Locking needs signal.")); }
   }
 
   // ---- draw on the map (tap points) or with the phone's GPS
@@ -1798,7 +1829,7 @@
     if (how === "gps") startGps();
   }
   function startGps() {
-    if (!navigator.geolocation) { toast("This phone has no GPS access."); return; }
+    if (!navigator.geolocation) { toast(T("This phone has no GPS access.")); return; }
     try { navigator.wakeLock && navigator.wakeLock.request("screen").then(l => { wakeLock = l; }).catch(() => {}); } catch (e) {}
     draft.recording = true;
     gpsWatch = navigator.geolocation.watchPosition(p => {
@@ -1847,7 +1878,7 @@
         m.on("click", () => {
           // Lines: tapping the starting point again closes the loop (that's how people finish a fence around something).
           const c = draft.coords, closed = c.length > 1 && c[0][0] === c[c.length - 1][0] && c[0][1] === c[c.length - 1][1];
-          if (i === 0 && !isPasture && c.length >= 3 && !closed) { c.push([...c[0]]); draft.selected = null; store.set("draft", draft); renderDraft(); toast("Loop closed. Tap Done."); return; }
+          if (i === 0 && !isPasture && c.length >= 3 && !closed) { c.push([...c[0]]); draft.selected = null; store.set("draft", draft); renderDraft(); toast(T("Loop closed. Tap Done.")); return; }
           draft.selected = draft.selected === i ? null : i; renderDraft();
         });
         m.addTo(map); draftLayers.push(m);
@@ -1864,38 +1895,38 @@
       here.addTo(map); draftLayers.push(here);
       if (follow) map.panTo(ll[ll.length - 1], {animate: true});
     }
-    const what = isPasture ? "pasture boundary" : (LINE_TYPES[draft.kind] || {}).label.toLowerCase();
-    const size = isPasture ? (draft.coords.length >= 3 ? `${acresOf(draft.coords).toFixed(1)} acres` : "") : (draft.coords.length >= 2 ? fmtLen(lengthM(draft.coords)) : "");
+    const what = isPasture ? T("pasture boundary") : (LINE_TYPES[draft.kind] || {}).label.toLowerCase();
+    const size = isPasture ? (draft.coords.length >= 3 ? T("{n} acres", {n: acresOf(draft.coords).toFixed(1)}) : "") : (draft.coords.length >= 2 ? fmtLen(lengthM(draft.coords)) : "");
     const gps = draft.how === "gps";
     bar.hidden = false;
-    bar.innerHTML = `<div class="drawinfo"><b>${draft.editing ? "Editing" : gps ? (draft.recording ? "● Recording" : "Paused") : "Drawing"} ${esc(what)}</b>
-        <span class="dim small">${draft.coords.length} points${size ? " · " + size : ""}${gps ? ` · GPS ${draft.acc != null ? "±" + draft.acc + " m" : "searching…"}` : ""}</span>
-        <span class="dim small">${gps && draft.recording ? "Walk or drive the line. Keep the app open and the screen on."
-          : `Tap the map to add a ${isPasture ? "corner" : "point"}. Drag a dot to move it; tap “+” to add one between.`}</span></div>
-      <div class="row">${gps ? `<button type="button" class="pill" id="dGps">${draft.recording ? "⏸ Pause" : "▶ Resume GPS"}</button>
-          <button type="button" class="pill" id="dPhoto">📷 Photo here</button>` : ""}
-        <button type="button" class="pill" id="dUndo" ${draft.coords.length ? "" : "disabled"}>↩ Undo</button>
-        ${draft.selected != null ? `<button type="button" class="pill" id="dDel">✕ Delete point</button>` : ""}
-        <button type="button" class="pill primarypill" id="dDone">✓ Done</button><button type="button" class="pill" id="dCancel">Cancel</button></div>`;
+    bar.innerHTML = `<div class="drawinfo"><b>${esc(T(draft.editing ? "Editing: {what}" : gps ? (draft.recording ? "● Recording: {what}" : "Paused: {what}") : "Drawing: {what}", {what}))}</b>
+        <span class="dim small">${esc(T("{n} points", {n: draft.coords.length}))}${size ? " · " + esc(size) : ""}${gps ? " · " + esc(draft.acc != null ? T("GPS ±{m} m", {m: draft.acc}) : T("GPS searching…")) : ""}</span>
+        <span class="dim small">${esc(gps && draft.recording ? T("Walk or drive the line. Keep the app open and the screen on.")
+          : isPasture ? T("Tap the map to add a corner. Drag a dot to move it; tap “+” to add one between.") : T("Tap the map to add a point. Drag a dot to move it; tap “+” to add one between."))}</span></div>
+      <div class="row">${gps ? `<button type="button" class="pill" id="dGps">${esc(draft.recording ? T("⏸ Pause") : T("▶ Resume GPS"))}</button>
+          <button type="button" class="pill" id="dPhoto">${esc(T("📷 Photo here"))}</button>` : ""}
+        <button type="button" class="pill" id="dUndo" ${draft.coords.length ? "" : "disabled"}>${esc(T("↩ Undo"))}</button>
+        ${draft.selected != null ? `<button type="button" class="pill" id="dDel">${esc(T("✕ Delete point"))}</button>` : ""}
+        <button type="button" class="pill primarypill" id="dDone">${esc(T("✓ Done"))}</button><button type="button" class="pill" id="dCancel">${esc(T("Cancel"))}</button></div>`;
     if ($("dGps")) $("dGps").onclick = () => { if (draft.recording) { stopGps(); renderDraft(); } else startGps(); };
-    if ($("dPhoto")) $("dPhoto").onclick = async () => { const id = await attachPhoto({shape_id: draft.shape_id}); if (id) toast("Photo saved with this line."); };
+    if ($("dPhoto")) $("dPhoto").onclick = async () => { const id = await attachPhoto({shape_id: draft.shape_id}); if (id) toast(T("Photo saved with this line.")); };
     $("dUndo").onclick = () => { draft.coords.pop(); draft.selected = null; store.set("draft", draft); renderDraft(); };
     if ($("dDel")) $("dDel").onclick = () => { draft.coords.splice(draft.selected, 1); draft.selected = null; store.set("draft", draft); renderDraft(); };
-    $("dCancel").onclick = () => { if (draft.coords.length > 2 && !draft.editing && !confirm("Throw away this drawing?")) return; stopGps(); draft = null; store.del("draft"); renderDraft(); renderMap(); };
+    $("dCancel").onclick = () => { if (draft.coords.length > 2 && !draft.editing && !confirm(T("Throw away this drawing?"))) return; stopGps(); draft = null; store.del("draft"); renderDraft(); renderMap(); };
     $("dDone").onclick = finishDraw;
   }
   function finishDraw() {
     const isPasture = draft.kind === "pasture";
     if (draft.how === "gps") { stopGps(); draft.coords = simplify(draft.coords, 2); }
-    if (draft.coords.length < (isPasture ? 3 : 2)) { toast(isPasture ? "A pasture needs at least 3 corners." : "A line needs at least 2 points."); return; }
-    const d = draft, title = isPasture ? "Pasture" : "Line";
+    if (draft.coords.length < (isPasture ? 3 : 2)) { toast(isPasture ? T("A pasture needs at least 3 corners.") : T("A line needs at least 2 points.")); return; }
+    const d = draft;
     if (!isPasture && !d.askedLoop && isOwner() && closesOnItself(d.coords)) { askIfBoundary(d); return; }
-    openSheet(d.editing ? `Save ${title.toLowerCase()}` : `Name this ${title.toLowerCase()}`, `<form class="form" id="shapeForm">
-      ${isPasture ? "" : `<label>Type<select name="kind">${Object.entries(LINE_TYPES).map(([k, v]) => `<option value="${k}" ${k === d.kind ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select></label>`}
-      <label>Name<input name="name" maxlength="80" required value="${esc(d.name || "")}" placeholder="${isPasture ? "North Flat" : "Road to the windmill"}"></label>
-      <p class="dim">${isPasture ? `${acresOf(d.coords).toFixed(1)} acres` : fmtLen(lengthM(d.coords))} · ${d.coords.length} points</p>
-      <label>Notes (optional)<textarea name="note" maxlength="1000">${esc(d.note || "")}</textarea></label>
-      <div class="row"><button type="submit" class="primary">Save</button><button type="button" class="secondary" id="shapeBack">Keep editing</button></div></form>`);
+    openSheet(isPasture ? (d.editing ? T("Save pasture") : T("Name this pasture")) : (d.editing ? T("Save line") : T("Name this line")), `<form class="form" id="shapeForm">
+      ${isPasture ? "" : `<label>${esc(T("Type"))}<select name="kind">${Object.entries(LINE_TYPES).map(([k, v]) => `<option value="${k}" ${k === d.kind ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select></label>`}
+      <label>${esc(T("Name"))}<input name="name" maxlength="80" required value="${esc(d.name || "")}" placeholder="${esc(isPasture ? T("North Flat") : T("Road to the windmill"))}"></label>
+      <p class="dim">${esc(isPasture ? T("{n} acres", {n: acresOf(d.coords).toFixed(1)}) : fmtLen(lengthM(d.coords)))} · ${esc(T("{n} points", {n: d.coords.length}))}</p>
+      <label>${esc(T("Notes (optional)"))}<textarea name="note" maxlength="1000">${esc(d.note || "")}</textarea></label>
+      <div class="row"><button type="submit" class="primary">${esc(T("Save"))}</button><button type="button" class="secondary" id="shapeBack">${esc(T("Keep editing"))}</button></div></form>`);
     $("shapeBack").onclick = () => { closeSheet(); renderDraft(); };
     $("shapeForm").onsubmit = e => {
       e.preventDefault();
@@ -1903,24 +1934,24 @@
       shapeChange({shape_id: d.shape_id, kind: isPasture ? "pasture" : f.kind.value, name: f.name.value.trim(), note: f.note.value.trim() || null,
         coords: d.coords, source: d.source});
       draft = null; store.del("draft"); closeSheet(); renderDraft();
-      toast(isPasture ? "Pasture saved. Status and 3D update in a few minutes." : "Saved."); renderMap();
+      toast(isPasture ? T("Pasture saved. Status and 3D update in a few minutes.") : T("Saved.")); renderMap();
     };
   }
   function lineStyle(kind) { const t = LINE_TYPES[kind] || LINE_TYPES.other_line; return {color: t.color, weight: t.weight, dashArray: t.dash, opacity: .95}; }
   function drawMenu() {
-    const lockRow = isOwner() ? `<div class="row" style="align-items:center"><span>${boundariesLocked ? "🔒 Pasture boundaries are <b>locked</b>." : "🔓 Pasture boundaries are <b>unlocked</b>."}</span>
-      <button type="button" class="pill" id="lockBtn">${boundariesLocked ? "Unlock to edit" : "Lock them"}</button></div>`
-      : `<p class="dim small">Pasture boundaries can only be changed by the owner or a partner.</p>`;
-    openSheet("Draw on the map", `<h3>Pasture boundary</h3>${lockRow}
-      ${canEditBoundaries() ? `<div class="row"><button type="button" class="secondary" data-draw="pasture:tap">👆 Tap the corners</button>
-        <button type="button" class="secondary" data-draw="pasture:gps">🛰 Walk or drive the fence</button></div>
-        <p class="dim small">To change an existing pasture, tap it on the map, then <b>Edit boundary</b>.</p>` : ""}
-      <h3>Road, trail or line</h3>
+    const lockRow = isOwner() ? `<div class="row" style="align-items:center"><span>${boundariesLocked ? T("🔒 Pasture boundaries are <b>locked</b>.") : T("🔓 Pasture boundaries are <b>unlocked</b>.")}</span>
+      <button type="button" class="pill" id="lockBtn">${esc(boundariesLocked ? T("Unlock to edit") : T("Lock them"))}</button></div>`
+      : `<p class="dim small">${esc(T("Pasture boundaries can only be changed by the owner or a partner."))}</p>`;
+    openSheet(T("Draw on the map"), `<h3>${esc(T("Pasture boundary"))}</h3>${lockRow}
+      ${canEditBoundaries() ? `<div class="row"><button type="button" class="secondary" data-draw="pasture:tap">${esc(T("👆 Tap the corners"))}</button>
+        <button type="button" class="secondary" data-draw="pasture:gps">${esc(T("🛰 Walk or drive the fence"))}</button></div>
+        <p class="dim small">${T("To change an existing pasture, tap it on the map, then <b>Edit boundary</b>.")}</p>` : ""}
+      <h3>${esc(T("Road, trail or line"))}</h3>
       <div class="tagchips" id="lineKinds">${Object.entries(LINE_TYPES).map(([k, v], i) => `<button type="button" data-lk="${k}" aria-pressed="${i === 1}">
         <i class="swatch" style="background:${v.color}"></i>${esc(v.label)}</button>`).join("")}</div>
-      <div class="row"><button type="button" class="secondary" id="lineTap">👆 Tap points on the map</button>
-        <button type="button" class="secondary" id="lineGps">🛰 Record with GPS</button></div>
-      <p class="dim small">GPS recording keeps going while the app is open; keep the screen on. Lines are saved on the phone and sent when there's signal.</p>`);
+      <div class="row"><button type="button" class="secondary" id="lineTap">${esc(T("👆 Tap points on the map"))}</button>
+        <button type="button" class="secondary" id="lineGps">${esc(T("🛰 Record with GPS"))}</button></div>
+      <p class="dim small">${esc(T("GPS recording keeps going while the app is open; keep the screen on. Lines are saved on the phone and sent when there's signal."))}</p>`);
     let kind = "ranch_road";
     document.querySelectorAll("#lineKinds [data-lk]").forEach(b => b.onclick = () => { kind = b.dataset.lk;
       document.querySelectorAll("#lineKinds [data-lk]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
@@ -1932,21 +1963,21 @@
   function openShape(id) {
     const x = shapes.find(s2 => s2.shape_id === id); if (!x) return;
     const isPasture = x.kind === "pasture", t = LINE_TYPES[x.kind];
-    openSheet(x.name, `<p>${isPasture ? "🟫 Pasture" : `<i class="swatch" style="background:${t.color}"></i> ${esc(t.label)}`} ·
-        ${isPasture ? acresOf(x.coords).toFixed(1) + " acres" : fmtLen(lengthM(x.coords))}${x.source === "gps" ? " · 🛰 recorded with GPS" : ""}</p>
+    openSheet(x.name, `<p>${isPasture ? esc(T("🟫 Pasture")) : `<i class="swatch" style="background:${t.color}"></i> ${esc(t.label)}`} ·
+        ${esc(isPasture ? T("{n} acres", {n: acresOf(x.coords).toFixed(1)}) : fmtLen(lengthM(x.coords)))}${x.source === "gps" ? " · " + esc(T("🛰 recorded with GPS")) : ""}</p>
       ${x.note ? `<p>${esc(x.note)}</p>` : ""}
-      <p class="dim small">${x.created_by_name ? "Added by " + esc(x.created_by_name) : ""}</p>
+      <p class="dim small">${x.created_by_name ? esc(T("Added by {name}", {name: x.created_by_name})) : ""}</p>
       <div id="shPhotos"></div>
       <div class="row">
-        ${isPasture && snap && snap.pastures.some(p => p.id === id) ? `<button type="button" class="secondary" data-pasture="${esc(id)}">Pasture details</button>` : ""}
-        ${!isPasture && x.coords.length >= 3 && isOwner() ? `<button type="button" class="secondary" id="shToPasture">🟫 Use as a pasture boundary</button>` : ""}
-        ${canEditShape(x) ? `<button type="button" class="secondary" id="shEdit">✏️ Edit ${isPasture ? "boundary" : "line"}</button>
-          <button type="button" class="secondary" id="shDel">Delete</button>` : ""}</div>
-      ${isPasture && !canEditShape(x) && isOwner() ? `<p class="dim small">🔒 Boundaries are locked. Unlock them under ✏️ Draw to edit.</p>` : ""}`);
+        ${isPasture && snap && snap.pastures.some(p => p.id === id) ? `<button type="button" class="secondary" data-pasture="${esc(id)}">${esc(T("Pasture details"))}</button>` : ""}
+        ${!isPasture && x.coords.length >= 3 && isOwner() ? `<button type="button" class="secondary" id="shToPasture">${esc(T("🟫 Use as a pasture boundary"))}</button>` : ""}
+        ${canEditShape(x) ? `<button type="button" class="secondary" id="shEdit">${esc(isPasture ? T("✏️ Edit boundary") : T("✏️ Edit line"))}</button>
+          <button type="button" class="secondary" id="shDel">${esc(T("Delete"))}</button>` : ""}</div>
+      ${isPasture && !canEditShape(x) && isOwner() ? `<p class="dim small">${esc(T("🔒 Boundaries are locked. Unlock them under ✏️ Draw to edit."))}</p>` : ""}`);
     mountPhotoStrip($("shPhotos"), "shape_id", id, {near: x.coords});
     if ($("shEdit")) $("shEdit").onclick = () => startDraw(x.kind, "tap", x);
     if ($("shToPasture")) $("shToPasture").onclick = () => lineToPasture(x);
-    if ($("shDel")) $("shDel").onclick = () => { if (confirm(`Delete ${x.name}?`)) { shapeChange({shape_id: id, kind: x.kind, deleted: true}); closeSheet(); renderMap(); } };
+    if ($("shDel")) $("shDel").onclick = () => { if (confirm(T("Delete {name}?", {name: x.name}))) { shapeChange({shape_id: id, kind: x.kind, deleted: true}); closeSheet(); renderMap(); } };
   }
   // A line drawn around a pasture (say, as a fence line) becomes that pasture's boundary, or a new pasture.
   function inRing(x, y, ring) {
@@ -1963,12 +1994,11 @@
     return gap <= Math.max(25, 0.03 * lengthM(c)) && acresOf(c) >= 0.25;
   }
   function askIfBoundary(d) {
-    openSheet("Is this a pasture boundary?", `<p>This line ends where it started, so it goes all the way around something
-        (${acresOf(d.coords).toFixed(1)} acres).</p>
-      <p class="dim small">A pasture boundary gets a glowing, colored outline, a flag and its own status. A fence line is just a line on the map.</p>
-      <div class="row"><button type="button" class="primary" id="loopYes">🟫 Yes, a pasture boundary</button>
-        <button type="button" class="secondary" id="loopNo">No, keep it as a line</button></div>
-      <div class="row"><button type="button" class="secondary" id="loopBack">Keep editing</button></div>`);
+    openSheet(T("Is this a pasture boundary?"), `<p>${esc(T("This line ends where it started, so it goes all the way around something ({n} acres).", {n: acresOf(d.coords).toFixed(1)}))}</p>
+      <p class="dim small">${esc(T("A pasture boundary gets a glowing, colored outline, a flag and its own status. A fence line is just a line on the map."))}</p>
+      <div class="row"><button type="button" class="primary" id="loopYes">${esc(T("🟫 Yes, a pasture boundary"))}</button>
+        <button type="button" class="secondary" id="loopNo">${esc(T("No, keep it as a line"))}</button></div>
+      <div class="row"><button type="button" class="secondary" id="loopBack">${esc(T("Keep editing"))}</button></div>`);
     $("loopYes").onclick = () => lineToPasture({coords: d.coords, name: d.name, source: d.source, kind: d.kind,
       shape_id: d.editing ? d.shape_id : null}, {draft: d});
     $("loopNo").onclick = () => { d.askedLoop = true; finishDraw(); };
@@ -1976,9 +2006,9 @@
   }
   function lineToPasture(line, opts = {}) {
     if (!canEditBoundaries()) {
-      openSheet("Pasture boundaries are locked", `<p>Unlock them first: ✏️ Draw → <b>Unlock to edit</b>, then try again.
-          ${opts.draft ? "Your drawing is kept; tap <b>Keep editing</b> to get back to it." : ""}</p>
-        ${opts.draft ? `<div class="row"><button type="button" class="secondary" id="l2pBack">Keep editing</button></div>` : ""}`);
+      openSheet(T("Pasture boundaries are locked"), `<p>${T("Unlock them first: ✏️ Draw → <b>Unlock to edit</b>, then try again.")}
+          ${opts.draft ? T("Your drawing is kept; tap <b>Keep editing</b> to get back to it.") : ""}</p>
+        ${opts.draft ? `<div class="row"><button type="button" class="secondary" id="l2pBack">${esc(T("Keep editing"))}</button></div>` : ""}`);
       if ($("l2pBack")) $("l2pBack").onclick = () => { closeSheet(); renderDraft(); };
       return;
     }
@@ -1989,13 +2019,13 @@
     // Best guess: the pasture this line mostly sits on (share of its corners inside + whether the pasture's middle is inside the line).
     const score = p => ring.filter(([x, y]) => inRing(x, y, p.coords)).length / ring.length + (inRing(...interiorPoint(p.coords), ring) ? 1 : 0);
     const ranked = current.map(p => ({...p, s: score(p)})).sort((a, b) => b.s - a.s);
-    openSheet("Use as a pasture boundary", `<form class="form" id="l2pForm">
-      <p>${acresOf(ring).toFixed(1)} acres · ${ring.length} corners.${line.shape_id ? " The line itself is removed once it becomes a boundary." : ""}</p>
-      <label>Which pasture?<select name="target">
-        ${ranked.map((p, i) => `<option value="${esc(p.id)}" ${i === 0 && p.s > 0 ? "selected" : ""}>Replace the boundary of ${esc(p.name)}</option>`).join("")}
-        <option value="" ${ranked.length && ranked[0].s > 0 ? "" : "selected"}>A new pasture</option></select></label>
-      <label id="l2pName">Name of the new pasture<input name="name" maxlength="80" value="${esc(line.name || "")}"></label>
-      <div class="row"><button type="submit" class="primary">Save boundary</button><button type="button" class="secondary" id="l2pBack">Cancel</button></div></form>`);
+    openSheet(T("Use as a pasture boundary"), `<form class="form" id="l2pForm">
+      <p>${esc(T("{n} acres · {c} corners.", {n: acresOf(ring).toFixed(1), c: ring.length}))}${line.shape_id ? " " + esc(T("The line itself is removed once it becomes a boundary.")) : ""}</p>
+      <label>${esc(T("Which pasture?"))}<select name="target">
+        ${ranked.map((p, i) => `<option value="${esc(p.id)}" ${i === 0 && p.s > 0 ? "selected" : ""}>${esc(T("Replace the boundary of {name}", {name: p.name}))}</option>`).join("")}
+        <option value="" ${ranked.length && ranked[0].s > 0 ? "" : "selected"}>${esc(T("A new pasture"))}</option></select></label>
+      <label id="l2pName">${esc(T("Name of the new pasture"))}<input name="name" maxlength="80" value="${esc(line.name || "")}"></label>
+      <div class="row"><button type="submit" class="primary">${esc(T("Save boundary"))}</button><button type="button" class="secondary" id="l2pBack">${esc(T("Cancel"))}</button></div></form>`);
     const f = $("l2pForm"), nameRow = $("l2pName");
     const sync = () => { nameRow.hidden = !!f.target.value; f.name.required = !f.target.value; };
     f.target.onchange = sync; sync();
@@ -2007,7 +2037,7 @@
       shapeChange({shape_id: id, kind: "pasture", name: target ? target.name : f.name.value.trim(), coords: ring, source: line.source || "drawn", note: null});
       if (line.shape_id && shapes.some(s2 => s2.shape_id === line.shape_id)) shapeChange({shape_id: line.shape_id, kind: line.kind, deleted: true});
       if (opts.draft) { draft = null; store.del("draft"); renderDraft(); }
-      closeSheet(); toast(`Boundary saved${target ? " for " + target.name : ""}. Status updates in a few minutes.`); renderMap();
+      closeSheet(); toast(target ? T("Boundary saved for {name}. Status updates in a few minutes.", {name: target.name}) : T("Boundary saved. Status updates in a few minutes.")); renderMap();
     };
   }
   // A photo tied to a line or boundary: where the phone is, or the middle of the shape when there's no GPS.
@@ -2029,10 +2059,10 @@
     if (!el) return;
     const draw = () => {
       const list = photosOf(key, id);
-      el.innerHTML = `<div class="pstrip">${list.map(p => `<span class="pthumb">${opts.form ? `<img src="${esc(thumbOf(p))}" alt="Photo">`
-          : `<button type="button" data-photo="${esc(p.client_id)}" aria-label="Open photo"><img src="${esc(thumbOf(p))}" alt=""></button>`}
-          ${canRemovePhoto(p) ? `<button type="button" class="pdel" data-pdel="${esc(p.client_id)}" aria-label="Remove photo">✕</button>` : ""}</span>`).join("")}
-        ${opts.add === false ? "" : `<button type="button" class="padd" data-padd><span aria-hidden="true">📷</span>${list.length ? "Add another" : "Add photo"}</button>`}</div>`;
+      el.innerHTML = `<div class="pstrip">${list.map(p => `<span class="pthumb">${opts.form ? `<img src="${esc(thumbOf(p))}" alt="${esc(T("Photo"))}">`
+          : `<button type="button" data-photo="${esc(p.client_id)}" aria-label="${esc(T("Open photo"))}"><img src="${esc(thumbOf(p))}" alt=""></button>`}
+          ${canRemovePhoto(p) ? `<button type="button" class="pdel" data-pdel="${esc(p.client_id)}" aria-label="${esc(T("Remove photo"))}">✕</button>` : ""}</span>`).join("")}
+        ${opts.add === false ? "" : `<button type="button" class="padd" data-padd><span aria-hidden="true">📷</span>${esc(list.length ? T("Add another") : T("Add photo"))}</button>`}</div>`;
       const add = el.querySelector("[data-padd]");
       if (add) add.onclick = async e => {
         e.preventDefault();
@@ -2041,7 +2071,7 @@
       };
       el.querySelectorAll("[data-pdel]").forEach(b => b.onclick = async e => {
         e.preventDefault(); e.stopPropagation();
-        if (!confirm("Remove this photo?")) return;
+        if (!confirm(T("Remove this photo?"))) return;
         await removePhoto(b.dataset.pdel); draw(); if (opts.onChange) opts.onChange();
       });
     };
@@ -2055,7 +2085,7 @@
     if (q) return q.resolved ? {at: q.at, by: q.by, note: q.note} : null;
     if (x.resolved_at) return {at: x.resolved_at, by: x.resolved_by, note: x.resolve_note};
     const t = tasks.find(t2 => t2.source_id === x.client_id && t2.done_at);
-    return t ? {at: t.done_at, by: t.done_by_name, note: "Job done: " + t.title} : null;
+    return t ? {at: t.done_at, by: t.done_by_name, note: T("Job done: {title}", {title: t.title})} : null;
   }
   const canResolve = (x, isLog) => isLog ? x.kind === "note" : (tagsAt(x.tags, HEADS_UP).length > 0 || !!x.flagged);
   function setResolved(x, resolved, note) {
@@ -2066,26 +2096,26 @@
   function mountResolve(el, x, back) {
     if (!el) return;
     const r = resolution(x);
-    el.innerHTML = r ? `<p class="resolved">✓ <b>Resolved</b>${r.by ? " by " + esc(r.by) : ""} · ${esc(when(r.at))}${r.note ? `<br>${esc(r.note)}` : ""}</p>
-        <div class="row"><button type="button" class="secondary" data-reopen>↺ Reopen</button></div>`
-      : `<div class="row"><button type="button" class="primary" data-resolve>✓ Mark resolved</button></div>`;
+    el.innerHTML = r ? `<p class="resolved">✓ <b>${esc(T("Resolved"))}</b>${r.by ? " " + esc(T("by {name}", {name: r.by})) : ""} · ${esc(when(r.at))}${r.note ? `<br>${esc(r.note)}` : ""}</p>
+        <div class="row"><button type="button" class="secondary" data-reopen>${esc(T("↺ Reopen"))}</button></div>`
+      : `<div class="row"><button type="button" class="primary" data-resolve>${esc(T("✓ Mark resolved"))}</button></div>`;
     const res = el.querySelector("[data-resolve]"), reo = el.querySelector("[data-reopen]");
     if (res) res.onclick = () => resolveSheet(x, back);
-    if (reo) reo.onclick = () => { if (confirm("Reopen this problem? It will show as needing attention again.")) { setResolved(x, false); toast("Reopened."); back(); } };
+    if (reo) reo.onclick = () => { if (confirm(T("Reopen this problem? It will show as needing attention again."))) { setResolved(x, false); toast(T("Reopened.")); back(); } };
   }
   function resolveSheet(x, back) {
     const before = new Set(photosOf("log_id", x.client_id).map(p => p.client_id));
-    const what = [(x.tags || []).join(", "), x.text || x.note].filter(Boolean).join(" · ") || "This problem";
-    openSheet("Mark resolved", `<form class="form" id="resForm"><p><b>${esc(what)}</b>${x.pasture_id ? ` <span class="dim">(${esc(pastureName(x.pasture_id))})</span>` : ""}</p>
-      <label>What was done? (optional)<textarea name="note" maxlength="1000" placeholder="All 12 head back in, gate chained"></textarea></label>
-      <div><p class="dim small">Photos (add one of the fix if you like)</p><div id="resPhotos"></div></div>
-      <div class="row"><button type="submit" class="primary">✓ Resolved</button><button type="button" class="secondary" id="resCancel">Cancel</button></div></form>`);
+    const what = [tagWords(x.tags), x.text || x.note].filter(Boolean).join(" · ") || T("This problem");
+    openSheet(T("Mark resolved"), `<form class="form" id="resForm"><p><b>${esc(what)}</b>${x.pasture_id ? ` <span class="dim">(${esc(pastureName(x.pasture_id))})</span>` : ""}</p>
+      <label>${esc(T("What was done? (optional)"))}<textarea name="note" maxlength="1000" placeholder="${esc(T("All 12 head back in, gate chained"))}"></textarea></label>
+      <div><p class="dim small">${esc(T("Photos (add one of the fix if you like)"))}</p><div id="resPhotos"></div></div>
+      <div class="row"><button type="submit" class="primary">${esc(T("✓ Resolved"))}</button><button type="button" class="secondary" id="resCancel">${esc(T("Cancel"))}</button></div></form>`);
     mountPhotoStrip($("resPhotos"), "log_id", x.client_id, {form: true, extra: () => ({pasture_id: x.pasture_id || null})});
     $("resCancel").onclick = async () => {
       for (const p of photosOf("log_id", x.client_id)) if (!before.has(p.client_id)) await removePhoto(p.client_id);
       back();
     };
-    $("resForm").onsubmit = e => { e.preventDefault(); setResolved(x, true, e.target.note.value.trim()); toast("Marked resolved."); back(); };
+    $("resForm").onsubmit = e => { e.preventDefault(); setResolved(x, true, e.target.note.value.trim()); toast(T("Marked resolved.")); back(); };
   }
 
   // Photos added to something that was then cancelled are thrown away.
@@ -2122,8 +2152,8 @@
     store.set("places", places); rerender(); syncAll();
   }
   function kindPicker(selected) {
-    const groups = [["water", "Water"], ["hunting", "Hunting"], ["ranch", "Ranch"], ["sensors", "Sensors"]];
-    return groups.map(([g, label]) => `<p class="dim small kindgroup">${rIcon(g, 20)} ${label}</p><div class="tagchips">${Object.entries(PLACE_KINDS)
+    const groups = [["water", T("Water")], ["hunting", T("Hunting")], ["ranch", T("Ranch")], ["sensors", T("Sensors")]];
+    return groups.map(([g, label]) => `<p class="dim small kindgroup">${rIcon(g, 20)} ${esc(label)}</p><div class="tagchips">${Object.entries(PLACE_KINDS)
       .filter(([, v]) => v[2] === g).map(([k, v]) => `<button type="button" data-kind="${k}" aria-pressed="${k === selected}">${rIcon(k, 26, v[1])}${esc(v[0])}</button>`).join("")}</div>`).join("");
   }
   async function placePhoto(extra = {}) {       // returns the queued photo's id, or null
@@ -2146,7 +2176,7 @@
             accuracy_m: fix ? fix.acc : null, heading_deg: null, pasture_id: null, tags: [], note: null, by: me && me.name, analysis: {}, flagged: false,
             ...extra}});
           await loadPending(); ok(client_id);
-        } catch (err) { toast("Couldn't use that photo: " + err.message); ok(null); }
+        } catch (err) { toast(T("Couldn't use that photo: {error}", {error: err.message})); ok(null); }
       };
       input.click();
     });
@@ -2159,20 +2189,20 @@
   }
   function placeForm() {
     const d = placeDraft, isNew = !places.some(p => p.place_id === d.place_id);
-    openSheet(isNew ? "Add a place" : "Edit place", `<form class="form" id="placeForm"><div>${kindPicker(d.kind)}</div>
-      <label>Name<input name="name" maxlength="80" required value="${esc(d.name)}" placeholder="${esc(PLACE_KINDS[d.kind][0])} by the north gate"></label>
-      <div><p><b>Where</b></p><p class="dim" id="plWhere"></p>
-        <div class="row"><button type="button" class="secondary" id="plGps">📍 Use where I'm standing</button>
-        <button type="button" class="secondary" id="plTap">👆 Tap it on the map</button></div></div>
-      <div><p class="dim small">Photos (optional)</p><div id="plPhotos"></div></div>
-      <label id="plDevice" ${d.kind.startsWith("sensor_") ? "" : "hidden"}>Device ID (optional; on the sensor's label)<input name="device_id" maxlength="64" value="${esc(d.device_id || "")}" autocapitalize="characters"></label>
-      <label>Notes (optional)<textarea name="note" maxlength="1000" placeholder="Holds about 2,000 gal · feeder set to 7 am">${esc(d.note || "")}</textarea></label>
-      <div class="row"><button type="submit" class="primary">Save place</button><button type="button" class="secondary" id="plCancel">Cancel</button></div></form>`);
+    openSheet(isNew ? T("Add a place") : T("Edit place"), `<form class="form" id="placeForm"><div>${kindPicker(d.kind)}</div>
+      <label>${esc(T("Name"))}<input name="name" maxlength="80" required value="${esc(d.name)}" placeholder="${esc(T("{kind} by the north gate", {kind: PLACE_KINDS[d.kind][0]}))}"></label>
+      <div><p><b>${esc(T("Where"))}</b></p><p class="dim" id="plWhere"></p>
+        <div class="row"><button type="button" class="secondary" id="plGps">${esc(T("📍 Use where I'm standing"))}</button>
+        <button type="button" class="secondary" id="plTap">${esc(T("👆 Tap it on the map"))}</button></div></div>
+      <div><p class="dim small">${esc(T("Photos (optional)"))}</p><div id="plPhotos"></div></div>
+      <label id="plDevice" ${d.kind.startsWith("sensor_") ? "" : "hidden"}>${esc(T("Device ID (optional; on the sensor's label)"))}<input name="device_id" maxlength="64" value="${esc(d.device_id || "")}" autocapitalize="characters"></label>
+      <label>${esc(T("Notes (optional)"))}<textarea name="note" maxlength="1000" placeholder="${esc(T("Holds about 2,000 gal · feeder set to 7 am"))}">${esc(d.note || "")}</textarea></label>
+      <div class="row"><button type="submit" class="primary">${esc(T("Save place"))}</button><button type="button" class="secondary" id="plCancel">${esc(T("Cancel"))}</button></div></form>`);
     const f = $("placeForm");
     const where = () => {
       const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
-      $("plWhere").textContent = d.lat != null ? `Set: ${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}${d.acc ? ` (±${d.acc} m)` : " (from the map)"}`
-        : fx ? `Not set yet. Your phone is at ±${fx.acc} m.` : "Not set yet. Getting your location…";
+      $("plWhere").textContent = d.lat != null ? T("Set: {where}", {where: `${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}`}) + (d.acc ? ` (±${d.acc} m)` : " " + T("(from the map)"))
+        : fx ? T("Not set yet. Your phone is at ±{m} m.", {m: fx.acc}) : T("Not set yet. Getting your location…");
     };
     where(); const t = setInterval(() => { if (!$("plWhere")) return clearInterval(t); where(); }, 1000);
     f.querySelectorAll("[data-kind]").forEach(b => b.onclick = () => {
@@ -2183,7 +2213,7 @@
     });
     const keep = () => { d.name = f.name.value; d.note = f.note.value; d.device_id = f.device_id.value; };
     $("plGps").onclick = () => { const fx = cam.fix && Date.now() - cam.fix.at < 120000 ? cam.fix : null;
-      if (!fx) { toast("No GPS fix yet. Try again in a moment, or tap it on the map."); return; } d.lat = fx.lat; d.lon = fx.lon; d.acc = fx.acc; where(); };
+      if (!fx) { toast(T("No GPS fix yet. Try again in a moment, or tap it on the map.")); return; } d.lat = fx.lat; d.lon = fx.lon; d.acc = fx.acc; where(); };
     $("plTap").onclick = () => { keep(); clearInterval(t); closeSheet();
       pickOnMap((lat, lon) => { if (lat != null) { d.lat = lat; d.lon = lon; d.acc = null; } placeForm(); }); };
     mountPhotoStrip($("plPhotos"), "place_id", d.place_id, {form: true, onChange: () => {
@@ -2194,11 +2224,11 @@
     $("plCancel").onclick = () => { clearInterval(t); placeDraft = null; stopSensors(); closeSheet(); if (isNew) dropPhotosOf("place_id", d.place_id); };
     f.onsubmit = e => {
       e.preventDefault(); keep();
-      if (d.lat == null) { toast("Set where it is: use your location or tap it on the map."); return; }
+      if (d.lat == null) { toast(T("Set where it is: use your location or tap it on the map.")); return; }
       clearInterval(t); stopSensors();
       placeChange({place_id: d.place_id, kind: d.kind, name: d.name.trim() || PLACE_KINDS[d.kind][0], note: d.note.trim() || null,
         lat: d.lat, lon: d.lon, photo_id: (photosOf("place_id", d.place_id)[0] || {}).client_id || null, device_id: d.kind.startsWith("sensor_") ? (d.device_id || "").trim() || null : null});
-      closeSheet(); toast("Place saved."); placeDraft = null;
+      closeSheet(); toast(T("Place saved.")); placeDraft = null;
     };
   }
   function openPlace(id) {
@@ -2206,21 +2236,21 @@
     const k = PLACE_KINDS[pl.kind] || PLACE_KINDS.other;
     const ph = (pl.photo_id && allPhotos().find(x => x.client_id === pl.photo_id)) || photosOf("place_id", pl.place_id)[0];
     const canEdit = isOwner() || (me && pl.created_by === me.user_id);
-    openSheet(pl.name, `<p class="kindline">${rIcon(PLACE_KINDS[pl.kind] ? pl.kind : "other", 40, k[1])}<span class="dim">${esc(k[0])}${pl.created_by_name ? " · added by " + esc(pl.created_by_name) : ""}</span></p>
-      ${ph ? `<img class="photoimg" src="${esc(imageOf(ph))}" alt="Photo of ${esc(pl.name)}">` : ""}
+    openSheet(pl.name, `<p class="kindline">${rIcon(PLACE_KINDS[pl.kind] ? pl.kind : "other", 40, k[1])}<span class="dim">${esc(k[0])}${pl.created_by_name ? " · " + esc(T("added by {name}", {name: pl.created_by_name})) : ""}</span></p>
+      ${ph ? `<img class="photoimg" src="${esc(imageOf(ph))}" alt="${esc(T("Photo of {name}", {name: pl.name}))}">` : ""}
       ${pl.note ? `<p>${esc(pl.note)}</p>` : ""}
       <div id="plPhotosView"></div>
-      ${pl.kind.startsWith("sensor_") ? `<p class="dim small">${pl.device_id ? "Device " + esc(pl.device_id) + ". " : ""}Live readings will show here once sensors are connected to RangeIQ.</p>` : ""}
-      <div class="row"><button type="button" class="secondary" id="plMap">Show on map</button>
-        <button type="button" class="secondary" id="plJob">＋ Make it a job</button>
-        ${canEdit ? `<button type="button" class="secondary" id="plEdit">Edit</button><button type="button" class="secondary" id="plDel">Delete</button>` : ""}</div>`);
+      ${pl.kind.startsWith("sensor_") ? `<p class="dim small">${pl.device_id ? esc(T("Device {id}.", {id: pl.device_id})) + " " : ""}${esc(T("Live readings will show here once sensors are connected to RangeIQ."))}</p>` : ""}
+      <div class="row"><button type="button" class="secondary" id="plMap">${esc(T("Show on map"))}</button>
+        <button type="button" class="secondary" id="plJob">${esc(T("＋ Make it a job"))}</button>
+        ${canEdit ? `<button type="button" class="secondary" id="plEdit">${esc(T("Edit"))}</button><button type="button" class="secondary" id="plDel">${esc(T("Delete"))}</button>` : ""}</div>`);
     mountPhotoStrip($("plPhotosView"), "place_id", pl.place_id, {onChange: () => openPlace(id)});
     $("plMap").onclick = () => showOnMap(pl.lat, pl.lon);
-    $("plJob").onclick = () => addTask({title: `Check ${pl.name}`, note: "", lat: pl.lat, lon: pl.lon, source_id: null,
+    $("plJob").onclick = () => addTask({title: T("Check {name}", {name: pl.name}), note: "", lat: pl.lat, lon: pl.lon, source_id: null,
       pasture_id: pastureAt(pl.lon, pl.lat)});
     if (canEdit) {
       $("plEdit").onclick = () => { placeDraft = {...pl}; startSensors(); placeForm(); };
-      $("plDel").onclick = () => { if (confirm(`Delete ${pl.name}?`)) { placeChange({place_id: pl.place_id, deleted: true}); closeSheet(); } };
+      $("plDel").onclick = () => { if (confirm(T("Delete {name}?", {name: pl.name}))) { placeChange({place_id: pl.place_id, deleted: true}); closeSheet(); } };
     }
   }
 
@@ -2228,7 +2258,7 @@
   let syncing = false;
   async function syncAll(manual) {
     if (syncing) return;
-    if (!navigator.onLine) { updateSyncPill(); if (manual) toast("No signal yet. Everything is safe on this phone."); return; }
+    if (!navigator.onLine) { updateSyncPill(); if (manual) toast(T("No signal yet. Everything is safe on this phone.")); return; }
     syncing = true;
     try {
       const q = store.get("queue", []);
@@ -2256,7 +2286,7 @@
         const res = await api("tasks", {method: "POST", body: JSON.stringify(tq)});
         const sent = new Set([...res.applied, ...res.errors.map(e => e.op_id)]);
         store.set("taskq", store.get("taskq", []).filter(o => !sent.has(o.op_id)));
-        if (res.errors.length) toast(res.errors[0].error);
+        if (res.errors.length) toast(TX(res.errors[0].error));
         setTasksFromServer(res.tasks);
       } else await loadTasks();
       const sq = store.get("shapeq", []);
@@ -2264,7 +2294,7 @@
         const res = await api("shapes", {method: "POST", body: JSON.stringify(sq)});
         const sent = new Set([...res.saved, ...res.errors.map(e => e.shape_id)]);
         store.set("shapeq", store.get("shapeq", []).filter(x => !sent.has(x.shape_id)));
-        if (res.errors.length) toast(res.errors[0].error);
+        if (res.errors.length) toast(TX(res.errors[0].error));
         setShapesFromServer(res.shapes); boundariesLocked = res.boundaries_locked; store.set("boundariesLocked", boundariesLocked);
       } else await loadShapes();
       const pq = store.get("placeq", []);
@@ -2272,7 +2302,7 @@
         const res = await api("places", {method: "POST", body: JSON.stringify(pq)});
         const sent = new Set([...res.saved, ...res.errors.map(e => e.place_id)]);
         store.set("placeq", store.get("placeq", []).filter(x => !sent.has(x.place_id)));
-        if (res.errors.length) toast(res.errors[0].error);
+        if (res.errors.length) toast(TX(res.errors[0].error));
         setPlacesFromServer(res.places);
       } else await loadPlaces();
       await loadPending();
@@ -2284,7 +2314,7 @@
   function updateSyncPill() {
     const n = store.get("queue", []).length + pending.length + store.get("taskq", []).length + store.get("placeq", []).length + store.get("shapeq", []).length
       + store.get("resolveq", []).length + store.get("msgq", []).length + store.get("sosq", []).length, p = $("syncPill");
-    p.hidden = !n; p.textContent = n + " waiting to send";
+    p.hidden = !n; p.textContent = T("{n} waiting to send", {n});
   }
   $("syncPill").onclick = () => syncAll(true);
 
@@ -2304,21 +2334,21 @@
     + store.get("resolveq", []).length + store.get("msgq", []).length + store.get("sosq", []).length;
   async function switchRanch(workspaceId) {
     if (!me || workspaceId === me.workspace_id) { closeSheet(); return; }
-    if (unsent()) { await syncAll(true); if (unsent()) { toast("Some photos or entries for this ranch haven't sent yet. Switch once they have."); return; } }
+    if (unsent()) { await syncAll(true); if (unsent()) { toast(T("Some photos or entries for this ranch haven't sent yet. Switch once they have.")); return; } }
     try {
       const who = await api("switch", {method: "POST", body: JSON.stringify({workspace_id: workspaceId})});
       ["snapshot", "snapshotAt", "serverLogs", "photos", "tasks", "people", "places", "shapes", "draft", "chat"].forEach(k => store.del(k));
       chat = {...EMPTY_CHAT}; chatBadge();
       rawSnap = snap = null; photos = []; serverLogs = []; tasks = []; people = []; places = []; shapes = []; draft = null; stopGps();
       if (view3d) { view3d.dispose(); view3d = null; }
-      closeSheet(); toast("Now on " + who.ranch); await signedIn(who);
-    } catch (e) { if (e.signin) show("login"); else toast(navigator.onLine ? e.message : "Switching ranches needs signal."); }
+      closeSheet(); toast(T("Now on {ranch}", {ranch: who.ranch})); await signedIn(who);
+    } catch (e) { if (e.signin) show("login"); else toast(navigator.onLine ? e.message : T("Switching ranches needs signal.")); }
   }
   function ranchPicker() {
     const rs = (me && me.ranches) || [];
     if (rs.length < 2) return;
-    openSheet("Which ranch?", `<div class="tagpick">${rs.map(r => `<button type="button" class="${r.workspace_id === me.workspace_id ? "primary" : "secondary"}"
-      data-ranch="${esc(r.workspace_id)}">${esc(r.name)}${r.role === "crew" ? " (crew)" : ""}</button>`).join("")}</div>`);
+    openSheet(T("Which ranch?"), `<div class="tagpick">${rs.map(r => `<button type="button" class="${r.workspace_id === me.workspace_id ? "primary" : "secondary"}"
+      data-ranch="${esc(r.workspace_id)}">${esc(r.name)}${r.role === "crew" ? " (" + esc(T("crew")) + ")" : ""}</button>`).join("")}</div>`);
   }
   $("brandBtn").onclick = ranchPicker;
   document.addEventListener("click", e => { const r = e.target.closest("[data-ranch]"); if (r) switchRanch(r.dataset.ranch); });
@@ -2331,13 +2361,13 @@
     try { store.set("lastEmail", $("loginEmail").value.trim());
       await signedIn(await api("login", {method: "POST", body: JSON.stringify({email: $("loginEmail").value.trim(), password: $("loginPassword").value,
         ranch: store.get("lastRanch", "")})})); $("loginPassword").value = ""; }
-    catch (err) { $("loginError").textContent = navigator.onLine ? err.message : "Signing in needs signal."; $("loginError").hidden = false; }
+    catch (err) { $("loginError").textContent = navigator.onLine ? err.message : T("Signing in needs signal."); $("loginError").hidden = false; }
   };
   $("joinForm").onsubmit = async e => {
     e.preventDefault(); $("joinError").hidden = true;
     try { await signedIn(await api("join", {method: "POST", body: JSON.stringify({code: $("joinCode").value, name: $("joinName").value.trim(),
       email: $("joinEmail").value.trim(), password: $("joinPassword").value})})); $("joinPassword").value = ""; }
-    catch (err) { $("joinError").textContent = navigator.onLine ? err.message : "Joining needs signal."; $("joinError").hidden = false; }
+    catch (err) { $("joinError").textContent = navigator.onLine ? err.message : T("Joining needs signal."); $("joinError").hidden = false; }
   };
 
   // ---------------------------------------------------------------- install / offline / start
@@ -2345,9 +2375,9 @@
   addEventListener("beforeinstallprompt", e => { e.preventDefault(); deferred = e; $("installBtn").hidden = false; });
   $("installBtn").onclick = async () => { if (!deferred) return; deferred.prompt(); await deferred.userChoice; deferred = null; $("installBtn").hidden = true; };
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  $("o-install").innerHTML = matchMedia("(display-mode: standalone)").matches || navigator.standalone ? "RangeIQ is on your home screen." : ios
-    ? "In <b>Safari</b>, tap the <b>Share</b> button, then <b>Add to Home Screen</b>."
-    : "Tap <b>Install</b> at the top, or the browser menu → <b>Install app</b>.";
+  $("o-install").innerHTML = matchMedia("(display-mode: standalone)").matches || navigator.standalone ? esc(T("RangeIQ is on your home screen.")) : ios
+    ? T("In <b>Safari</b>, tap the <b>Share</b> button, then <b>Add to Home Screen</b>.")
+    : T("Tap <b>Install</b> at the top, or the browser menu → <b>Install app</b>.");
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { refresh(); syncAll(); } });
 
