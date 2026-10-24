@@ -439,6 +439,13 @@ def create_app(
                 errors.append({"client_id": entry.get("client_id"), "error": str(exc)})
         return {"saved": saved, "errors": errors}
 
+    @app.get("/api/herd")
+    def herd_inventory(sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
+        """Head in each pasture by class, from the whole ledger of moves, counts and herd changes (ranch_ai.rancher.herd)."""
+        from ranch_ai.rancher.herd import inventory
+
+        return inventory(app.state.store.herd_logs(sess["workspace_id"]))
+
     @app.post("/api/resolve")
     def resolve(payload: Any = Body(...), sess: dict[str, str] = Depends(session)) -> dict[str, Any]:
         """Mark problem reports / photos resolved or reopen them: [{item_id, resolved, at, note}]. Anyone on the ranch."""

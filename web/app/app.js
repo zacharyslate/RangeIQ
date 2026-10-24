@@ -181,8 +181,10 @@
     sensor_soil: [T("Soil moisture sensor"), "📡", "sensors"], sensor_weather: [T("Weather station"), "📡", "sensors"], sensor_other: [T("Other sensor"), "📡", "sensors"]};
   const LAYERS = [["pastures", T("Pastures"), "🟫"], ["flags", T("Pasture flags"), "🚩"], ["glow", T("Glowing walls (3D)"), "✨"], ["colors", T("Warning colors"), "🚦"], ["water", T("Water"), "💧"], ["hunting", T("Hunting"), "🛖"],
     ["ranch", T("Ranch places"), "🏠"], ["usgs", T("USGS water map"), "🗺️"], ["sensors", T("Sensors"), "📡"], ["wildlife", T("Wildlife & sightings"), "🦌"], ["problems", T("Problems"), "⚠️"], ["photos", T("Other photos"), "📷"],
-    ["jobs", T("Jobs"), "✅"]];
-  let layers = {...Object.fromEntries(LAYERS.map(([k]) => [k, true])), ...store.get("layers", {})};
+    ["jobs", T("Jobs"), "✅"], ["herd", T("Head counts"), "🐄"]];
+  let layers = {...Object.fromEntries(LAYERS.map(([k]) => [k, true])), herd: false, ...store.get("layers", {})};
+  // Pasture name on its flag, with the head in it when the Head counts layer is on.
+  const flagName = (id, name) => { if (!layers.herd) return name; const h = herdView().pastures[id]; return h && h.total ? `${name} · ${h.total}` : name; };
   let places = store.get("places", []);
   function layerOfTags(tags) {
     if (tagsAt(tags, HEADS_UP).length) return "problems";
@@ -228,7 +230,7 @@
   function belongsTo(p) {
     let label = null, id = null;
     if (p.log_id) { const it = logItems().find(i => i.l && i.l.client_id === p.log_id);
-      if (it) { id = p.log_id; label = it.type === "rain" ? T("Rain gauge") : it.type === "move" ? T("Moved cattle")
+      if (it) { id = p.log_id; label = it.type === "rain" ? T("Rain gauge") : HERD_KINDS.includes(it.type) ? T("Cattle")
         : T("Report: {what}", {what: (((it.l.tags || [])[0] ? T(it.l.tags[0]) : "") || it.l.text || "").slice(0, 40)}); } }
     else if (p.task_id) { const t = tasks.find(x => x.task_id === p.task_id); if (t) { id = t.task_id; label = T("Job: {what}", {what: t.title}); } }
     else if (p.place_id) { const pl = places.find(x => x.place_id === p.place_id); if (pl) { id = pl.place_id; label = T("Place: {what}", {what: pl.name}); } }
@@ -308,7 +310,7 @@
       const data = await api("snapshot");
       if (data.pending || data.setup_needed) { rawSnap = snap = null; store.del("snapshot"); store.set("setupMsg", data.message); }
       else { rawSnap = data; snap = viewOf(data); snapAt = new Date().toISOString(); store.set("snapshot", data); store.set("snapshotAt", snapAt); store.del("setupMsg"); }
-      const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs), loadTasks(), loadPlaces(), loadShapes()]);
+      const [m, ph, lg] = await Promise.all([api("me"), api("photos").catch(() => photos), api("logs").catch(() => serverLogs), loadTasks(), loadPlaces(), loadShapes(), loadHerd()]);
       me = m; photos = ph; serverLogs = lg; if (m.workspace_id) store.set("lastRanch", m.workspace_id);
       // Notifications are written in the language this phone uses.
       if (m.lang && m.lang !== I18N.lang) api("me/lang", {method: "POST", body: JSON.stringify({lang: I18N.lang})}).catch(() => {});
@@ -331,7 +333,7 @@
     $("brandCaret").hidden = !(me && (me.ranches || []).length > 1);
     $("h-h").textContent = (snap && snap.ranch.name) || T("Today");
     $("h-updated").textContent = snap ? T("Updated {when}", {when: when(snap.generated_at)}) : "";
-    homeTodo();
+    homeTodo(); herdHome();
     const box = $("h-attention");
     if (!snap) {
       box.innerHTML = `<h2>${esc(T("Getting started"))}</h2><p class="dim">${esc(TX(store.get("setupMsg", "")) || T("Waiting for the first ranch update…"))}</p>
@@ -530,7 +532,7 @@
       const [fx, fy] = interiorPoint(o.ll.map(([lat, lon]) => [lon, lat]));
       const flag = L.marker([fy, fx], {keyboard: false, riseOnHover: true, title: o.name,
         icon: L.divIcon({className: "pflag-at", iconSize: null, html:
-          `<div class="pflag" style="--c:${layers.colors && st ? (COLOR[st] || "#888") : "#fff"}"><i></i><span>${esc(o.name)}</span></div>`})})
+          `<div class="pflag" style="--c:${layers.colors && st ? (COLOR[st] || "#888") : "#fff"}"><i></i><span>${esc(flagName(o.id, o.name))}</span></div>`})})
         .on("click", e => {
           L.DomEvent.stop(e);
           // While placing something or drawing, a tap on a flag means "here": hand the spot to the map.
@@ -542,7 +544,7 @@
     // Names show once pastures are wide enough on screen for them not to pile on top of each other.
     const widths = () => outlines.map(o => { const b = L.latLngBounds(o.ll);
       return map.latLngToContainerPoint(b.getNorthEast()).x - map.latLngToContainerPoint(b.getSouthWest()).x; }).sort((p, q) => p - q);
-    const names = () => { if (!map._loaded) return; const w = widths(); map.getContainer().classList.toggle("flag-names", !!w.length && w[w.length >> 1] >= 120); };
+    const names = () => { if (!map._loaded) return; const w = widths(); map.getContainer().classList.toggle("flag-names", layers.herd || (!!w.length && w[w.length >> 1] >= 120)); };
     if (map._flagNames) map.off("zoomend", map._flagNames); map._flagNames = names; map.on("zoomend", names);
     shapes.filter(x => x.kind !== "pasture" && layers[lineLayerKey(x.kind)] !== false && !(draft && draft.shape_id === x.shape_id)).forEach(x => {
       const ln = L.polyline(x.coords.map(([lon, lat]) => [lat, lon]), lineStyle(x.kind)).on("click", e => { if (mapPicker || draft) return; L.DomEvent.stop(e); openShape(x.shape_id); });
@@ -658,15 +660,15 @@
   }
   // The pastures as they are now (drawn/edited ones win), for the 3D walls and flags.
   const pastures3d = () => { const drawn = pastureShapes();
-    return drawn.length ? drawn.map(x => ({id: x.shape_id, name: x.name, coords: x.coords}))
-      : (snap ? snap.pastures.filter(p => p.outline && p.outline.length > 2).map(p => ({id: p.id, name: p.name, coords: p.outline})) : []); };
+    return drawn.length ? drawn.map(x => ({id: x.shape_id, name: flagName(x.shape_id, x.name), coords: x.coords}))
+      : (snap ? snap.pastures.filter(p => p.outline && p.outline.length > 2).map(p => ({id: p.id, name: flagName(p.id, p.name), coords: p.outline})) : []); };
   const lines3d = () => shapes.filter(x => x.kind !== "pasture" && layers[lineLayerKey(x.kind)] !== false)
     .map(x => ({id: x.shape_id, coords: x.coords, color: (LINE_TYPES[x.kind] || LINE_TYPES.other_line).color, width: (LINE_TYPES[x.kind] || {}).weight || 3}));
   function renderLayerCard() {
     const all = (() => { const keep = layers; layers = Object.fromEntries(LAYERS.map(([k]) => [k, true])); const x = mapItems(); layers = keep; return x; })();
     const count = k => all.filter(x => x.layer === k).length;
     $("layerCard").innerHTML = `<h2>${esc(T("Show on the map"))}</h2><div class="layers">${LAYERS.map(([k, label, ic]) => `<button type="button" class="layer" data-layer="${k}"
-      aria-pressed="${!!layers[k]}"><span aria-hidden="true">${rIcon(k, 24, ic)}</span>${esc(label)}${["pastures", "flags", "colors", "glow"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
+      aria-pressed="${!!layers[k]}"><span aria-hidden="true">${k === "herd" ? rIcon("group:Livestock", 24, ic) : rIcon(k, 24, ic)}</span>${esc(label)}${["pastures", "flags", "colors", "glow", "herd"].includes(k) ? "" : ` <span class="dim">${count(k)}</span>`}</button>`).join("")}</div>
       <h3>${esc(T("Roads & trails"))}</h3><div class="layers">${Object.entries(LINE_TYPES).map(([k, v]) => { const n = shapes.filter(x => x.kind === k).length;
         return `<button type="button" class="layer" data-layer="${lineLayerKey(k)}" aria-pressed="${layers[lineLayerKey(k)] !== false}"><i class="swatch" style="background:${v.color}"></i>${esc(v.label)} <span class="dim">${n}</span></button>`; }).join("")}</div>
       <label class="switchrow"><input type="checkbox" id="hideEverydayMap" ${store.get("hideEveryday", false) ? "checked" : ""}>
@@ -704,6 +706,7 @@
     const s = STATUS[p.status] || STATUS.unknown;
     $("d-h").textContent = p.name; $("d-acres").textContent = p.acres != null ? T("{n} acres", {n: p.acres}) : "";
     $("d-status").innerHTML = `<span class="chip ${esc(p.status)}">${s.icon} ${s.word}</span> <span class="dim">${esc(TX(p.headline.replace(/^(Act|Watch):\s*/, "")))}</span>`;
+    $("d-herd").innerHTML = herdCard(p.id);
     const ph = allPhotos().filter(x => x.pasture_id === p.id).slice(0, 9);
     $("d-photos").innerHTML = `<h2>${esc(T("Photos"))}</h2>` + (ph.length ? `<div class="photogrid">${ph.map(x => `<button type="button" data-photo="${esc(x.client_id)}"
       aria-label="${esc(T("Photo {when}", {when: when(x.taken_at)}))}"><img src="${esc(thumbOf(x))}" alt="" loading="lazy"></button>`).join("")}</div>` : `<p class='dim'>${esc(T("No photos here yet."))}</p>`);
@@ -780,8 +783,10 @@
         <span class="meta">${esc(when(p.taken_at))}${by(p)}${p._pending ? ` · <span class="pending">${esc(T("waiting to send"))}</span>` : ""}</span></li>`;
     }
     const l = it.l;
-    const top = topTag(l.tags), ico = it.type === "problem" ? rIcon(top || "note", 30, top ? TAG[top].icon : "📝") : {move: rIcon("group:Livestock", 30, "🐄"), rain: rIcon("sensor_rain", 30, "🌧")}[it.type] || "•";
-    const what = it.type === "move" ? (l.from_pasture_id ? T("Moved cattle from {from} to <b>{to}</b>", {from: esc(pastureName(l.from_pasture_id)), to: esc(pastureName(l.pasture_id))})
+    const top = topTag(l.tags), ico = it.type === "problem" ? rIcon(top || "note", 30, top ? TAG[top].icon : "📝")
+      : HERD_KINDS.includes(it.type) ? rIcon("group:Livestock", 30, "🐄") : {rain: rIcon("sensor_rain", 30, "🌧")}[it.type] || "•";
+    const what = HERD_KINDS.includes(it.type) && (it.type !== "move" || l.lines) ? herdWhat(l)
+      : it.type === "move" ? (l.from_pasture_id ? T("Moved cattle from {from} to <b>{to}</b>", {from: esc(pastureName(l.from_pasture_id)), to: esc(pastureName(l.pasture_id))})
           : T("Moved cattle to <b>{to}</b>", {to: esc(pastureName(l.pasture_id))})) + (l.head ? " " + esc(T("({n} head)", {n: l.head})) : "")
       : it.type === "rain" ? T("Rain gauge: <b>{inches} in</b>", {inches: Number(l.inches).toFixed(2)}) + (l.pasture_id ? " " + esc(T("at {place}", {place: pastureName(l.pasture_id)})) : "")
       : `${(l.tags || []).map(tagSpan).join("")} ${esc(l.text || "")}${l.pasture_id ? ` <span class="dim">(${esc(pastureName(l.pasture_id))})</span>` : ""}${l.lat != null ? " 📍" : ""}${resolution(l) ? ` <span class="donechip">${esc(T("✓ Resolved"))}</span>` : ""}`;
@@ -797,6 +802,7 @@
     if ($("syncNow")) $("syncNow").onclick = () => syncAll(true);
     const tagsOf = i => (i.p || i.l || {}).tags || [];
     const items = logItems().filter(i => logFilter === "all" || i.type === logFilter || (logFilter === "map" && (i.type === "place" || i.type === "shape"))
+      || (logFilter === "move" && HERD_KINDS.includes(i.type))
       || (logFilter === "problem" && (i.type === "photo" || i.type === "problem") && (tagsAt(tagsOf(i), HEADS_UP).length || (i.p && i.p.flagged)))
       || (logFilter === "problem" && i.type === "resolved")
       || (logFilter === "wildlife" && tagsOf(i).some(t => TAG[t] && TAG[t].group === "Wildlife"))).slice(0, 80);
@@ -932,6 +938,7 @@
   // ---------------------------------------------------------------- quick logs (rain, move, report)
   function act(kind, here) {
     if (kind === "photo") return takePhoto(here);
+    if (HERD_KINDS.includes(kind)) return herdSheet(kind, here);
     const now = new Date(), local = new Date(now - now.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
     let html, title;
     if (kind === "rain") {
@@ -939,11 +946,6 @@
       html = `<label>${esc(T("Inches"))}<input type="number" name="inches" inputmode="decimal" min="0" max="20" step="0.01" required></label>
         <div class="quick">${[0.1, 0.25, 0.5, 1].map(v => `<button type="button" data-in="${v}">${v.toFixed(2)}</button>`).join("")}</div>
         <label>${esc(T("Which gauge? (optional)"))}<select name="pasture_id">${pastureOptions(here, T("Ranch gauge"))}</select></label>`;
-    } else if (kind === "move") {
-      title = T("Moved cattle");
-      html = `<label>${esc(T("Into"))}<select name="pasture_id" required>${pastureOptions(here, T("Choose pasture"))}</select></label>
-        <label>${esc(T("Out of (optional)"))}<select name="from_pasture_id">${pastureOptions(null, "—")}</select></label>
-        <label>${esc(T("Head (optional)"))}<input type="number" name="head" inputmode="numeric" min="0" step="1"></label>`;
     } else {
       kind = "report"; title = T("Report what you saw");
       startSensors();                         // inside the tap, so the phone allows GPS
@@ -974,7 +976,6 @@
       const d = Object.fromEntries(new FormData(f).entries());
       const entry = {client_id: entryId, kind: kind === "report" ? "note" : kind, logged_at: new Date(d.logged_at || Date.now()).toISOString(), by: me && me.name};
       if (d.pasture_id) entry.pasture_id = d.pasture_id;
-      if (kind === "move") { if (d.from_pasture_id && d.from_pasture_id !== d.pasture_id) entry.from_pasture_id = d.from_pasture_id; if (d.head) entry.head = Number(d.head); }
       if (kind === "rain") entry.inches = Number(d.inches);
       if (kind === "report") {
         entry.tags = chosenTags(f); entry.text = (d.text || "").trim();
@@ -990,6 +991,256 @@
       closeSheet(); toast(navigator.onLine ? T("Saved.") : T("Saved on this phone. It'll send when there's signal."));
       rerender(); syncAll();
     };
+  }
+
+  // ================================================================ HERD: head in each pasture, by class
+  // The server keeps a ledger (moves, counts, births, sales…; src/ranch_ai/rancher/herd.py) and works out the head in
+  // each pasture. Entries still waiting on this phone are added on top here, so a move shows the moment it's saved.
+  // Nothing is refused because the numbers don't add up: a pasture that would go below zero is flagged for a count.
+  const CLASSES = ["cows", "bulls", "calves", "heifers", "steers"];
+  const CLASS_WORD = {cows: T("Cows"), bulls: T("Bulls"), calves: T("Calves"), heifers: T("Heifers"), steers: T("Steers")};
+  const CLASS_N = {cows: ["{n} cow", "{n} cows"], bulls: ["{n} bull", "{n} bulls"], calves: ["{n} calf", "{n} calves"],
+    heifers: ["{n} heifer", "{n} heifers"], steers: ["{n} steer", "{n} steers"]};
+  const HERD_EVENTS = [["born", T("Born")], ["bought", T("Bought (came in)")], ["sold", T("Sold (went out)")], ["died", T("Died")], ["wean", T("Weaned calves")]];
+  const HERD_KINDS = ["move", "count", "herd"];
+  let herd = store.get("herd", null);
+  function fmtCounts(counts, signed) {
+    const parts = CLASSES.filter(c => counts && counts[c]).map(c => {
+      const n = counts[c], s = T(CLASS_N[c][Math.abs(n) === 1 ? 0 : 1], {n: Math.abs(n)});
+      return signed ? (n > 0 ? "+" : "−") + s : s; });
+    return parts.join(" · ");
+  }
+  const sumCounts = c => CLASSES.reduce((s, k) => s + ((c || {})[k] || 0), 0);
+  async function loadHerd() {
+    try { herd = await api("herd"); store.set("herd", herd); } catch (e) { if (e.signin) throw e; }
+  }
+  function herdView() {
+    const P = {};
+    for (const [pid, p] of Object.entries((herd && herd.pastures) || {})) P[pid] = {...p, counts: {...p.counts}, flags: [...p.flags]};
+    const get = pid => P[pid] || (P[pid] = {counts: {}, total: 0, flags: ["not_counted"], counted_at: null});
+    const flag = (pid, f) => { const p = get(pid); if (!p.flags.includes(f)) p.flags.push(f); };
+    const add = (pid, counts, sign) => { const p = get(pid);
+      for (const c of CLASSES) if (counts[c]) { p.counts[c] = (p.counts[c] || 0) + sign * counts[c]; if (p.counts[c] < 0) flag(pid, "negative"); } };
+    const queued = store.get("queue", []).filter(l => HERD_KINDS.includes(l.kind) && l.pasture_id).sort((a, b) => String(a.logged_at).localeCompare(String(b.logged_at)));
+    for (const l of queued) {
+      if (l.kind === "move" && l.lines) for (const ln of l.lines) {
+        let c = ln.counts || {};
+        if (ln.from === "unknown") flag(l.pasture_id, "unknown_source");
+        else {
+          if (ln.all && P[ln.from] && sumCounts(P[ln.from].counts) > 0) c = {...P[ln.from].counts};
+          add(ln.from, c, -1); if (ln.all) P[ln.from].counts = {};
+        }
+        add(l.pasture_id, c, 1);
+      } else if (l.kind === "count") {
+        const p = get(l.pasture_id); p.counts = {...l.counts}; p.counted_at = l.logged_at; p.counted_by = l.by;
+        p.flags = p.flags.filter(f => !["negative", "unknown_source", "not_counted", "stale"].includes(f));
+      } else if (l.kind === "herd") {
+        if (l.event === "wean") { add(l.pasture_id, {calves: sumCounts(l.counts)}, -1); add(l.pasture_id, l.counts, 1); }
+        else add(l.pasture_id, l.counts, l.event === "sold" || l.event === "died" ? -1 : 1);
+      }
+    }
+    let head = 0;
+    for (const p of Object.values(P)) {
+      for (const c of CLASSES) { if (p.counts[c] != null && p.counts[c] <= 0) delete p.counts[c]; }
+      p.total = sumCounts(p.counts); head += p.total;
+    }
+    return {pastures: P, head, any: Object.keys(P).length > 0};
+  }
+  const herdFlagText = (p, name) => (p.flags || []).map(f => ({
+    negative: T("⚠️ More cattle were taken out of {pasture} than the app had on record. Count it.", {pasture: name}),
+    unknown_source: T("⚠️ Cattle came in from \"not sure where\". Count {pasture} when you can.", {pasture: name}),
+    stale: T("⚠️ Not counted for a month or more."), not_counted: T("Not counted yet: these numbers come from moves only.")}[f])).filter(Boolean);
+  const needsCount = p => (p.flags || []).some(f => ["negative", "unknown_source", "stale"].includes(f));
+  function classGrid(prefix, opts = {}) {
+    const only = opts.only || CLASSES;
+    return `<div class="hgrid">${only.map(c => `<label class="hcls"><span>${esc(CLASS_WORD[c])}</span>
+        <input type="number" inputmode="numeric" min="0" max="100000" step="1" name="${prefix}_${c}" data-cls="${c}" placeholder="0">
+        <small class="dim" data-rec="${c}"></small></label>`).join("")}
+      ${opts.pairs === false ? "" : `<label class="hcls"><span>${esc(T("Pairs"))}</span>
+        <input type="number" inputmode="numeric" min="0" max="100000" step="1" name="${prefix}_pairs" data-cls="pairs" placeholder="0">
+        <small class="dim">${esc(T("cow + calf"))}</small></label>`}</div>`;
+  }
+  function readGrid(root) {
+    const c = {}, val = el => Math.max(0, Math.floor(Number(el.value) || 0));
+    root.querySelectorAll("input[data-cls]").forEach(el => {
+      const n = val(el); if (!n) return;
+      if (el.dataset.cls === "pairs") { c.cows = (c.cows || 0) + n; c.calves = (c.calves || 0) + n; } else c[el.dataset.cls] = (c[el.dataset.cls] || 0) + n;
+    });
+    return c;
+  }
+  function herdPastureOptions(selected, blank, v, withUnknown) {
+    const label = p => { const h = v.pastures[p.id]; return p.name + (h && h.total ? ` (${fmtCounts(h.counts)})` : ""); };
+    return (blank ? `<option value="">${esc(blank)}</option>` : "") + ((snap && snap.pastures) || [])
+      .map(p => `<option value="${esc(p.id)}" ${p.id === selected ? "selected" : ""}>${esc(label(p))}</option>`).join("")
+      + (withUnknown ? `<option value="unknown">${esc(T("Not sure / found loose"))}</option>` : "");
+  }
+  function herdSheet(tab = "move", here = null) {
+    const v = herdView(), now = new Date(), local = new Date(now - now.getTimezoneOffset() * 6e4).toISOString().slice(0, 16), entryId = uid();
+    const tabs = [["move", T("Move")], ["count", T("Count")], ["herd", T("Born, sold…")]];
+    let body = "";
+    if (tab === "move") body = `<label>${esc(T("Moved into"))}<select name="pasture_id" required>${pastureOptions(here, T("Choose pasture"))}</select></label>
+        <div id="hLines"></div>
+        <button type="button" class="secondary" id="hAddLine">${esc(T("＋ From another pasture"))}</button>
+        <p class="hsum" id="hSum" aria-live="polite"></p>`;
+    else if (tab === "count") body = `<label>${esc(T("Pasture"))}<select name="pasture_id" required>${pastureOptions(here, T("Choose pasture"))}</select></label>
+        <p class="dim small">${esc(T("Count what you see. Leave a box empty for none. This replaces what the app had for this pasture."))}</p>
+        ${classGrid("c")}<p class="dim small" id="hRecord"></p>`;
+    else body = `<label>${esc(T("What happened?"))}<select name="event">${HERD_EVENTS.map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join("")}</select></label>
+        <label>${esc(T("Pasture"))}<select name="pasture_id" required>${pastureOptions(here, T("Choose pasture"))}</select></label>
+        <div id="hAll">${classGrid("h")}</div><div id="hWean" hidden>${classGrid("w", {only: ["heifers", "steers"], pairs: false})}
+        <p class="dim small">${esc(T("Weaned calves stop counting as calves and become heifers or steers."))}</p></div>`;
+    openSheet(T("Cattle"), `<div class="seg" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" data-htab="${k}" aria-selected="${k === tab}">${esc(l)}</button>`).join("")}</div>
+      <form class="form" id="herdForm">${body}
+        <div><p class="dim small">${esc(T("Photos (optional)"))}</p><div id="hPhotos"></div></div>
+        <label>${esc(T("When"))}<input type="datetime-local" name="logged_at" value="${local}"></label>
+        <div class="row"><button type="submit" class="primary">${esc(T("Save"))}</button><button type="button" class="secondary" id="hCancel">${esc(T("Cancel"))}</button></div></form>`);
+    const f = $("herdForm");
+    $("sheetBody").querySelectorAll("[data-htab]").forEach(b => b.onclick = () => {
+      const to = f.pasture_id && f.pasture_id.value; dropPhotosOf("log_id", entryId); herdSheet(b.dataset.htab, to || here); });
+    mountPhotoStrip($("hPhotos"), "log_id", entryId, {form: true, extra: () => ({pasture_id: (f.pasture_id && f.pasture_id.value) || null})});
+    $("hCancel").onclick = () => { closeSheet(); dropPhotosOf("log_id", entryId); };
+    const name = id => id === "unknown" ? T("not sure where") : pastureName(id);
+    const showRecord = (root, pid) => root.querySelectorAll("[data-rec]").forEach(el => {
+      const h = v.pastures[pid], n = h && h.counts[el.dataset.rec];
+      el.textContent = pid && pid !== "unknown" && h && !h.flags.includes("not_counted") ? T("{n} on record", {n: n || 0}) : ""; });
+    if (tab === "move") {
+      const box = $("hLines");
+      const addLine = (from = "") => {
+        const div = document.createElement("div"); div.className = "hline";
+        div.innerHTML = `<div class="hfrom"><label>${esc(T("From"))}<select data-from required>${herdPastureOptions(from, T("Where did they come from?"), v, true)}</select></label>
+            <label class="switchrow small"><input type="checkbox" data-all> ${esc(T("All of them"))}</label>
+            <button type="button" class="pill" data-rmline aria-label="${esc(T("Remove this pasture"))}">✕</button></div>
+          ${classGrid("m")}<p class="hwarn" data-warn></p>`;
+        box.appendChild(div);
+        const sel = div.querySelector("[data-from]"), all = div.querySelector("[data-all]");
+        const fillAll = () => {
+          const h = v.pastures[sel.value], on = all.checked && sel.value && sel.value !== "unknown";
+          div.querySelectorAll("input[data-cls]").forEach(el => {
+            el.disabled = on && h && h.total > 0;
+            if (el.disabled) el.value = el.dataset.cls === "pairs" ? "" : (h.counts[el.dataset.cls] || "");
+          });
+        };
+        sel.onchange = () => { all.disabled = sel.value === "unknown"; if (all.disabled) all.checked = false; fillAll(); showRecord(div, sel.value); update(); };
+        all.onchange = () => { fillAll(); update(); };
+        div.querySelectorAll("input[data-cls]").forEach(el => el.oninput = update);
+        div.querySelector("[data-rmline]").onclick = () => { div.remove(); update(); };
+        showRecord(div, sel.value); update();
+      };
+      const lines = () => [...box.querySelectorAll(".hline")].map(div => ({div, from: div.querySelector("[data-from]").value,
+        all: div.querySelector("[data-all]").checked, counts: readGrid(div)}));
+      function update() {
+        const ls = lines(), tot = {};
+        box.querySelectorAll("[data-rmline]").forEach(b => { b.hidden = ls.length < 2; });
+        for (const ln of ls) {
+          for (const c of CLASSES) if (ln.counts[c]) tot[c] = (tot[c] || 0) + ln.counts[c];
+          const h = v.pastures[ln.from], warn = ln.div.querySelector("[data-warn]");
+          const over = {}; if (h && ln.from !== "unknown") for (const c of CLASSES) if ((ln.counts[c] || 0) > (h.counts[c] || 0)) over[c] = h.counts[c] || 0;
+          warn.textContent = !ln.from || ln.from === "unknown" ? ""
+            : !h || h.flags.includes("not_counted") ? (sumCounts(ln.counts) || ln.all ? T("{pasture} hasn't been counted, so the app can't check these numbers.", {pasture: name(ln.from)}) : "")
+            : ln.all && !h.total ? T("The app has no cattle on record in {pasture}: type how many moved.", {pasture: name(ln.from)})
+            : Object.keys(over).length ? T("The app has only {have} in {pasture}. You can still save; the pasture will be flagged for a count.",
+                {have: fmtCounts(over) || T("no cattle"), pasture: name(ln.from)}) : "";
+        }
+        const to = f.pasture_id.value;
+        $("hSum").textContent = sumCounts(tot) ? T("Moving {what}", {what: fmtCounts(tot)}) + (to ? " " + T("into {pasture}", {pasture: pastureName(to)}) : "") + "." : "";
+      }
+      f.pasture_id.onchange = update;
+      $("hAddLine").onclick = () => addLine();
+      addLine();
+      f.onsubmit = e => {
+        e.preventDefault();
+        const to = f.pasture_id.value, ls = lines();
+        if (!to) { toast(T("Pick the pasture the cattle went to.")); return; }
+        for (const ln of ls) {
+          if (!ln.from) { toast(T("Pick where the cattle came from.")); return; }
+          if (ln.from === to) { toast(T("Cattle can't move into the pasture they came from.")); return; }
+          const h = v.pastures[ln.from];
+          if (!sumCounts(ln.counts) && !(ln.all && h && h.total)) { toast(T("Say how many head moved, or tick All.")); return; }
+        }
+        saveHerd({client_id: entryId, kind: "move", pasture_id: to, lines: ls.map(ln => ({from: ln.from, all: ln.all, counts: ln.counts}))}, f);
+      };
+    } else if (tab === "count") {
+      const rec = () => { const h = v.pastures[f.pasture_id.value];
+        $("hRecord").textContent = !f.pasture_id.value ? "" : h && h.total ? T("On record: {what}.", {what: fmtCounts(h.counts)}) : T("The app has no cattle on record here."); };
+      f.pasture_id.onchange = rec; rec();
+      f.onsubmit = e => {
+        e.preventDefault();
+        const pid = f.pasture_id.value, counts = readGrid(f);
+        if (!pid) { toast(T("Pick the pasture that was counted.")); return; }
+        if (!sumCounts(counts) && !confirm(T("No cattle in {pasture}? Save it as empty.", {pasture: pastureName(pid)}))) return;
+        saveHerd({client_id: entryId, kind: "count", pasture_id: pid, counts}, f);
+      };
+    } else {
+      const sync = () => { const w = f.event.value === "wean"; $("hWean").hidden = !w; $("hAll").hidden = w; };
+      f.event.onchange = sync; sync();
+      f.onsubmit = e => {
+        e.preventDefault();
+        const pid = f.pasture_id.value, ev = f.event.value, counts = readGrid(ev === "wean" ? $("hWean") : $("hAll"));
+        if (!pid) { toast(T("Pick the pasture.")); return; }
+        if (!sumCounts(counts)) { toast(T("Say how many head.")); return; }
+        saveHerd({client_id: entryId, kind: "herd", event: ev, pasture_id: pid, counts}, f);
+      };
+    }
+  }
+  function saveHerd(entry, f) {
+    entry = {...entry, logged_at: new Date(f.logged_at.value || Date.now()).toISOString(), by: me && me.name};
+    const q = store.get("queue", []); q.push(entry); store.set("queue", q);
+    closeSheet(); toast(navigator.onLine ? T("Saved.") : T("Saved on this phone. It'll send when there's signal."));
+    rerender(); syncAll();
+  }
+  // A pasture's cattle: on its page, and a list of all of them from Home.
+  function herdCard(pid) {
+    const v = herdView(), h = v.pastures[pid], name = pastureName(pid);
+    return `<h2>${esc(T("🐄 Cattle"))}</h2>
+      ${h && h.total ? `<p class="hcount"><b>${esc(fmtCounts(h.counts))}</b> <span class="dim">(${esc(T("{n} head", {n: h.total}))})</span></p>` : `<p class="dim">${esc(T("No cattle on record."))}</p>`}
+      <p class="dim small">${esc(h && h.counted_at ? T("Counted {when}{by}", {when: when(h.counted_at), by: h.counted_by ? " · " + h.counted_by : ""}) : T("Never counted."))}</p>
+      ${h ? herdFlagText(h, name).map(x => `<p class="hwarn">${esc(x)}</p>`).join("") : ""}
+      <div class="row"><button type="button" class="primary" data-herd="count">${esc(T("Count"))}</button>
+        <button type="button" class="secondary" data-herd="move">${esc(T("Move cattle"))}</button>
+        <button type="button" class="secondary" data-herd="herd">${esc(T("Born, sold…"))}</button></div>`;
+  }
+  function herdHome() {
+    const box = $("h-herd"), v = herdView();
+    box.hidden = !v.any;
+    if (!v.any) return;
+    const counted = Object.values(v.pastures).filter(p => p.total > 0).length, need = Object.values(v.pastures).filter(needsCount).length, tot = {};
+    for (const p of Object.values(v.pastures)) for (const c of CLASSES) if (p.counts[c]) tot[c] = (tot[c] || 0) + p.counts[c];
+    box.innerHTML = `<button type="button" class="herdline" id="herdAll"><span class="ic" aria-hidden="true">${rIcon("group:Livestock", 28, "🐄")}</span>
+        <span><b>${esc(T(counted === 1 ? "{n} head in 1 pasture" : "{n} head in {p} pastures", {n: v.head, p: counted}))}</b><br>
+        <span class="dim small">${esc(fmtCounts(tot))}</span>${need ? `<br><span class="hwarn">${esc(T(need === 1 ? "⚠️ 1 pasture needs a count" : "⚠️ {n} pastures need a count", {n: need}))}</span>` : ""}</span>
+        <span class="go" aria-hidden="true">›</span></button>`;
+    $("herdAll").onclick = herdOverview;
+  }
+  function herdOverview() {
+    const v = herdView(), rows = ((snap && snap.pastures) || []).map(p => ({p, h: v.pastures[p.id]})).filter(x => x.h && (x.h.total || needsCount(x.h)))
+      .sort((a, b) => (needsCount(b.h) - needsCount(a.h)) || b.h.total - a.h.total);
+    openSheet(T("Cattle by pasture"), `<ul class="srclist herdlist">${rows.map(({p, h}) => `<li><button type="button" class="linkrow" data-pasture="${esc(p.id)}">
+        <span><b>${esc(p.name)}</b>${needsCount(h) ? " ⚠️" : ""}<br><span class="dim small">${esc(fmtCounts(h.counts) || T("No cattle on record."))}</span></span>
+        <span class="when">${esc(T("{n} head", {n: h.total}))}</span></button></li>`).join("") || `<li class="dim">${esc(T("No cattle on record."))}</li>`}</ul>
+      <p class="dim small">${esc(T("Worked out from every move, count, birth and sale the crew logged. A count replaces what the app had for that pasture."))}</p>
+      <div class="row"><button type="button" class="primary" data-herd="count">${esc(T("Count a pasture"))}</button><button type="button" class="secondary" data-herd="move">${esc(T("Move cattle"))}</button></div>`);
+  }
+  document.addEventListener("click", e => {
+    const b = e.target.closest("[data-herd]"); if (!b) return;
+    herdSheet(b.dataset.herd, !$("v-pasture").hidden ? currentPasture : null);
+  });
+  // Log rows and the entry sheet for herd entries
+  function herdWhat(l) {
+    const names = ids => ids.map(id => id === "unknown" ? T("not sure where") : pastureName(id)).join(", ");
+    if (l.kind === "move" && l.lines) {
+      const tot = {}; l.lines.forEach(ln => CLASSES.forEach(c => { if ((ln.counts || {})[c]) tot[c] = (tot[c] || 0) + ln.counts[c]; }));
+      const allFrom = l.lines.filter(ln => ln.all).map(ln => ln.from);
+      return T("Moved {what} to <b>{to}</b>", {what: esc(fmtCounts(tot) || T("all the cattle")), to: esc(pastureName(l.pasture_id))}) + " "
+        + esc(T("from {places}", {places: names(l.lines.map(ln => ln.from))})) + (allFrom.length ? " " + esc(T("(all of {places})", {places: names(allFrom)})) : "");
+    }
+    if (l.kind === "count") {
+      const d = herd && herd.count_diffs && herd.count_diffs[l.client_id];
+      return T("Counted <b>{pasture}</b>: {what}", {pasture: esc(pastureName(l.pasture_id)), what: esc(fmtCounts(l.counts) || T("no cattle"))})
+        + (d ? " · " + esc(Object.keys(d).length ? T("{diff} from what the app had", {diff: fmtCounts(d, true)}) : T("matches the app")) : "");
+    }
+    const ev = {born: "Born in <b>{pasture}</b>: {what}", bought: "Bought into <b>{pasture}</b>: {what}", sold: "Sold from <b>{pasture}</b>: {what}",
+      died: "Died in <b>{pasture}</b>: {what}", wean: "Weaned in <b>{pasture}</b>: {what}"}[l.event] || "{what}";
+    return T(ev, {pasture: esc(pastureName(l.pasture_id)), what: esc(fmtCounts(l.counts))});
   }
 
   // ---------------------------------------------------------------- CAMERA: photo + GPS + direction + on-phone analysis
@@ -1105,8 +1356,8 @@
   function openReport(id) {
     const it = logItems().find(i => i.l && i.l.client_id === id); if (!it) return;
     const l = it.l, mine = me && me.user_id && l.user_id === me.user_id, isReport = it.type === "problem";
-    const title = isReport ? (l.pasture_id ? pastureName(l.pasture_id) : T("Report")) : it.type === "rain" ? T("Rain gauge") : T("Moved cattle");
-    const what = it.type === "rain" ? `<p><b>${esc(T("{inches} in", {inches: Number(l.inches).toFixed(2)}))}</b>${l.pasture_id ? " " + esc(T("at {place}", {place: pastureName(l.pasture_id)})) : ""}</p>`
+    const title = isReport ? (l.pasture_id ? pastureName(l.pasture_id) : T("Report")) : it.type === "rain" ? T("Rain gauge") : HERD_KINDS.includes(it.type) ? T("Cattle") : T("Moved cattle");
+    const what = HERD_KINDS.includes(it.type) && (it.type !== "move" || l.lines) ? `<p>${herdWhat(l)}</p>` : it.type === "rain" ? `<p><b>${esc(T("{inches} in", {inches: Number(l.inches).toFixed(2)}))}</b>${l.pasture_id ? " " + esc(T("at {place}", {place: pastureName(l.pasture_id)})) : ""}</p>`
       : it.type === "move" ? `<p>${T("Into <b>{to}</b>", {to: esc(pastureName(l.pasture_id))})}${l.from_pasture_id ? " " + esc(T("from {place}", {place: pastureName(l.from_pasture_id)})) : ""}${l.head ? " · " + esc(T("{n} head", {n: l.head})) : ""}</p>` : "";
     openSheet(title, `${what}<p>${(l.tags || []).map(tagSpan).join(" ")}</p>
       ${l.text ? `<p>${esc(l.text)}</p>` : ""}
@@ -2306,7 +2557,7 @@
         setPlacesFromServer(res.places);
       } else await loadPlaces();
       await loadPending();
-      const [ph, lg] = await Promise.all([api("photos"), api("logs")]);
+      const [ph, lg] = await Promise.all([api("photos"), api("logs"), loadHerd()]);
       photos = ph; serverLogs = lg; store.set("photos", photos); store.set("serverLogs", serverLogs);
     } catch (e) { if (e.signin) show("login"); }
     finally { syncing = false; rerender(); }

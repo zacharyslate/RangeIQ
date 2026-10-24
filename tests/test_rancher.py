@@ -1255,3 +1255,95 @@ def test_notifications_reach_each_person_in_their_language(client, monkeypatch):
     client.post("/api/sos", headers=ana, json={"op": "ack", "sos_id": "s9"})
     ack = next(p for who, p in pushed if p.get("type") == "sos-ack")
     assert ack["title"] == "🚙 Ana is on the way"                              # Zach still reads English
+
+
+# --- herd ledger -------------------------------------------------------------------------
+def _at(day: int) -> str:
+    return datetime(2026, 10, day, 12, tzinfo=timezone.utc).isoformat()
+
+
+def test_herd_ledger_moves_from_several_pastures_counts_and_flags():
+    from ranch_ai.rancher.herd import inventory
+
+    logs = [
+        {"client_id": "c1", "kind": "count", "pasture_id": "A", "counts": {"cows": 40, "calves": 38, "bulls": 2}, "logged_at": _at(1), "by": "Zach"},
+        {"client_id": "c2", "kind": "count", "pasture_id": "B", "counts": {"heifers": 25}, "logged_at": _at(1)},
+        # 2 cows from A and 3 heifers from B into X, in one move
+        {"client_id": "m1", "kind": "move", "pasture_id": "X", "logged_at": _at(3),
+         "lines": [{"from": "A", "counts": {"cows": 2}}, {"from": "B", "counts": {"heifers": 3}}]},
+        {"client_id": "h1", "kind": "herd", "event": "born", "pasture_id": "X", "counts": {"calves": 2}, "logged_at": _at(4)},
+        {"client_id": "h2", "kind": "herd", "event": "died", "pasture_id": "A", "counts": {"cows": 1}, "logged_at": _at(5)},
+        # a stray found in X: from "not sure"
+        {"client_id": "m2", "kind": "move", "pasture_id": "X", "logged_at": _at(6), "lines": [{"from": "unknown", "counts": {"steers": 1}}]},
+        # more taken out of B than the ledger thinks is there: allowed, flagged
+        {"client_id": "m3", "kind": "move", "pasture_id": "C", "logged_at": _at(7), "lines": [{"from": "B", "counts": {"heifers": 30}}]},
+    ]
+    inv = inventory(logs, today=datetime(2026, 10, 8, tzinfo=timezone.utc))
+    P = inv["pastures"]
+    assert P["A"]["counts"] == {"cows": 37, "calves": 38, "bulls": 2} and P["A"]["flags"] == []
+    assert P["X"]["counts"] == {"cows": 2, "heifers": 3, "calves": 2, "steers": 1} and set(P["X"]["flags"]) == {"unknown_source", "not_counted"}
+    assert P["B"]["total"] == 0 and "negative" in P["B"]["flags"]
+    assert P["C"]["counts"] == {"heifers": 30}
+    assert inv["head"] == 37 + 38 + 2 + 8 + 30
+
+    # a count replaces what the ledger thought and says by how much it was off; the flags clear
+    logs.append({"client_id": "c3", "kind": "count", "pasture_id": "B", "counts": {"heifers": 2}, "logged_at": _at(8)})
+    logs.append({"client_id": "c4", "kind": "count", "pasture_id": "A", "counts": {"cows": 36, "calves": 38, "bulls": 2}, "logged_at": _at(8)})
+    inv = inventory(logs, today=datetime(2026, 10, 9, tzinfo=timezone.utc))
+    assert inv["pastures"]["B"]["flags"] == [] and inv["pastures"]["B"]["counts"] == {"heifers": 2}
+    assert inv["count_diffs"]["c4"] == {"cows": -1}            # one cow unaccounted for since the last count
+    # 40 days later A needs a recount
+    assert "stale" in inventory(logs, today=datetime(2026, 11, 20, tzinfo=timezone.utc))["pastures"]["A"]["flags"]
+
+
+def test_herd_ledger_move_all_weaning_and_order_of_offline_entries():
+    from ranch_ai.rancher.herd import inventory
+
+    logs = [
+        # this count was logged in the field before the move, but reached the server after it (offline phone)
+        {"client_id": "m1", "kind": "move", "pasture_id": "B", "logged_at": _at(5), "received_at": _at(5), "lines": [{"from": "A", "all": True, "counts": {"cows": 10}}]},
+        {"client_id": "c1", "kind": "count", "pasture_id": "A", "counts": {"cows": 30, "calves": 28}, "logged_at": _at(2), "received_at": _at(6)},
+        {"client_id": "w1", "kind": "herd", "event": "wean", "pasture_id": "B", "counts": {"heifers": 12, "steers": 14, "cows": 5}, "logged_at": _at(9)},
+    ]
+    P = inventory(logs)["pastures"]
+    assert P["A"]["total"] == 0                                  # "All" moved what the ledger knew (30 + 28), not the 10 typed
+    assert P["B"]["counts"] == {"cows": 30, "calves": 2, "heifers": 12, "steers": 14}
+
+
+def test_herd_entries_are_checked_on_the_way_in(tmp_path):
+    store = AppStore(tmp_path / "app.sqlite")
+    ok = {"client_id": "m1", "kind": "move", "pasture_id": "X", "logged_at": _at(3), "lines": [{"from": "A", "counts": {"cows": "2", "goats": 4}}]}
+    row, _ = store.add_log("ranch-a", ok)
+    assert row["lines"] == [{"from": "A", "all": False, "counts": {"cows": 2}}]
+    for bad in ({"lines": [{"from": "A", "counts": {}}]}, {"lines": [{"from": "X", "counts": {"cows": 1}}]}, {"lines": []},
+                {"lines": [{"from": "A", "counts": {"cows": -1}}]}):
+        with pytest.raises(ValueError):
+            store.add_log("ranch-a", {"client_id": "bad", "kind": "move", "pasture_id": "X", **bad})
+    with pytest.raises(ValueError):
+        store.add_log("ranch-a", {"client_id": "bad", "kind": "herd", "event": "stolen", "pasture_id": "X", "counts": {"cows": 1}})
+    store.add_log("ranch-a", {"client_id": "old", "kind": "move", "pasture_id": "X", "from_pasture_id": "A", "head": 30})   # older phones
+    assert [l["client_id"] for l in store.herd_logs("ranch-a")] == ["m1", "old"] or len(store.herd_logs("ranch-a")) == 2
+
+
+def test_rest_starts_only_when_a_counted_pasture_is_empty():
+    now = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    logs = [
+        {"kind": "count", "pasture_id": "A", "counts": {"cows": 40}, "logged_at": _at(1)},
+        {"kind": "move", "pasture_id": "B", "logged_at": _at(10), "lines": [{"from": "A", "counts": {"cows": 2}}]},
+    ]
+    days = herd_days_by_pasture(logs, today=now)
+    assert days["A"] == {"days_in": 18, "head": 38} and days["B"] == {"days_in": 9, "head": 2}
+    logs.append({"kind": "move", "pasture_id": "B", "logged_at": _at(15), "lines": [{"from": "A", "all": True, "counts": {}}]})
+    days = herd_days_by_pasture(logs, today=now)
+    assert days["A"] == {"days_rested": 4} and days["B"]["head"] == 40
+
+
+def test_herd_api_serves_the_ledger(client):
+    owner = _login(client)
+    client.post("/api/logs", headers=owner, json=[
+        {"client_id": "c1", "kind": "count", "pasture_id": "P1", "counts": {"cows": 12}, "logged_at": _at(1)},
+        {"client_id": "m1", "kind": "move", "pasture_id": "P2", "logged_at": _at(2), "lines": [{"from": "P1", "counts": {"cows": 5}}]}])
+    inv = client.get("/api/herd", headers=owner).json()
+    assert inv["pastures"]["P1"]["counts"] == {"cows": 7} and inv["pastures"]["P2"]["counts"] == {"cows": 5} and inv["head"] == 12
+    client.delete("/api/logs/m1", headers=owner)                       # a deleted entry is out of the count straight away
+    assert client.get("/api/herd", headers=owner).json()["pastures"]["P1"]["counts"] == {"cows": 12}

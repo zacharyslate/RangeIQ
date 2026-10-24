@@ -230,11 +230,13 @@ def build_workspace(
         greenness = ranch_greenness(workspace_id, pastures)
         report["greenness"] = greenness.get("report")
 
+    ledger = store.herd_logs(workspace_id)             # every move / count / herd change (days in and rested, head)
+    in_ledger = {l["client_id"] for l in ledger}
     snapshot = build_snapshot(
         app_settings,
         pastures,
         greenness=greenness,
-        logs=store.list_logs(workspace_id, limit=1000),
+        logs=ledger + [l for l in store.list_logs(workspace_id, limit=1000) if l["client_id"] not in in_ledger],
         photos=store.list_photos(workspace_id, limit=500),
         demo=demo,
         include_terrain=include_terrain,

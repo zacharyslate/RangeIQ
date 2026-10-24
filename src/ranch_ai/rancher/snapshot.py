@@ -366,7 +366,7 @@ def build_snapshot(
             ),
         ]
         herd_info = herd.get(pid, {})
-        occ = occupancy_signal(herd_info.get("days_in"), herd_info.get("days_rested"))
+        occ = occupancy_signal(herd_info.get("days_in"), herd_info.get("days_rested"), herd_info.get("head"))
         if occ is not None:
             signals.append(occ)
         # Resolved problems (cattle back in, fence fixed) no longer count toward the pasture's status.

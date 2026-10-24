@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB_PATH = Path(os.getenv("RANGEIQ_APP_DB", PROJECT_ROOT / "data" / "processed" / "rangeiq_app.sqlite"))
 # Phone sign-ins last a year and renew themselves whenever the app is used, so nobody has to keep signing in.
 SESSION_DAYS = int(os.getenv("RANGEIQ_SESSION_DAYS", "365"))
-LOG_KINDS = {"move", "rain", "note"}
+LOG_KINDS = {"move", "rain", "note", "count", "herd"}     # count / herd: the herd ledger (herd.py)
 
 
 def utc_now() -> datetime:
@@ -345,6 +345,10 @@ class AppStore:
             raise ValueError(f"kind must be one of {sorted(LOG_KINDS)}.")
         logged_at = str(entry.get("logged_at") or _iso(utc_now()))
         payload = {k: v for k, v in entry.items() if k not in {"client_id", "kind", "logged_at", "pasture_id", "user_id"}}
+        from ranch_ai.rancher.herd import HERD_KINDS, clean_entry
+
+        if kind in HERD_KINDS:
+            payload = clean_entry(kind, payload, entry.get("pasture_id"))
         # Location of a report (for the map): keep only sensible numbers.
         for key, low, high in (("lat", -90, 90), ("lon", -180, 180), ("accuracy_m", 0, 100000)):
             if key in payload:
@@ -368,6 +372,13 @@ class AppStore:
             )
             row = conn.execute("SELECT * FROM logs WHERE client_id = ?", (client_id,)).fetchone()
         return self._row_to_log(row), True
+
+    def herd_logs(self, workspace_id: str) -> list[dict[str, Any]]:
+        """Every move, count and herd entry for the ranch (the whole ledger, not just the latest)."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM logs WHERE workspace_id = ? AND deleted = 0 AND kind IN ('move', 'count', 'herd') "
+                                "ORDER BY logged_at", (workspace_id,)).fetchall()
+        return [self._row_to_log(r) for r in rows]
 
     def log_user(self, workspace_id: str, client_id: str) -> str | None:
         with self._connect() as conn:
@@ -1198,25 +1209,7 @@ class AppStore:
 
 
 def herd_days_by_pasture(logs: list[dict[str, Any]], today: datetime | None = None) -> dict[str, dict[str, int]]:
-    """From move logs, days cattle have been IN each pasture, or days it has RESTED since they left."""
-    today = today or utc_now()
-    moves = sorted((log for log in logs if log.get("kind") == "move"), key=lambda log: log["logged_at"])
-    last_in: dict[str, datetime] = {}
-    last_out: dict[str, datetime] = {}
-    for log in moves:
-        when = datetime.fromisoformat(str(log["logged_at"]).replace("Z", "+00:00"))
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        to_id, from_id = log.get("pasture_id"), log.get("from_pasture_id")
-        if from_id:
-            last_out[from_id] = when
-            last_in.pop(from_id, None)
-        if to_id:
-            last_in[to_id] = when
-    result: dict[str, dict[str, int]] = {}
-    for pid, when in last_in.items():
-        result[pid] = {"days_in": max((today - when).days, 0)}
-    for pid, when in last_out.items():
-        if pid not in last_in:
-            result[pid] = {"days_rested": max((today - when).days, 0)}
-    return result
+    """Days cattle have been IN each pasture, or days it has RESTED since they left (see herd.herd_days)."""
+    from ranch_ai.rancher.herd import herd_days
+
+    return herd_days(logs, today=today or utc_now())
