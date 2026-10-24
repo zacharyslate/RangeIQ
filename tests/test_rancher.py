@@ -1148,7 +1148,7 @@ def test_every_place_kind_report_tag_and_water_feature_has_a_ranch_icon():
     icons = (app / "icons.js").read_text(encoding="utf-8")
     keys = set(re.findall(r'^\s+"([^"]+)":', icons, re.M)) | set(re.findall(r"^\s+([a-z_]+):", icons, re.M)) \
         | set(re.findall(r'I\["([^"]+)"\]\s*=', icons))
-    kinds = re.findall(r"(\w+): \[\"[^\"]+\", \"[^\"]+\", \"(?:water|hunting|ranch|sensors)\"\]", (app / "app.js").read_text(encoding="utf-8"))
+    kinds = re.findall(r"(\w+): \[T\(\"[^\"]+\"\), \"[^\"]+\", \"(?:water|hunting|ranch|sensors)\"\]", (app / "app.js").read_text(encoding="utf-8"))
     assert len(kinds) >= 20
     missing = [k for k in kinds if k not in keys] + [t for t in TAG_LEVELS if t not in keys] + \
               ["usgs_" + k for k in KIND_LABEL if "usgs_" + k not in keys]
@@ -1226,3 +1226,32 @@ def test_accounts_on_nasa_power_are_moved_to_prism():
     s.public_data.historical_weather.provider = "nasa_power"
     notes = usable_providers(s, env={})
     assert s.public_data.historical_weather.provider == "acis_prism" and any("acis_prism" in n for n in notes)
+
+
+def test_notifications_reach_each_person_in_their_language(client, monkeypatch):
+    from ranch_ai.rancher import push
+
+    owner = _login(client)
+    code = client.post("/api/crew/invites", headers=owner).json()["code"]
+    r = client.post("/api/join", json={"code": code, "name": "Ana", "email": "ana@example.com", "password": "HandPass123"}).json()
+    client.cookies.clear()
+    ana = {"Authorization": "Bearer " + r["token"]}
+    assert client.get("/api/me", headers=ana).json()["lang"] == "en"            # nobody picked yet: English
+    assert client.post("/api/me/lang", headers=ana, json={"lang": "es"}).json() == {"lang": "es"}
+    assert client.post("/api/me/lang", headers=owner, json={"lang": "fr"}).json() == {"lang": "en"}   # only en / es
+    assert client.get("/api/me", headers=ana).json()["lang"] == "es"
+    ids = {p["name"]: p["user_id"] for p in client.get("/api/messages", headers=owner).json()["people"]}
+    pushed = []
+    monkeypatch.setattr(push, "send_in_background", lambda store, who, payload: pushed.append((sorted(who), payload)))
+
+    client.post("/api/messages", headers=owner, json=[{"msg_id": "m1", "thread_id": "all", "text": "Gate by the tank is open"}])
+    to_ana = next(p for who, p in pushed if who == [ids["Ana"]])
+    assert to_ana["title"].startswith("Zach → todos") and to_ana["body"] == "Gate by the tank is open"   # people's words stay as typed
+
+    pushed.clear()
+    client.post("/api/sos", headers=owner, json={"op": "create", "sos_id": "s9", "kind": "vehicle", "note": "Stuck in the draw"})
+    sos = {tuple(who): p for who, p in pushed if p.get("type") == "sos"}
+    assert sos[(ids["Ana"],)]["body"] == "Accidente o vehículo atascado · Stuck in the draw. Toca para ver dónde."
+    client.post("/api/sos", headers=ana, json={"op": "ack", "sos_id": "s9"})
+    ack = next(p for who, p in pushed if p.get("type") == "sos-ack")
+    assert ack["title"] == "🚙 Ana is on the way"                              # Zach still reads English
